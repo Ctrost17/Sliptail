@@ -220,6 +220,19 @@ export default function Home() {
           </div>
         )}
       </section>
+
+      {/* CTA */}
+      <section className="bg-gradient-to-r from-green-500 to-green-700 py-20 text-center text-white">
+        <h2 className="mb-4 text-4xl font-bold">Join Sliptail today</h2>
+        <p className="mx-auto mb-8 max-w-xl text-lg">
+          Whether you’re a creator or a fan, Sliptail makes connecting simple,
+          safe, and fun.
+        </p>
+        {/* Bottom button shares the same smart routing */}
+        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
+          Get Started
+        </StartSellingButton>
+      </section>
     </div>
   );
 }
