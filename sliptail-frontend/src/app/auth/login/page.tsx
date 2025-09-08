@@ -70,6 +70,11 @@ export default function LoginPage() {
     window.location.href = `/api/auth/google/start${qs}`;
   }
 
+  function goForgotPassword() {
+    const emailParam = email ? `?email=${encodeURIComponent(email)}` : "";
+    window.location.href = `/auth/forgot-password${emailParam}`;
+  }
+
   return (
     <main className="mx-auto max-w-sm px-4 py-10 space-y-4">
       <h1 className="text-2xl font-bold">Log in</h1>
@@ -105,6 +110,17 @@ export default function LoginPage() {
         <button disabled={loading} className="w-full rounded-xl bg-black py-2 text-white">
           {loading ? "Signing in…" : "Sign in"}
         </button>
+
+        {/* Forgot password link */}
+        <div className="text-sm text-center">
+          <button
+            type="button"
+            onClick={goForgotPassword}
+            className="underline"
+          >
+            Forgot your password?
+          </button>
+        </div>
       </form>
 
       <button

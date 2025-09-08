@@ -204,6 +204,11 @@ export default function ProductEditPage() {
     }
   }
 
+  const priceLabel =
+    productType === "membership" ? "Price per month (USD)" : "Price (USD)";
+  const pricePlaceholder =
+    productType === "membership" ? "e.g., 12.00 per month" : "e.g., 12.00";
+
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-bold tracking-tight md:text-3xl">
@@ -261,10 +266,10 @@ export default function ProductEditPage() {
           />
         </div>
 
-        {/* Price */}
+        {/* Price (dynamic label for membership) */}
         <div className="space-y-2">
           <label className="block text-sm font-medium" htmlFor="price">
-            Price (USD)
+            {priceLabel}
           </label>
           <input
             id="price"
@@ -273,9 +278,11 @@ export default function ProductEditPage() {
             value={priceInput}
             onChange={(e) => setPriceInput(e.target.value)}
             className="w-full rounded-xl border px-3 py-2"
-            placeholder="e.g., 12.00"
+            placeholder={pricePlaceholder}
           />
-          <p className="text-xs text-neutral-600">Stored as integer cents.</p>
+          <p className="text-xs text-neutral-600">
+            Stored as integer cents{productType === "membership" ? " (monthly)." : "."}
+          </p>
         </div>
 
         <div className="flex items-center gap-3">

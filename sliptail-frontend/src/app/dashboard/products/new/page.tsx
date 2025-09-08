@@ -336,6 +336,16 @@ export default function NewProductPage() {
     (statusError ||
       (status && (!status.profileComplete || !status.stripeConnected)));
 
+  // Dynamic price label + placeholder
+  const priceLabel =
+    form.productType === "membership" ? "Price per month (USD)" : "Price (USD)";
+  const pricePlaceholder =
+    form.productType === "membership" ? "e.g., 12.00 per month" : "e.g., 12.00";
+  const priceHelpText =
+    form.productType === "membership"
+      ? "Leave blank for 0 (free). Stored as integer cents (monthly)."
+      : "Leave blank for 0 (free). Stored as integer cents.";
+
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-bold tracking-tight md:text-3xl">
@@ -452,10 +462,10 @@ export default function NewProductPage() {
           />
         </div>
 
-        {/* Price */}
+        {/* Price (dynamic label for membership) */}
         <div className="space-y-2">
           <label htmlFor={IDS.price} className="block text-sm font-medium">
-            Price
+            {priceLabel}
           </label>
           <input
             id={IDS.price}
@@ -463,14 +473,14 @@ export default function NewProductPage() {
             value={form.price}
             onChange={onChange("price")}
             inputMode="decimal"
-            placeholder="e.g., 12.00"
+            placeholder={pricePlaceholder}
             aria-describedby={IDS.priceHelp}
             autoComplete="off"
             className="w-full rounded-xl border px-3 py-2"
           />
         </div>
         <p id={IDS.priceHelp} className="text-xs text-neutral-600">
-          Leave blank for 0 (free). Stored as integer cents.
+          {priceHelpText}
         </p>
 
         {/* File (purchase only) */}
