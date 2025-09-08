@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
+import PasswordField from "@/components/forms/PasswordField";
 
 export default function SignupPage() {
   const { signup, loading } = useAuth();
@@ -22,12 +23,14 @@ export default function SignupPage() {
     try {
       await signup(email.trim(), password, username.trim() || undefined);
       setDone(true);
-      // If you return a verify_session from backend, you could:
-      // localStorage.setItem("verify_session", verifySession);
-      // localStorage.setItem("pendingVerifyEmail", email.trim());
-      // router.replace("/auth/check-email");
+      // If backend returns a verify session, you can redirect to a "check email" flow here.
     } catch (e: unknown) {
-      if (e && typeof e === "object" && "message" in e && typeof (e as { message?: unknown }).message === "string") {
+      if (
+        e &&
+        typeof e === "object" &&
+        "message" in e &&
+        typeof (e as { message?: unknown }).message === "string"
+      ) {
         setErr((e as { message: string }).message);
       } else {
         setErr("Signup failed");
@@ -37,7 +40,6 @@ export default function SignupPage() {
 
   function googleAuth() {
     const qs = next ? `?next=${encodeURIComponent(next)}` : "";
-    // Backend route must exist: /api/auth/google/start (with callback configured)
     window.location.href = `/api/auth/google/start${qs}`;
   }
 
@@ -48,7 +50,10 @@ export default function SignupPage() {
         <p>We sent you a verification link to complete sign up.</p>
         <p className="mt-3 text-sm">
           Already verified?{" "}
-          <Link className="underline" href={`/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}>
+          <Link
+            className="underline"
+            href={`/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}
+          >
             Log in
           </Link>
         </p>
@@ -61,27 +66,48 @@ export default function SignupPage() {
       <h1 className="text-xl font-semibold">Sign up</h1>
 
       <form onSubmit={submit} className="space-y-3">
-        <input
-          className="w-full border rounded px-3 py-2"
-          placeholder="Email"
-          type="email"
-          value={email}
-          onChange={(e)=>setEmail(e.target.value)}
-        />
-        <input
-          className="w-full border rounded px-3 py-2"
-          placeholder="Username (optional)"
-          value={username}
-          onChange={(e)=>setUsername(e.target.value)}
-        />
-        <input
-          className="w-full border rounded px-3 py-2"
-          placeholder="Password"
-          type="password"
+        <div>
+          <label htmlFor="signup-email" className="block text-xs font-medium text-neutral-700">
+            Email
+          </label>
+          <input
+            id="signup-email"
+            className="mt-1 w-full border rounded px-3 py-2"
+            placeholder="you@example.com"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+          />
+        </div>
+
+        <div>
+          <label htmlFor="signup-username" className="block text-xs font-medium text-neutral-700">
+            Username (optional)
+          </label>
+          <input
+            id="signup-username"
+            className="mt-1 w-full border rounded px-3 py-2"
+            placeholder="yourname"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </div>
+
+        <PasswordField
+          id="signup-password"
+          label="Create a password"
           value={password}
-          onChange={(e)=>setPassword(e.target.value)}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="At least 8 characters"
+          autoComplete="new-password"
+          required
         />
+
         {err && <p className="text-red-600 text-sm">{err}</p>}
+
         <button
           disabled={loading}
           className="w-full px-4 py-2 rounded bg-black text-white disabled:opacity-50"
@@ -100,13 +126,17 @@ export default function SignupPage() {
         onClick={googleAuth}
         className="w-full rounded border py-2 text-sm"
         aria-label="Continue with Google"
+        type="button"
       >
         Continue with Google
       </button>
 
       <p className="mt-3 text-sm">
         Already have an account?{" "}
-        <Link className="underline" href={`/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}>
+        <Link
+          className="underline"
+          href={`/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}
+        >
           Log in
         </Link>
       </p>

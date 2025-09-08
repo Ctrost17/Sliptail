@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { mutate } from "swr";                 // <— NEW
+import { mutate } from "swr";
 import { useAuth } from "@/components/auth/AuthProvider";
+import PasswordField from "@/components/forms/PasswordField";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -29,8 +30,8 @@ export default function LoginPage() {
 
       // Immediately revalidate Navbar data (server-truth)
       await Promise.allSettled([
-        mutate("/api/auth/me"),               // user session
-        mutate("/api/me/creator-status"),     // creator activation
+        mutate("/api/auth/me"),           // user session
+        mutate("/api/me/creator-status"), // creator activation
       ]);
 
       // Navigate and force a refresh so the header re-renders
@@ -55,7 +56,7 @@ export default function LoginPage() {
       await fetch(`/api/auth/verify/resend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",              // <— include cookies if you use them
+        credentials: "include",
         body: JSON.stringify({ email }),
       });
       setResent(true);
@@ -74,23 +75,33 @@ export default function LoginPage() {
       <h1 className="text-2xl font-bold">Log in</h1>
 
       <form onSubmit={onSubmit} className="space-y-3">
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          type="email"
-          placeholder="Email"
-          className="w-full rounded-xl border px-3 py-2"
-          required
-        />
-        <input
+        <div>
+          <label className="block text-xs font-medium text-neutral-700" htmlFor="email">
+            Email
+          </label>
+          <input
+            id="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            type="email"
+            placeholder="you@example.com"
+            className="mt-1 w-full rounded-xl border px-3 py-2"
+            autoComplete="email"
+            required
+          />
+        </div>
+
+        <PasswordField
+          id="password"
+          label="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          type="password"
-          placeholder="Password"
-          className="w-full rounded-xl border px-3 py-2"
-          required
+          placeholder="••••••••"
+          autoComplete="current-password"
         />
+
         {err && <div className="text-sm text-red-600">{err}</div>}
+
         <button disabled={loading} className="w-full rounded-xl bg-black py-2 text-white">
           {loading ? "Signing in…" : "Sign in"}
         </button>
@@ -100,6 +111,7 @@ export default function LoginPage() {
         onClick={googleAuth}
         className="w-full rounded-xl border py-2 text-sm"
         aria-label="Continue with Google"
+        type="button"
       >
         Continue with Google
       </button>
