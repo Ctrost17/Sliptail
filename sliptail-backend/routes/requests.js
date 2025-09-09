@@ -323,4 +323,82 @@ router.get("/:id/download", requireAuth, async (req, res) => {
   }
 });
 
+/* -------------------------- NEW: create-from-session -------------------------- */
+/**
+ * POST /api/requests/create-from-session
+ * Body (multipart/form-data): { session_id: string, message?: string, attachment?: file('attachment') }
+ * - Finds the PAID order for the current buyer by stripe_checkout_session_id
+ * - Ensures the product is a 'request'
+ * - Upserts a row in custom_requests linked to that order
+ */
+router.post(
+  "/create-from-session",
+  requireAuth,
+  strictLimiter,
+  upload.single("attachment"),
+  async (req, res) => {
+    try {
+      const buyerId = req.user.id;
+      const sessionId = String(req.body.session_id || "").trim();
+      const message = (req.body.message || "").toString();
+      if (!sessionId) return res.status(400).json({ error: "session_id is required" });
+
+      // Find the buyer's PAID order by session id
+      const { rows } = await db.query(
+        `SELECT o.id AS order_id,
+                o.buyer_id,
+                o.product_id,
+                o.status AS order_status,
+                p.user_id AS creator_id,
+                p.product_type
+           FROM orders o
+           JOIN products p ON p.id = o.product_id
+          WHERE o.buyer_id = $1
+            AND o.stripe_checkout_session_id = $2
+          LIMIT 1`,
+        [buyerId, sessionId]
+      );
+
+      const row = rows[0];
+      if (!row) return res.status(404).json({ error: "Order not found for this session" });
+      if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
+      if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
+
+      const attachment_path = req.file ? path.basename(req.file.path) : null;
+
+      // Upsert custom_request for (order_id, buyer_id)
+      const existing = await db.query(
+        `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
+        [row.order_id, buyerId]
+      );
+
+      let request;
+      if (existing.rows.length) {
+        const { rows: upd } = await db.query(
+          `UPDATE custom_requests
+              SET details = COALESCE($3, details),
+                  attachment_path = COALESCE($4, attachment_path)
+            WHERE id = $1
+          RETURNING *`,
+          [existing.rows[0].id, row.order_id, message || null, attachment_path]
+        );
+        request = upd[0];
+      } else {
+        const { rows: ins } = await db.query(
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, status, created_at)
+           VALUES ($1,$2,$3,$4,$5,'pending',NOW())
+           RETURNING *`,
+          [row.order_id, buyerId, row.creator_id, message || null, attachment_path]
+        );
+        request = ins[0];
+      }
+
+      return res.status(201).json({ success: true, request });
+    } catch (e) {
+      console.error("create-from-session error:", e);
+      return res.status(500).json({ error: "Failed to create request" });
+    }
+  }
+);
+
 module.exports = router;

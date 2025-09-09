@@ -1,8 +1,23 @@
-const { z } = require("zod");
+const { z } = require("zod"); 
 
 // Reusable primitives
 const id = z.coerce.number().int().positive();
 const price = z.coerce.number().finite().min(0).max(1_000_000);
+
+// NEW: absolute URL validator that allows Stripe's {CHECKOUT_SESSION_ID} placeholder
+const urlWithCheckoutPlaceholder = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((val) => {
+    try {
+      const test = val.replace("{CHECKOUT_SESSION_ID}", "cs_test_123");
+      const u = new URL(test);
+      return u.protocol === "http:" || u.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }, { message: "Must be an absolute URL (http/https). You may include {CHECKOUT_SESSION_ID}." });
 
 // AUTH
 const authSignup = z.object({
@@ -45,12 +60,25 @@ const productUpdate = z.object({
 });
 
 // ORDERS / CHECKOUT
+// UPDATED: accepts productId alias, optional action/quantity, and success/cancel URLs with placeholder
 const checkoutSession = z.object({
   body: z.object({
-    product_id: id,
+    product_id: id.optional(),
+    productId: id.optional(), // alias from some clients
     mode: z.enum(["payment","subscription"]),
-    success_url: z.string().url().optional(),
-    cancel_url: z.string().url().optional(),
+    action: z.string().min(1).max(30).transform((s) => s.toLowerCase()).optional(),
+    quantity: z.coerce.number().int().min(1).max(100).optional(),
+    success_url: urlWithCheckoutPlaceholder.optional(), // was z.string().url()
+    cancel_url: urlWithCheckoutPlaceholder.optional(),  // was z.string().url()
+  })
+  .transform((b) => ({
+    ...b,
+    // normalize alias -> canonical
+    product_id: b.product_id ?? b.productId,
+  }))
+  .refine((b) => typeof b.product_id === "number" && Number.isFinite(b.product_id), {
+    message: "product_id is required",
+    path: ["product_id"],
   }),
 });
 

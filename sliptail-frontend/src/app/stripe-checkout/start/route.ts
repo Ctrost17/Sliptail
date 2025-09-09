@@ -42,6 +42,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(abs(req, "/"), { status: 302 });
   }
 
+  // NEW: build success/cancel URLs so Stripe returns to our success page
+  const origin = new URL(req.url).origin;
+  const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+    pid
+  )}&action=${encodeURIComponent(action)}`;
+  const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(pid)}&action=${encodeURIComponent(action)}`;
+
   // Build payload once
   const payload = JSON.stringify({
     product_id: pid,                   // expected by your backend
@@ -49,6 +56,9 @@ export async function GET(req: NextRequest) {
     action: action || undefined,       // optional echo
     mode: action === "membership" ? "subscription" : "payment",
     quantity: 1,
+    // NEW: tell backend where Stripe should send the user afterward
+    success_url: successUrl,
+    cancel_url: cancelUrl,
   });
 
   // Forward cookies so cookie-based auth works server-to-server
