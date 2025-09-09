@@ -36,17 +36,27 @@ function getString(obj: unknown, key: string): string | undefined {
 export async function GET(req: NextRequest) {
   const { searchParams, pathname } = new URL(req.url);
   const pid = searchParams.get("pid");
-  const action = (searchParams.get("action") || "").toLowerCase();
+  const actionRaw = (searchParams.get("action") || "").toLowerCase();
+  const action = actionRaw || "purchase"; // treat missing as a purchase
 
   if (!pid) {
     return NextResponse.redirect(abs(req, "/"), { status: 302 });
   }
 
-  // NEW: build success/cancel URLs so Stripe returns to our success page
+  // Build success/cancel URLs:
+  // - Requests go to /checkout/success (so we can collect details)
+  // - Purchases/Memberships go straight to /purchases (optionally with a toast flag)
   const origin = new URL(req.url).origin;
-  const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-    pid
-  )}&action=${encodeURIComponent(action)}`;
+
+  const successUrl =
+    action === "request"
+      ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+          pid
+        )}&action=${encodeURIComponent(action)}`
+      : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+          pid
+        )}&action=${encodeURIComponent(action)}`;
+
   const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(pid)}&action=${encodeURIComponent(action)}`;
 
   // Build payload once
@@ -56,9 +66,8 @@ export async function GET(req: NextRequest) {
     action: action || undefined,       // optional echo
     mode: action === "membership" ? "subscription" : "payment",
     quantity: 1,
-    // NEW: tell backend where Stripe should send the user afterward
-    success_url: successUrl,
-    cancel_url: cancelUrl,
+    success_url: successUrl,           // <— key change
+    cancel_url: cancelUrl,             // <— unchanged behavior
   });
 
   // Forward cookies so cookie-based auth works server-to-server
@@ -102,8 +111,7 @@ export async function GET(req: NextRequest) {
         ? ((await res.json().catch(() => ({}))) as Json)
         : await res.text().catch(() => "");
 
-      const maybeUrl =
-        isRecord(data) ? getString(data, "url") : null;
+      const maybeUrl = isRecord(data) ? getString(data, "url") : null;
 
       const msg =
         (isRecord(data) && (getString(data, "message") || getString(data, "error"))) ||
