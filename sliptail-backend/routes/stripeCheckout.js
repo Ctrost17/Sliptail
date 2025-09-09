@@ -1,4 +1,4 @@
-const express = require("express");
+const express = require("express"); 
 const Stripe = require("stripe");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
@@ -17,6 +17,19 @@ const toCents = (n) => Math.round(Number(n) * 100);
 
 // Success/cancel fallback URLs (frontend can override in body)
 const FRONTEND = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/,"");
+
+// NEW: helper that respects client-provided URLs and only appends the session if absent
+function ensureSuccessUrl(rawUrl, fallbackPath = "/checkout/success") {
+  const base = rawUrl || `${FRONTEND}${fallbackPath}`;
+  if (base.includes("{CHECKOUT_SESSION_ID}")) return base; // client already provided a template
+  const sep = base.includes("?") ? "&" : "?";
+  // We use session_id (your success page already accepts both sid & session_id, or you can map in FE)
+  return `${base}${sep}session_id={CHECKOUT_SESSION_ID}`;
+}
+// NEW: cancel url just uses client URL or a clean fallback
+function ensureCancelUrl(rawUrl, fallbackPath = "/checkout/cancel") {
+  return rawUrl || `${FRONTEND}${fallbackPath}`;
+}
 
 /**
  * POST /api/stripe-checkout/create-session
@@ -47,13 +60,17 @@ router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSess
     return res.status(400).json({ error: "Creator has not completed Stripe onboarding" });
   }
 
- const amountCents = Math.round(Number(p.price) || 0);
-  if (amountCents <= 0) return res.status(400).json({ error: "Invalid price" });
+  // CHANGED: compute cents correctly using your helper
+  const amountCents = toCents(p.price);
+  if (!Number.isFinite(amountCents) || amountCents <= 0) {
+    return res.status(400).json({ error: "Invalid price" });
+  }
 
   const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // e.g., 400 bps of price
 
-  const successUrl = success_url || `${FRONTEND}/checkout/success`;
-  const cancelUrl  = cancel_url  || `${FRONTEND}/checkout/cancel`;
+  // NEW: honor client URLs and append session id only if needed
+  const successUrl = ensureSuccessUrl(success_url);
+  const cancelUrl  = ensureCancelUrl(cancel_url);
 
   // Common metadata we want to see again in webhooks
   const baseMetadata = {
@@ -75,6 +92,7 @@ router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSess
       `INSERT INTO orders (buyer_id, product_id, amount, status, created_at)
        VALUES ($1,$2,$3,'pending',NOW())
        RETURNING id`,
+      // store dollars in DB; keep your existing style
       [buyerId, p.id, (amountCents / 100).toFixed(2)]
     );
     const orderId = ord[0].id;
@@ -95,7 +113,8 @@ router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSess
         metadata: { ...baseMetadata, order_id: String(orderId) }
       },
       metadata: { ...baseMetadata, order_id: String(orderId) },
-      success_url: successUrl + "?session_id={CHECKOUT_SESSION_ID}",
+      // CHANGED: pass success_url exactly as computed (already includes session id if needed)
+      success_url: successUrl,
       cancel_url: cancelUrl
     };
 
@@ -104,7 +123,7 @@ router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSess
 
     session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
 
-    // stash session id on the order (useful for support)
+    // stash session id on the order (useful for support and request form)
     await db.query(
       `UPDATE orders SET stripe_checkout_session_id=$1 WHERE id=$2`,
       [session.id, orderId]
@@ -132,7 +151,8 @@ router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSess
         metadata: baseMetadata
       },
       metadata: baseMetadata,
-      success_url: successUrl + "?session_id={CHECKOUT_SESSION_ID}",
+      // CHANGED: use computed URL (don’t overwrite query)
+      success_url: successUrl,
       cancel_url: cancelUrl
     };
 
