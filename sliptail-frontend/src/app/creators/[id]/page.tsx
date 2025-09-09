@@ -1,7 +1,8 @@
+// src/app/creators/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { useAuth } from "@/components/auth/AuthProvider";
 
@@ -67,7 +68,7 @@ function toApiBase(): string {
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
   let s = src.trim();
-  if (s.startsWith("//")) s = s.slice(1); // "//uploads/..." -> "/uploads/..."
+  if (s.startsWith("//")) s = s.slice(1);
   if (/^https?:\/\//i.test(s)) return s;
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
@@ -159,7 +160,6 @@ function parseProductsResponse(json: unknown): Product[] {
   return out;
 }
 
-/** Parse `/api/creators/:id/card` for categories + gallery */
 function parseCreatorCard(json: unknown): {
   categories: CategoryChip[];
   gallery: string[];
@@ -190,7 +190,6 @@ function parseCreatorCard(json: unknown): {
   return { categories, gallery };
 }
 
-/** Parse reviews from either `/creators/:id/reviews` or `/reviews?creatorId=` */
 function parseReviews(json: unknown): Review[] {
   let arr: unknown[] | undefined;
 
@@ -236,6 +235,7 @@ function parseReviews(json: unknown): Review[] {
 
 export default function CreatorProfilePage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const creatorId = params?.id ?? null;
 
   const apiBase = useMemo(() => toApiBase(), []);
@@ -247,12 +247,10 @@ export default function CreatorProfilePage() {
   const [categories, setCategories] = useState<CategoryChip[]>([]);
   const [gallery, setGallery] = useState<string[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [checkingOutId, setCheckingOutId] = useState<string | null>(null);
-
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [checkingOutId, setCheckingOutId] = useState<string | null>(null);
 
-  // Owner check: current authed user matches creator profile id
   const isOwner =
     !!user &&
     (typeof user.id === "number" ? user.id : Number(user.id)) ===
@@ -337,8 +335,7 @@ export default function CreatorProfilePage() {
         } catch {
           if (!cancelled) setReviews([]);
         }
-      } catch (loadErr) {
-        if (loadErr instanceof DOMException && loadErr.name === "AbortError") return;
+      } catch {
         if (!cancelled) {
           setErr("Failed to load creator");
           setCreator(null);
@@ -359,80 +356,39 @@ export default function CreatorProfilePage() {
   }, [creatorId, apiBase]);
 
   /**
-   * Start Stripe checkout with endpoint fallbacks.
-   * Tries a few common routes so you don't get 404 "Not found" if the
-   * server is mounted under a slightly different path.
+   * Client-side checkout:
+   * - If not signed in: push to login with next=/creators/:id?checkout=:pid
+   * - If signed in: call our server route at /stripe-checkout/start (which forwards cookies and picks the right backend route)
    */
   async function startCheckout(p: Product) {
+    if (!creatorId) return;
+
+    if (!user) {
+      const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
+        p.id
+      )}`;
+      router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+      return;
+    }
+
+    setCheckingOutId(p.id);
     try {
-      setCheckingOutId(p.id);
-
-      // Prepare the core payload (include both camel & snake keys for leniency)
-      const payload = {
-        productId: p.id,
-        product_id: p.id,
-        productType: p.product_type,
-        product_type: p.product_type,
-        mode: p.product_type === "membership" ? "subscription" : "payment",
-        quantity: 1,
-      };
-
-      const candidateRoutes = [
-        // the one we originally used
-        `${apiBase}/api/checkout/session`,
-        // common alternates people use
-        `${apiBase}/api/checkout/create-session`,
-        `${apiBase}/api/checkout/create`,
-        `${apiBase}/api/stripe/checkout/session`,
-        `${apiBase}/api/stripe/checkout/create-session`,
-      ];
-
-      let redirectUrl: string | null = null;
-      let lastErrorMsg = "";
-
-      for (const url of candidateRoutes) {
-        try {
-          const res = await fetch(url, {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-
-          const isJson = (res.headers.get("content-type") || "").includes("application/json");
-          const data = isJson ? ((await res.json().catch(() => ({}))) as unknown) : null;
-          const candidate =
-            isRecord(data) && typeof data.url === "string" ? (data.url as string) : null;
-
-          if (res.ok && candidate) {
-            redirectUrl = candidate;
-            break;
-          }
-
-          // Capture a readable message to show if all candidates fail
-          if (isJson && isRecord(data) && typeof data.error === "string") {
-            lastErrorMsg = data.error;
-          } else {
-            const text = await res.text().catch(() => "");
-            if (text) lastErrorMsg = text;
-          }
-        } catch {
-          // continue to next candidate
-        }
-      }
-
-      if (!redirectUrl) {
-        alert(lastErrorMsg || "Could not start checkout. Please try again.");
-        return;
-      }
-
-      window.location.href = redirectUrl;
-    } catch {
-      alert("Could not start checkout. Please try again.");
+      window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(
+        p.id
+      )}&action=${encodeURIComponent(p.product_type)}`;
     } finally {
       setCheckingOutId(null);
     }
   }
+
+  // Auto-start after login if ?checkout=PID
+  useEffect(() => {
+    const pid = searchParams.get("checkout");
+    if (!pid || !user || products.length === 0) return;
+    const p = products.find((x) => x.id === pid);
+    if (p) void startCheckout(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, user, products]);
 
   if (!creatorId) {
     return (
@@ -508,7 +464,7 @@ export default function CreatorProfilePage() {
             </section>
           ) : null}
 
-          {/* Products (price + CTA pinned bottom) */}
+          {/* Products */}
           <section>
             <h2 className="mb-3 text-lg font-semibold text-center">Products</h2>
             {products.length === 0 ? (
@@ -536,22 +492,25 @@ export default function CreatorProfilePage() {
                         <p className="mt-1 text-sm text-neutral-700">{p.description}</p>
                       ) : null}
 
-                      {/* Bottom-anchored section */}
                       <div className="mt-auto">
                         <div className="mt-2 font-semibold">{priceLabel}</div>
-                        <button
-                          className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg-black/90 disabled:opacity-60"
-                          onClick={() => {
-                            if (isOwner) {
-                              router.push("/dashboard");
-                            } else {
-                              void startCheckout(p);
-                            }
-                          }}
-                          disabled={!isOwner && checkingOutId === p.id}
-                        >
-                          {isOwner ? ownerCTA : checkingOutId === p.id ? "Redirecting…" : cta}
-                        </button>
+
+                        {isOwner ? (
+                          <button
+                            className="mt-3 w-full rounded-xl border py-2"
+                            onClick={() => router.push("/dashboard")}
+                          >
+                            {ownerCTA}
+                          </button>
+                        ) : (
+                          <button
+                            className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg黑/90 disabled:opacity-60"
+                            onClick={() => void startCheckout(p)}
+                            disabled={checkingOutId === p.id}
+                          >
+                            {checkingOutId === p.id ? "Redirecting…" : cta}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -560,7 +519,7 @@ export default function CreatorProfilePage() {
             )}
           </section>
 
-          {/* Side-by-side photos (no title text) */}
+          {/* Photos */}
           {galleryUrls.length > 0 ? (
             <section aria-label="Creator photos">
               <div className="mx-auto max-w-5xl overflow-hidden rounded-2xl">
@@ -610,3 +569,4 @@ export default function CreatorProfilePage() {
     </main>
   );
 }
+
