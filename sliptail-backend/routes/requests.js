@@ -142,6 +142,77 @@ router.post(
 );
 
 /**
+ * (Alt) POST /api/requests
+ * Body (multipart/form-data): { orderId, details?, attachment? }
+ * Used by older frontend that already has an order (paid or pending for request type).
+ * If the order/product is not a request product, rejects.
+ */
+router.post(
+  "/",
+  requireAuth,
+  strictLimiter,
+  upload.single("attachment"),
+  async (req, res) => {
+    const buyerId = req.user.id;
+    const orderId = parseInt(String(req.body.orderId || req.body.order_id || "").trim(), 10);
+    const details = (req.body.details || req.body.message || "").toString();
+    if (!orderId) return res.status(400).json({ ok: false, error: "orderId required" });
+
+    try {
+      const { rows } = await db.query(
+        `SELECT o.id AS order_id, o.buyer_id, o.product_id, o.status,
+                p.product_type, p.user_id AS creator_id
+           FROM orders o
+           JOIN products p ON p.id = o.product_id
+          WHERE o.id=$1 AND o.buyer_id=$2
+          LIMIT 1`,
+        [orderId, buyerId]
+      );
+      const row = rows[0];
+      if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
+      if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
+
+      const attachment_path = req.file ? path.basename(req.file.path) : null;
+
+      const { rows: existing } = await db.query(
+        `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
+        [orderId, buyerId]
+      );
+
+      let requestId;
+      if (existing.length) {
+        const { rows: upd } = await db.query(
+          `UPDATE custom_requests
+              SET details = COALESCE($3, details),
+                  attachment_path = COALESCE($4, attachment_path)
+            WHERE id=$1
+          RETURNING id` ,
+          [existing[0].id, orderId, details || null, attachment_path]
+        );
+        requestId = upd[0].id;
+      } else {
+        const { rows: ins } = await db.query(
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, status, created_at)
+           VALUES ($1,$2,$3,$4,$5,'pending',NOW())
+           RETURNING id`,
+          [orderId, buyerId, row.creator_id, details || null, attachment_path]
+        );
+        requestId = ins[0].id;
+      }
+
+      // Only notify creator if this is a new request (no existing)
+      if (!existing.length) {
+        notifyCreatorNewRequest({ requestId }).catch(console.error);
+      }
+      return res.status(201).json({ ok: true, requestId });
+    } catch (e) {
+      console.error("legacy POST /requests error:", e);
+      return res.status(500).json({ ok: false, error: "Failed" });
+    }
+  }
+);
+
+/**
  * CREATOR inbox: list requests for me (optionally filter by status)
  * Query: ?status=pending|accepted|declined|delivered
  */

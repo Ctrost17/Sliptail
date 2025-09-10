@@ -37,10 +37,9 @@ export default function NewRequestPage() {
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
+  // If a toast was passed via query (legacy), show it once via console placeholder
   useEffect(() => {
-    if (initialToast && initialToast.trim().length > 0) {
-      success(initialToast);
-    }
+    if (initialToast && initialToast.trim()) success(initialToast);
   }, [initialToast, success]);
 
   if (!orderId) {
@@ -85,8 +84,14 @@ export default function NewRequestPage() {
         throw new Error(message);
       }
 
-      success("Your request was submitted!");
-      router.replace("/purchases");
+      const toastMsg = initialToast && initialToast.includes("Thanks for Supporting")
+        ? initialToast
+        : "Thanks for Supporting Your Creator";
+      try {
+        const { setFlash } = await import("@/lib/flash");
+        setFlash({ kind: "success", title: toastMsg, ts: Date.now() });
+      } catch {}
+      router.replace(`/purchases`);
     } catch (e) {
       const message =
         e instanceof Error ? e.message : "Could not submit your request.";
@@ -102,7 +107,11 @@ export default function NewRequestPage() {
   }
 
   function doLater() {
-    router.replace("/purchases");
+    const toastMsg = initialToast && initialToast.includes("Thanks for Supporting")
+      ? initialToast
+      : "Thanks for Supporting Your Creator";
+    import("@/lib/flash").then(m => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() })).catch(()=>{});
+    router.replace(`/purchases`);
   }
 
   return (

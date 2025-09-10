@@ -43,9 +43,7 @@ export default function CheckoutSuccessPage() {
 
       try {
         const res = await fetch(
-          `${API_BASE}/api/checkout/finalize?session_id=${encodeURIComponent(
-            sessionId
-          )}`,
+          `${API_BASE}/api/stripe-checkout/finalize?session_id=${encodeURIComponent(sessionId)}`,
           { credentials: "include" }
         );
         const payload: FinalizeResponse = await res.json();
@@ -61,25 +59,26 @@ export default function CheckoutSuccessPage() {
             ? `Thanks for Supporting ${payload.creatorDisplayName}`
             : `Purchase Successful, Thanks for Supporting ${payload.creatorDisplayName}`;
 
+        // Use flash-based toast so green check appears globally after redirect
+        try {
+          const { setFlash } = await import("@/lib/flash");
+          setFlash({ kind: "success", title: msg, ts: Date.now() });
+        } catch {}
+
         if (payload.type === "request") {
-          router.replace(
-            `/requests/new?orderId=${payload.orderId}&toast=${encodeURIComponent(
-              msg
-            )}`
-          );
+          router.replace(`/requests/new?orderId=${payload.orderId}`);
         } else {
-          router.replace(`/purchases?toast=${encodeURIComponent(msg)}`);
+          router.replace(`/purchases`);
         }
       } catch (e: unknown) {
-      console.error("Finalize error:", e);
-      error("Could not finalize your order.");
-     router.replace("/purchases");
+        console.error("Finalize error:", e);
+        error("Could not finalize your order.");
+        router.replace("/purchases");
       }
     }
 
     finalize();
   }, [sessionId, router, error, success]);
-
   return (
     <div className="mx-auto max-w-xl p-8 text-center">
       <h1 className="text-2xl font-semibold">Finishing up…</h1>

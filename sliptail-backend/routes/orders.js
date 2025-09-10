@@ -71,6 +71,32 @@ router.post("/create", requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/orders
+ * (Alias of /mine kept for backwards compatibility with earlier frontend.)
+ * Returns simplified list with consistent amount_cents field.
+ */
+router.get("/", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const { rows } = await db.query(
+      `SELECT o.id,
+              COALESCE(o.amount_cents, (o.amount*100)::bigint, 0) AS amount_cents,
+              o.status,
+              o.created_at,
+              o.product_id
+         FROM orders o
+        WHERE o.buyer_id = $1
+        ORDER BY o.created_at DESC`,
+      [userId]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("Orders root list error:", e);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+/**
  * POST /api/orders/:id/mark-paid
  * - TEMP helper to simulate payment success until Stripe is wired.
  * - Only the buyer who owns the order can mark it paid (for testing).

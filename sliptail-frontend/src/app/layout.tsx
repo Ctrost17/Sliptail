@@ -3,6 +3,7 @@ import "@/app/globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import Toast from "@/components/Toast";
 
 export const metadata: Metadata = {
   title: "Sliptail",
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           <Navbar />
           <main className="flex-1">{children}</main>
+          <Toast />
           <Footer />
         </AuthProvider>
       </body>
