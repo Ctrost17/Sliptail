@@ -1,4 +1,3 @@
-// routes/stripeWebhook.js
 const Stripe = require("stripe");
 const db = require("../db");
 const { notifyPurchase } = require("../utils/notify");
@@ -182,6 +181,66 @@ async function upsertStripeState(userId, account) {
   return { account_id: accountId, details_submitted, charges_enabled, payouts_enabled };
 }
 
+/**
+ * Ensure an orders row exists and is PAID for a checkout session (mode=payment).
+ * Returns the orderId (existing or newly inserted).
+ */
+async function upsertPaidOrderFromSession(session) {
+  const meta = session.metadata || {};
+  const sessionId = session.id;
+  const paymentIntentId = session.payment_intent || null;
+  const amountCents = Number.isFinite(session.amount_total) ? Number(session.amount_total) : 0;
+
+  // Prefer metadata if present (these are set in stripeCheckout.js)
+  const orderIdFromMeta = meta.order_id ? parseInt(meta.order_id, 10) : null;
+  const buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
+  const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
+
+  // 1) Try to mark an existing pending order as paid and set the session id
+  if (orderIdFromMeta) {
+    const { rowCount } = await db.query(
+      `UPDATE public.orders
+          SET status='paid',
+              stripe_payment_intent_id=$1,
+              stripe_checkout_session_id=COALESCE(stripe_checkout_session_id, $2)
+        WHERE id=$3 AND status IN ('pending','created')
+      `,
+      [paymentIntentId, sessionId, orderIdFromMeta]
+    );
+    if (rowCount > 0) {
+      return orderIdFromMeta;
+    }
+  }
+
+  // 2) If no existing row, insert a new PAID order (idempotent-ish by session id)
+  // Try to find by session id first (if we processed earlier)
+  const { rows: existing } = await db.query(
+    `SELECT id FROM public.orders WHERE stripe_checkout_session_id = $1 LIMIT 1`,
+    [sessionId]
+  );
+  if (existing.length) {
+    return existing[0].id;
+  }
+
+  // Insert only if we have the minimal data
+  const insertableBuyer = Number.isFinite(buyerId) ? buyerId : null;
+  const insertableProduct = Number.isFinite(productId) ? productId : null;
+  const insertableAmount = Number.isFinite(amountCents) ? amountCents : 0;
+
+  const { rows: inserted } = await db.query(
+    `
+    INSERT INTO public.orders
+      (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
+    VALUES
+      ($1, $2, $3, $4, 'paid', NOW(), $5)
+    RETURNING id
+    `,
+    [insertableBuyer, insertableProduct, insertableAmount, paymentIntentId, sessionId]
+  );
+
+  return inserted[0].id;
+}
+
 /* ----------------------------- handler ----------------------------- */
 /**
  * Export a single handler function.
@@ -268,18 +327,11 @@ module.exports = async function stripeWebhook(req, res) {
 
         if (session.mode === "payment") {
           // one-time purchase/request
-          const orderId = session.metadata?.order_id && parseInt(session.metadata.order_id, 10);
-          const paymentIntentId = session.payment_intent;
-
-          if (orderId) {
-            await db.query(
-              `UPDATE orders
-                  SET status='paid',
-                      stripe_payment_intent_id=$1
-                WHERE id=$2 AND status='pending'`,
-              [paymentIntentId, orderId]
-            );
+          const orderId = await upsertPaidOrderFromSession(session);
+          try {
             await notifyPurchase({ orderId });
+          } catch (e) {
+            console.warn("notifyPurchase failed (non-fatal):", e);
           }
         }
 
@@ -301,15 +353,22 @@ module.exports = async function stripeWebhook(req, res) {
       case "payment_intent.succeeded": {
         const pi = event.data.object;
         const orderId = pi.metadata?.order_id && parseInt(pi.metadata.order_id, 10);
+        const sessionId = pi.metadata?.stripe_checkout_session_id || null; // may or may not exist
+
         if (orderId) {
           await db.query(
             `UPDATE orders
                 SET status='paid',
-                    stripe_payment_intent_id=$1
-              WHERE id=$2 AND status <> 'paid'`,
-            [pi.id, orderId]
+                    stripe_payment_intent_id=$1,
+                    stripe_checkout_session_id = COALESCE(stripe_checkout_session_id, $2)
+              WHERE id=$3 AND status <> 'paid'`,
+            [pi.id, sessionId, orderId]
           );
-          await notifyPurchase({ orderId });
+          try {
+            await notifyPurchase({ orderId });
+          } catch (e) {
+            console.warn("notifyPurchase failed (non-fatal):", e);
+          }
         }
         break;
       }

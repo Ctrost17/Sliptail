@@ -1,4 +1,5 @@
-const express = require("express"); 
+// routes/stripeCheckout.js
+const express = require("express");
 const Stripe = require("stripe");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
@@ -12,21 +13,18 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 // 4% fee in basis points (default 400 bps)
 const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "400", 10);
 
-// util: dollars -> cents (int)
-const toCents = (n) => Math.round(Number(n) * 100);
+// NOTE: products.price is integer **cents** in your DB. Do NOT multiply by 100 again.
 
 // Success/cancel fallback URLs (frontend can override in body)
-const FRONTEND = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/,"");
+const FRONTEND = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
 
-// NEW: helper that respects client-provided URLs and only appends the session if absent
+// Helper that respects client-provided URLs and only appends the session if absent
 function ensureSuccessUrl(rawUrl, fallbackPath = "/checkout/success") {
   const base = rawUrl || `${FRONTEND}${fallbackPath}`;
   if (base.includes("{CHECKOUT_SESSION_ID}")) return base; // client already provided a template
   const sep = base.includes("?") ? "&" : "?";
-  // We use session_id (your success page already accepts both sid & session_id, or you can map in FE)
   return `${base}${sep}session_id={CHECKOUT_SESSION_ID}`;
 }
-// NEW: cancel url just uses client URL or a clean fallback
 function ensureCancelUrl(rawUrl, fallbackPath = "/checkout/cancel") {
   return rawUrl || `${FRONTEND}${fallbackPath}`;
 }
@@ -35,139 +33,175 @@ function ensureCancelUrl(rawUrl, fallbackPath = "/checkout/cancel") {
  * POST /api/stripe-checkout/create-session
  * body: { product_id: number, mode: "payment"|"subscription", success_url?, cancel_url? }
  */
-router.post("/create-session", requireAuth, strictLimiter, validate(checkoutSession), async (req, res) => {
-  const buyerId = req.user.id;
-  const {
-    product_id,
-    mode,                   // "payment" for purchase/request, "subscription" for membership
-    success_url,            // optional overrides
-    cancel_url
-  } = req.body || {};
+router.post(
+  "/create-session",
+  requireAuth,
+  strictLimiter,
+  validate(checkoutSession),
+  async (req, res) => {
+    const buyerId = req.user.id;
+    const {
+      product_id,
+      mode, // "payment" for purchase/request, "subscription" for membership
+      success_url,
+      cancel_url,
+    } = req.body || {};
 
-  // 1) load product and creator’s connect account
-  const { rows } = await db.query(
-    `SELECT p.id, p.title, p.product_type, p.price, p.user_id AS creator_id,
-            u.stripe_account_id
-       FROM products p
-       JOIN users u ON u.id = p.user_id
-      WHERE p.id=$1`,
-    [product_id]
-  );
-  const p = rows[0];
-  if (!p) return res.status(404).json({ error: "Product not found" });
-
-  if (!p.stripe_account_id) {
-    return res.status(400).json({ error: "Creator has not completed Stripe onboarding" });
-  }
-
-  // CHANGED: compute cents correctly using your helper
-  const amountCents = toCents(p.price);
-  if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return res.status(400).json({ error: "Invalid price" });
-  }
-
-  const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // e.g., 400 bps of price
-
-  // NEW: honor client URLs and append session id only if needed
-  const successUrl = ensureSuccessUrl(success_url);
-  const cancelUrl  = ensureCancelUrl(cancel_url);
-
-  // Common metadata we want to see again in webhooks
-  const baseMetadata = {
-    product_id: String(p.id),
-    product_type: p.product_type,
-    creator_id: String(p.creator_id),
-    buyer_id: String(buyerId)
-  };
-
-  // Optional client-provided idempotency key
-  const clientKey = req.get("x-idempotency-key");
-
-  let session;
-
-  if (mode === "payment") {
-    // For purchase or request (one-time)
-    // Create a pending order we will mark 'paid' in the webhook.
-    const { rows: ord } = await db.query(
-      `INSERT INTO orders (buyer_id, product_id, amount, status, created_at)
-       VALUES ($1,$2,$3,'pending',NOW())
-       RETURNING id`,
-      // store dollars in DB; keep your existing style
-      [buyerId, p.id, (amountCents / 100).toFixed(2)]
+    // 1) Load product and creator’s connect account
+    const { rows } = await db.query(
+      `
+      SELECT
+        p.id,
+        p.title,
+        p.product_type,       -- e.g. 'download' | 'request' | 'membership' (adapt to your enum)
+        p.price,              -- integer cents
+        p.user_id AS creator_id,
+        u.stripe_account_id
+      FROM products p
+      JOIN users u ON u.id = p.user_id
+      WHERE p.id = $1
+      `,
+      [product_id]
     );
-    const orderId = ord[0].id;
+    const p = rows[0];
+    if (!p) return res.status(404).json({ error: "Product not found" });
 
-    const payload = {
-      mode: "payment",
-      line_items: [{
-        price_data: {
-          currency: "usd",
-          product_data: { name: p.title || p.product_type },
-          unit_amount: amountCents
-        },
-        quantity: 1
-      }],
-      payment_intent_data: {
-        application_fee_amount: feeAmount,
-        transfer_data: { destination: p.stripe_account_id },
-        metadata: { ...baseMetadata, order_id: String(orderId) }
-      },
-      metadata: { ...baseMetadata, order_id: String(orderId) },
-      // CHANGED: pass success_url exactly as computed (already includes session id if needed)
-      success_url: successUrl,
-      cancel_url: cancelUrl
+    if (!p.stripe_account_id) {
+      return res.status(400).json({ error: "Creator has not completed Stripe onboarding" });
+    }
+
+    // Compute cents from DB value (already cents)
+    const amountCents = Number(p.price);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) {
+      return res.status(400).json({ error: "Invalid price" });
+    }
+
+    const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // bps of price
+
+    // Respect client URLs and append session id only if needed
+    const successUrl = ensureSuccessUrl(success_url);
+    const cancelUrl = ensureCancelUrl(cancel_url);
+
+    // Derive an action label used by webhook/finalizer routing
+    // - payment + product_type 'request' -> 'request'
+    // - payment otherwise -> 'purchase'
+    // - subscription -> 'membership'
+    const productType = String(p.product_type || "").toLowerCase();
+    const action =
+      mode === "subscription"
+        ? "membership"
+        : productType === "request"
+        ? "request"
+        : "purchase";
+
+    // Defensive: prevent obvious mode/type mismatch
+    if (mode === "subscription" && productType === "download") {
+      return res.status(400).json({ error: "This product is not a subscription" });
+    }
+
+    // Common metadata we want to see again in webhooks/finalizer
+    const baseMetadata = {
+      action,                         // "purchase" | "request" | "membership"
+      product_id: String(p.id),
+      product_type: String(p.product_type || ""),
+      creator_id: String(p.creator_id),
+      buyer_id: String(buyerId),
     };
 
-    // Use client key if provided, else a stable order-based key
-    const idempotencyKey = clientKey || `co_${orderId}`;
+    // Optional client-provided idempotency key
+    const clientKey = req.get("x-idempotency-key");
 
-    session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
+    let session;
 
-    // stash session id on the order (useful for support and request form)
-    await db.query(
-      `UPDATE orders SET stripe_checkout_session_id=$1 WHERE id=$2`,
-      [session.id, orderId]
-    );
+    if (mode === "payment") {
+      // ────────────────────────────────────────────────────────────────────────────
+      // ONE-TIME: Create a PENDING order now; mark it PAID in webhook/finalizer
+      // ────────────────────────────────────────────────────────────────────────────
 
-  } else if (mode === "subscription") {
-    // Membership (recurring). We'll charge monthly by default.
-    // For Connect subscriptions, use application_fee_percent and destination.
-    const feePercent = PLATFORM_FEE_BPS / 100.0; // 400 -> 4.0%
+      // DB matches your schema: amount_cents integer NOT NULL
+      const { rows: ord } = await db.query(
+        `
+        INSERT INTO public.orders
+          (buyer_id, product_id, amount_cents, status, created_at)
+        VALUES
+          ($1, $2, $3, 'pending', NOW())
+        RETURNING id
+        `,
+        [buyerId, p.id, amountCents]
+      );
+      const orderId = ord[0].id;
 
-    const payload = {
-      mode: "subscription",
-      line_items: [{
-        price_data: {
-          currency: "usd",
-          product_data: { name: p.title || "Membership" },
-          recurring: { interval: "month" },
-          unit_amount: amountCents
+      const payload = {
+        mode: "payment",
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: p.title || p.product_type || "Item" },
+              unit_amount: amountCents, // cents
+            },
+            quantity: 1,
+          },
+        ],
+        payment_intent_data: {
+          application_fee_amount: feeAmount,
+          transfer_data: { destination: p.stripe_account_id },
+          metadata: { ...baseMetadata, order_id: String(orderId) },
         },
-        quantity: 1
-      }],
-      subscription_data: {
-        application_fee_percent: feePercent,
-        transfer_data: { destination: p.stripe_account_id },
-        metadata: baseMetadata
-      },
-      metadata: baseMetadata,
-      // CHANGED: use computed URL (don’t overwrite query)
-      success_url: successUrl,
-      cancel_url: cancelUrl
-    };
+        metadata: { ...baseMetadata, order_id: String(orderId) },
+        success_url: successUrl, // -> /checkout/success?...session_id={CHECKOUT_SESSION_ID}
+        cancel_url: cancelUrl,
+      };
 
-    // For subs we don’t have an order row yet, so build a stable key per buyer+product.
-    // If you want multiple concurrent subs to the same product, pass a unique X-Idempotency-Key from the client.
-    const idempotencyKey = clientKey || `sub_${buyerId}_${p.id}`;
+      // Use client key if provided; else a stable order-based key
+      const idempotencyKey = clientKey || `co_${orderId}`;
 
-    session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
+      session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
 
-    // We do NOT create a DB row here; the webhook will upsert memberships.
-  } else {
-    return res.status(400).json({ error: "mode must be 'payment' or 'subscription'" });
+      // Stash session id on the order (useful for support and request form)
+      await db.query(
+        `UPDATE public.orders SET stripe_checkout_session_id = $1 WHERE id = $2`,
+        [session.id, orderId]
+      );
+    } else if (mode === "subscription") {
+      // ────────────────────────────────────────────────────────────────────────────
+      // SUBSCRIPTION: No orders row now; webhook/finalizer will upsert membership
+      // ────────────────────────────────────────────────────────────────────────────
+
+      const feePercent = PLATFORM_FEE_BPS / 100.0; // 400 -> 4.0%
+
+      const payload = {
+        mode: "subscription",
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: p.title || "Membership" },
+              recurring: { interval: "month" },
+              unit_amount: amountCents, // cents
+            },
+            quantity: 1,
+          },
+        ],
+        subscription_data: {
+          application_fee_percent: feePercent,
+          transfer_data: { destination: p.stripe_account_id },
+          metadata: baseMetadata,
+        },
+        metadata: baseMetadata,
+        success_url: successUrl, // -> /checkout/success?...session_id={CHECKOUT_SESSION_ID}
+        cancel_url: cancelUrl,
+      };
+
+      // If you want multiple concurrent subs to same product, provide unique X-Idempotency-Key from client
+      const idempotencyKey = clientKey || `sub_${buyerId}_${p.id}`;
+      session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
+    } else {
+      return res.status(400).json({ error: "mode must be 'payment' or 'subscription'" });
+    }
+
+    return res.json({ url: session.url, id: session.id });
   }
-
-  return res.json({ url: session.url, id: session.id });
-});
+);
 
 module.exports = router;
