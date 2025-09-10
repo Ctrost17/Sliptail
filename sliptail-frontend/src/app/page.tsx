@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import CreatorCard from "@/components/CreatorCard";
 import StartSellingButton from "@/components/StartSellingButton";
+import { useAuth } from "@/components/auth/AuthProvider"; // <-- added
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -96,6 +97,44 @@ export default function Home() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const { user, loading: authLoading } = useAuth(); // <-- read auth
+
+  // Helper: render the Start Selling CTA with routing override for signed-in users
+  const StartSellingCTA = ({ children }: { children: React.ReactNode }) => {
+    // While auth is hydrating, render the original component (keeps your UX smooth)
+    if (authLoading) {
+      return (
+        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
+          {children}
+        </StartSellingButton>
+      );
+    }
+
+    // If signed out, keep your existing StartSellingButton behavior
+    if (!user) {
+      return (
+        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
+          {children}
+        </StartSellingButton>
+      );
+    }
+
+    // Signed-in: route based on role
+    const isCreatorLike =
+      user.role === "creator" || user.role === "admin" 
+
+    const href = isCreatorLike ? "/dashboard" : "/creator/setup";
+
+    return (
+      <Link
+        href={href}
+        className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105"
+      >
+        {children}
+      </Link>
+    );
+  };
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -131,16 +170,16 @@ export default function Home() {
           <div className="mx-auto mb-6 w-40 animate-fade-in-up">
             <Image src="/sliptail-logo.png" alt="Sliptail" width={160} height={50} />
           </div>
-          <h1 className="mb-4 text-5xl font-bold animate-fade-in-up [animation-delay:200ms]">
+        <h1 className="mb-4 text-5xl font-bold animate-fade-in-up [animation-delay:200ms]">
             Support and Create
           </h1>
           <p className="mx-auto mb-8 max-w-2xl text-lg animate-fade-in-up [animation-delay:400ms]">
             Sliptail helps creators provide memberships, digital downloads, and custom requests — all in one place.
           </p>
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
-            <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
-              For Creators: Start Selling
-            </StartSellingButton>
+            {/* Only the routing behavior of this button changes based on auth/role */}
+            <StartSellingCTA>For Creators: Start Selling</StartSellingCTA>
+
             <Link
               href="/creators"
               className="rounded-md border border-white px-8 py-3 font-semibold text-white transition hover:scale-105 hover:bg-white/20"
@@ -229,10 +268,9 @@ export default function Home() {
           safe, and fun.
         </p>
         {/* Bottom button shares the same smart routing */}
-        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
-          Get Started
-        </StartSellingButton>
+        <StartSellingCTA>Get Started</StartSellingCTA>
       </section>
     </div>
   );
 }
+

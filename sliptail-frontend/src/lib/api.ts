@@ -1,4 +1,3 @@
-// src/lib/api.ts
 import axios from "axios";
 
 export const API_BASE =
@@ -16,6 +15,7 @@ export async function fetchApi<T>(
     headers?: Record<string, string>;
     cache?: RequestCache;
     next?: { revalidate?: number | false };
+    signal?: AbortSignal;
   } = {}
 ): Promise<T> {
   const url =
@@ -25,34 +25,67 @@ export async function fetchApi<T>(
 
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
-  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
-  if (!isForm) headers.set("Content-Type", "application/json");
+
+  // Only set JSON content-type if we're not sending FormData
+  const isForm =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!isForm && options.body !== undefined) {
+    headers.set("Content-Type", "application/json");
+  }
   if (options.token) headers.set("Authorization", `Bearer ${options.token}`);
 
   const res = await fetch(url, {
     method: options.method || "GET",
-    credentials: "include",
+    credentials: "include", // send cookies for auth
     headers,
-    body: isForm ? (options.body as BodyInit) : options.body ? JSON.stringify(options.body) : undefined,
+    body: isForm
+      ? (options.body as BodyInit)
+      : options.body !== undefined
+      ? JSON.stringify(options.body)
+      : undefined,
     cache: options.cache,
     next: options.next,
+    signal: options.signal,
   });
 
   if (!res.ok) {
+    // Try to extract a meaningful error message
     let msg = `${res.status} ${res.statusText}`;
     try {
-      const j = await res.json();
-      if (j?.error) msg = j.error;
-      if (typeof j === "string") msg = j;
-    } catch {}
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const j = await res.json();
+        if (j?.error && typeof j.error === "string") msg = j.error;
+        else if (typeof j === "string") msg = j;
+      } else {
+        const t = await res.text();
+        if (t) msg = t;
+      }
+    } catch {
+      // ignore parse errors; fall back to default msg
+    }
+    if (res.status === 401) msg = "Unauthorized (no token)";
     throw new Error(msg);
   }
-  return (await res.json()) as T;
+
+  // Some endpoints may return 204 No Content
+  if (res.status === 204) return undefined as unknown as T;
+
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    return (await res.json()) as T;
+  }
+  // Fallback: text
+  return (await res.text()) as unknown as T;
 }
 
 // ---------- Axios client (for Client Components) ----------
 export const api = axios.create({
   baseURL: `${API_BASE}/api`,
+  withCredentials: true, // send cookies with requests
+  headers: {
+    Accept: "application/json",
+  },
 });
 
 // Optional: call this after login/logout to keep auth header in sync
