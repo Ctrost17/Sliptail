@@ -93,6 +93,16 @@ const uploadCreatorMedia = multer({
   },
 });
 
+// Lightweight single-file uploader (reuse same storage & filter)
+const uploadSingleImage = multer({
+  storage: creatorStorage,
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!imageMimes.has(file.mimetype)) return cb(new Error("Only image files are allowed"));
+    cb(null, true);
+  },
+});
+
 /* --------------------------------- routes -------------------------------- */
 
 /**
@@ -345,6 +355,151 @@ router.post(
       try { await db.query("ROLLBACK"); } catch {}
       console.error("creator profile save error:", e);
       return res.status(500).json({ error: "Failed to save profile" });
+    }
+  }
+);
+
+/**
+ * GET my (raw) creator profile (no eligibility gating) + gallery
+ */
+router.get("/me", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const { rows: prof } = await db.query(
+      `SELECT user_id, display_name, bio, profile_image, featured, is_profile_complete, is_active
+         FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
+      [userId]
+    );
+    const profile = prof[0] || null;
+
+    const { rows: photos } = await db.query(
+      `SELECT url, position FROM creator_profile_photos WHERE user_id=$1 ORDER BY position ASC`,
+      [userId]
+    );
+    const gallery = photos.map((p) => p.url).slice(0, 4);
+
+    return res.json({
+      user_id: userId,
+      display_name: profile?.display_name || null,
+      bio: profile?.bio || null,
+      profile_image: profile?.profile_image || null,
+      featured: profile?.featured || false,
+      is_profile_complete: profile?.is_profile_complete || false,
+      is_active: profile?.is_active || false,
+      gallery,
+    });
+  } catch (e) {
+    console.error("get my creator profile error:", e);
+    return res.status(500).json({ error: "Failed to load profile" });
+  }
+});
+
+/**
+ * PATCH: Update ONLY my profile image (single file)
+ */
+router.patch(
+  "/me/profile-image",
+  requireAuth,
+  uploadSingleImage.single("profile_image"),
+  async (req, res) => {
+    const userId = req.user.id;
+    try {
+      if (!req.file) return res.status(400).json({ error: "profile_image file is required" });
+      const url = toPublicUrl(req.file.path);
+      if (!url) return res.status(500).json({ error: "Failed to store image" });
+      // Try UPDATE first (schema-aware update of updated_at if column exists)
+      const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at").catch(() => false);
+      const updateSets = ["profile_image=$2"]; // base set
+      if (hasUpdatedAt) updateSets.push("updated_at=NOW()");
+      const updateSql = `UPDATE creator_profiles SET ${updateSets.join(",")} WHERE user_id=$1`;
+      const upd = await db.query(updateSql, [userId, url]);
+
+      if (upd.rowCount === 0) {
+        // Need to INSERT minimal row (schema-aware for optional columns)
+        const cols = ["user_id", "profile_image"]; // mandatory
+        const vals = ["$1", "$2"]; // placeholders
+        const params = [userId, url];
+        const optionalCols = [
+          { name: "featured", value: "FALSE" },
+          { name: "is_profile_complete", value: "FALSE" },
+          { name: "created_at", value: "NOW()" },
+          { name: "updated_at", value: "NOW()" },
+        ];
+        for (const oc of optionalCols) {
+          // eslint-disable-next-line no-await-in-loop
+          const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
+            if (exists) {
+              cols.push(oc.name);
+              vals.push(oc.value);
+            }
+        }
+        const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
+        await db.query(insertSql, params);
+      }
+      return res.json({ profile_image: url });
+    } catch (e) {
+      console.error("update profile image error:", e);
+      return res.status(500).json({ error: "Failed to update profile image" });
+    }
+  }
+);
+
+/**
+ * PATCH: Replace ONE gallery photo by position (1-4)
+ * Field name: photo
+ */
+router.patch(
+  "/me/gallery/:position",
+  requireAuth,
+  uploadSingleImage.single("photo"),
+  async (req, res) => {
+    const userId = req.user.id;
+    const pos = parseInt(req.params.position, 10);
+    if (Number.isNaN(pos) || pos < 1 || pos > 4) {
+      return res.status(400).json({ error: "position must be 1-4" });
+    }
+    try {
+      if (!req.file) return res.status(400).json({ error: "photo file is required" });
+      const url = toPublicUrl(req.file.path);
+      if (!url) return res.status(500).json({ error: "Failed to store image" });
+      // Ensure profile row exists (schema-aware minimal insert)
+      const { rows: existing } = await db.query(
+        `SELECT 1 FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
+        [userId]
+      );
+      if (!existing.length) {
+        const cols = ["user_id"]; const vals = ["$1"]; const params = [userId];
+        const optionalCols = [
+          { name: "is_active", value: "FALSE" },
+          { name: "featured", value: "FALSE" },
+          { name: "is_profile_complete", value: "FALSE" },
+          { name: "created_at", value: "NOW()" },
+          { name: "updated_at", value: "NOW()" },
+        ];
+        for (const oc of optionalCols) {
+          // eslint-disable-next-line no-await-in-loop
+          const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
+          if (exists) { cols.push(oc.name); vals.push(oc.value); }
+        }
+        const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
+        await db.query(insertSql, params);
+      }
+
+      await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1 AND position=$2`, [userId, pos]);
+      await db.query(
+        `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ($1,$2,$3)`,
+        [userId, url, pos]
+      );
+
+      const { rows: photos } = await db.query(
+        `SELECT url, position FROM creator_profile_photos WHERE user_id=$1 ORDER BY position`,
+        [userId]
+      );
+      const gallery = photos.map((p) => p.url).slice(0, 4);
+      return res.json({ position: pos, url, gallery });
+    } catch (e) {
+      console.error("update gallery photo error:", e);
+      return res.status(500).json({ error: "Failed to update gallery photo" });
     }
   }
 );

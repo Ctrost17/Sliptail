@@ -23,6 +23,7 @@ type CreatorProfile = {
   average_rating: number;
   products_count: number;
 };
+type GalleryPhoto = { position: number; url: string | null };
 
 type CategoryItem = { id: string; name: string };
 
@@ -113,11 +114,34 @@ function buildAuthHeaders(extra?: Record<string, string>): HeadersInit {
   };
 }
 
+// Resolve relative /uploads paths to full URLs
+function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
+  if (!src) return null;
+  let s = src.trim();
+  if (s.startsWith("//")) s = s.slice(1);
+  if (/^https?:\/\//i.test(s)) return s;
+  if (!s.startsWith("/")) s = `/${s}`;
+  return `${apiBase}${s}`;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth?.() ?? { user: null };
 
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
+  const [gallery, setGallery] = useState<GalleryPhoto[]>([
+    { position: 1, url: null },
+    { position: 2, url: null },
+    { position: 3, url: null },
+    { position: 4, url: null },
+  ]);
+  const profileImgInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRefs = [
+    useRef<HTMLInputElement | null>(null),
+    useRef<HTMLInputElement | null>(null),
+    useRef<HTMLInputElement | null>(null),
+    useRef<HTMLInputElement | null>(null),
+  ];
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -165,20 +189,33 @@ export default function DashboardPage() {
       }
       try {
         setLoading(true);
-
-        // Public profile
-        const profRes = await fetch(`${apiBase}/api/creators/${creatorId}`, {
+        // Own profile (includes ungated + gallery)
+        const profRes = await fetch(`${apiBase}/api/creators/me`, {
           credentials: "include",
           signal: ac.signal,
+          headers: buildAuthHeaders(),
         });
         const profJson: unknown = await profRes.json();
-        const prof = profJson as CreatorProfile;
-
-        setCreator(prof);
-        setDisplayName(prof?.display_name ?? "");
-        setBio(prof?.bio ?? "");
+        // If not eligible yet, fields may differ but we map defensively
+        const prof = profJson as Partial<CreatorProfile> & { gallery?: string[] };
+        setCreator({
+          creator_id: Number(prof?.creator_id || user?.id || creatorId),
+          display_name: prof?.display_name || "",
+          bio: (prof as any)?.bio || null,
+          profile_image: (prof as any)?.profile_image || null,
+          average_rating: Number((prof as any)?.average_rating || 0),
+          products_count: Number((prof as any)?.products_count || 0),
+        });
+        setDisplayName(prof?.display_name || "");
+        setBio(((prof as any)?.bio as string) || "");
         const cats = getStringArrayProp(profJson, "categories");
         if (cats) setSelectedCategories(uniqStrings(cats));
+        const galArr = Array.isArray((prof as any)?.gallery)
+          ? ((prof as any)?.gallery as string[])
+          : [];
+        setGallery((prev) =>
+          prev.map((g) => ({ position: g.position, url: galArr[g.position - 1] || null }))
+        );
 
         // Products
         const prodRes = await fetch(`${apiBase}/api/products/user/${creatorId}`, {
@@ -498,10 +535,10 @@ export default function DashboardPage() {
         {/* Header: avatar + name + stats */}
         <header className="flex items-center gap-4">
           <div className="relative h-20 w-20 overflow-hidden rounded-full bg-neutral-100">
-            {creator?.profile_image ? (
+      {creator?.profile_image ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={creator.profile_image}
+        src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
                 alt={creator.display_name || "Creator"}
                 className="h-full w-full object-cover"
               />
@@ -656,6 +693,134 @@ export default function DashboardPage() {
                   rows={4}
                   className="w-full rounded-xl border px-3 py-2"
                 />
+              </div>
+
+              {/* Profile Image uploader */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-neutral-700">Profile Image</label>
+                <div className="flex items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => profileImgInputRef.current?.click()}
+                    className="relative h-20 w-20 overflow-hidden rounded-full border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
+                    aria-label="Change profile image"
+                  >
+          {creator?.profile_image ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+            src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
+                        alt="Profile"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span>Upload</span>
+                    )}
+                  </button>
+                  <div className="text-xs text-neutral-600 max-w-xs">
+                    Click the image to upload / replace. JPG, PNG, WEBP, GIF up to 15MB.
+                  </div>
+                  <input
+                    ref={profileImgInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const fd = new FormData();
+                        fd.append("profile_image", file);
+                        const res = await fetch(`${apiBase}/api/creators/me/profile-image`, {
+                          method: "PATCH",
+                          credentials: "include",
+                          headers: buildAuthHeaders(),
+                          body: fd,
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        const data: any = await res.json();
+                        const url = data?.profile_image as string | undefined;
+                        if (url) {
+                          setCreator((prev) => (prev ? { ...prev, profile_image: url } : prev));
+                          showToast("Profile image updated");
+                        }
+                      } catch (err) {
+                        console.error(err);
+                        showToast("Profile image upload failed");
+                      } finally {
+                        e.target.value = ""; // reset
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Gallery (4 photos) */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-neutral-700">Gallery Photos (4)</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {gallery.map((g, idx) => (
+                    <div key={g.position} className="flex flex-col items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => galleryInputRefs[idx].current?.click()}
+                        className="relative h-28 w-full overflow-hidden rounded-xl border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
+                        aria-label={`Replace gallery photo ${g.position}`}
+                      >
+                        {g.url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={resolveImageUrl(g.url, apiBase) || g.url}
+                            alt={`Gallery ${g.position}`}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <span>Photo {g.position}</span>
+                        )}
+                        <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">Edit</span>
+                      </button>
+                      <input
+                        ref={galleryInputRefs[idx]}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const fd = new FormData();
+                            fd.append("photo", file);
+                            const res = await fetch(`${apiBase}/api/creators/me/gallery/${g.position}`, {
+                              method: "PATCH",
+                              credentials: "include",
+                              headers: buildAuthHeaders(),
+                              body: fd,
+                            });
+                            if (!res.ok) throw new Error(await res.text());
+                            const data: any = await res.json();
+                            const newUrl = data?.url as string | undefined;
+                            const newGallery: string[] | undefined = data?.gallery;
+                            setGallery((prev) =>
+                              prev.map((ph) =>
+                                ph.position === g.position
+                                  ? { ...ph, url: newUrl || ph.url }
+                                  : newGallery && newGallery[ph.position - 1]
+                                  ? { ...ph, url: newGallery[ph.position - 1] }
+                                  : ph
+                              )
+                            );
+                            showToast(`Gallery photo ${g.position} updated`);
+                          } catch (err) {
+                            console.error(err);
+                            showToast("Gallery upload failed");
+                          } finally {
+                            e.target.value = "";
+                          }
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-neutral-500">These appear on the back of your creator card.</p>
               </div>
 
               <div className="flex items-center gap-3">
