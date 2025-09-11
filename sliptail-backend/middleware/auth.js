@@ -10,6 +10,10 @@ function clearAuthCookie(res) {
   }
 }
 
+function normRole(v) {
+  return String(v ?? "user").trim().toLowerCase();
+}
+
 async function requireAuth(req, res, next) {
   try {
     let token = null;
@@ -23,7 +27,6 @@ async function requireAuth(req, res, next) {
 
     if (!token) {
       clearAuthCookie(res);
-      console.warn("requireAuth: NO TOKEN — headers.authorization:", req.headers.authorization);
       return res.status(401).json({ error: "Unauthorized (no token)" });
     }
 
@@ -51,11 +54,11 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: "Account inactive" });
     }
 
-    // 5) Attach fresh DB-backed user (normalize role to lowercase)
+    // 5) Attach fresh DB-backed user (normalize + TRIM role)
     req.user = {
       id: u.id,
       email: u.email,
-      role: String(u.role || "user").toLowerCase(),
+      role: normRole(u.role),
       email_verified_at: u.email_verified_at || null,
     };
 
@@ -69,7 +72,7 @@ async function requireAuth(req, res, next) {
 // Only creators
 function requireCreator(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  if (String(req.user.role).toLowerCase() !== "creator")
+  if (normRole(req.user.role) !== "creator")
     return res.status(403).json({ error: "Creator access only" });
   next();
 }
@@ -77,7 +80,7 @@ function requireCreator(req, res, next) {
 // Only admins
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  if (String(req.user.role).toLowerCase() !== "admin")
+  if (normRole(req.user.role) !== "admin")
     return res.status(403).json({ error: "Admin access only" });
   next();
 }

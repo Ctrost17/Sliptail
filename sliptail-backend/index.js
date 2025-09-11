@@ -33,7 +33,7 @@ const passport = require("passport");
 const cron = require("node-cron");
 const { notifyMembershipsExpiring } = require("./utils/notify");
 const { notFound, errorHandler } = require("./middleware/error");
-
+const { requireAuth } = require("./middleware/auth"); // <-- correct path
 const app = express();
 
 // If deploying behind a proxy/load balancer (Railway/Render/Heroku/Nginx/Cloudflare)
@@ -56,7 +56,8 @@ app.use(express.json({ limit: "25mb" }));
 // Auth + OAuth
 app.use(passport.initialize());
 app.use('/api/auth', authRoutes);
-app.use("/api/auth", require("./routes/authGoogle"));       // ok to share base path
+app.use("/api/auth", require("./routes/authGoogle")); 
+app.use("/api/auth", require("./routes/auth"));      // ok to share base path
 
 // API routes
 app.use('/api/stripe', stripeRoutes);
@@ -93,6 +94,10 @@ app.get('/test-db', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get("/api/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
 });
 
 // 404 + error handlers LAST
