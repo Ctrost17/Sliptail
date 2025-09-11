@@ -1,9 +1,8 @@
+// sliptail-backend/middleware/auth.js
 const jwt = require("jsonwebtoken");
 const db = require("../db");
 
 function clearAuthCookie(res) {
-  // Match your cookie name; you used `token` in your code.
-  // Adjust options (domain, path) to match how you set the cookie.
   if (res.clearCookie) {
     try {
       res.clearCookie("token", { httpOnly: true, sameSite: "lax", secure: true, path: "/" });
@@ -30,9 +29,10 @@ async function requireAuth(req, res, next) {
 
     // 3) Verify signature
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const userId = payload.id;
+    // Accept both new (id) and legacy (userId) payloads
+    const userId = payload.id ?? payload.userId;
 
-    // 4) SOURCE OF TRUTH: make sure user still exists (and optionally is active)
+    // 4) SOURCE OF TRUTH: ensure user still exists & is active
     const { rows } = await db.query(
       `SELECT id, email, role, email_verified_at, is_active
          FROM users
@@ -51,11 +51,11 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: "Account inactive" });
     }
 
-    // 5) Attach fresh DB-backed user (don’t trust JWT role blindly)
+    // 5) Attach fresh DB-backed user (normalize role to lowercase)
     req.user = {
       id: u.id,
       email: u.email,
-      role: u.role || "user",
+      role: String(u.role || "user").toLowerCase(),
       email_verified_at: u.email_verified_at || null,
     };
 
@@ -66,18 +66,18 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// ✅ Only creators
+// Only creators
 function requireCreator(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  if (req.user.role !== "creator")
+  if (String(req.user.role).toLowerCase() !== "creator")
     return res.status(403).json({ error: "Creator access only" });
   next();
 }
 
-// ✅ Only admins
+// Only admins
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-  if (req.user.role !== "admin")
+  if (String(req.user.role).toLowerCase() !== "admin")
     return res.status(403).json({ error: "Admin access only" });
   next();
 }
