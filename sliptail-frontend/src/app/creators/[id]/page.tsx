@@ -369,8 +369,6 @@ export default function CreatorProfilePage() {
   async function startCheckout(p: Product) {
     if (!creatorId) return;
 
-    console.log("Here's USER:", user);
-
     // If auth is still hydrating, queue the intent and retry after user loads
     if (authLoading) {
       const selfWithCheckout = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
@@ -388,24 +386,24 @@ export default function CreatorProfilePage() {
       return;
     }
 
-    setCheckingOutId(p.id);
-    console.log("Starting checkout for", p);
-    
+    setCheckingOutId(p.id);    
     try {
       // Prefer direct backend call with Authorization header to avoid SSR cookie issues
       const mode = p.product_type === "membership" ? "subscription" : "payment";
       const origin = window.location.origin;
-      const successUrl =
-        p.product_type === "request"
-          ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
+      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
               p.product_type
             )}`
-          : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-              p.id
-            )}&action=${encodeURIComponent(p.product_type)}`;
+        // p.product_type === "request"
+        //   ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
+        //       p.product_type
+        //     )}`
+        //   : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+        //       p.id
+        //     )}&action=${encodeURIComponent(p.product_type)}`;
       const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
         p.id
-      )}&action=${encodeURIComponent(p.product_type)}`;
+      )}&action=${encodeURIComponent(p.product_type)}`;  
 
       const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
         method: "POST",

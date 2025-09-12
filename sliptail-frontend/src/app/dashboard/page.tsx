@@ -1,7 +1,7 @@
 // src/app/dashboard/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { loadAuth } from "@/lib/auth";
@@ -128,6 +128,58 @@ export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth?.() ?? { user: null };
 
+  // --- Place apiBase, creatorId, and pending requests state/effect after user is defined ---
+  // (MUST be after user is defined)
+  const apiBase = useMemo(
+    () => (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, ""),
+    []
+  );
+  const creatorId = user?.id ? String(user.id) : null;
+  // Pending Requests state
+  const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+
+  // Expose a reusable loader so the Refresh button can trigger it
+  const loadPending = useCallback(async () => {
+    if (!creatorId) return;
+    setPendingLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/requests/inbox?status=pending`, {
+        credentials: "include",
+        headers: buildAuthHeaders(),
+      });
+
+      if (!res.ok) {
+        console.error("Failed to load pending requests:", res.status, res.statusText);
+        throw new Error("Failed to load pending requests");
+      }
+
+      const data: unknown = await res.json();
+      console.log("Pending requests response:", data); // Debug log
+
+      let list: any[] = [];
+      if (Array.isArray((data as any)?.requests)) {
+        list = (data as any).requests;
+      } else if (Array.isArray(data)) {
+        list = data as any[];
+      }
+
+      console.log("Parsed pending requests:", list); // Debug log
+      setPendingRequests(list);
+    } catch (e) {
+      console.error("Failed to load pending requests:", e);
+      setPendingRequests([]);
+    } finally {
+      setPendingLoading(false);
+    }
+  }, [creatorId, apiBase]);
+
+  // Initial load
+  useEffect(() => {
+    if (!creatorId) return;
+    loadPending();
+  }, [creatorId, loadPending]);
+
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [gallery, setGallery] = useState<GalleryPhoto[]>([
     { position: 1, url: null },
@@ -171,12 +223,7 @@ export default function DashboardPage() {
   const [toastText, setToastText] = useState<string>("");
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const apiBase = useMemo(
-    () => (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, ""),
-    []
-  );
 
-  const creatorId = user?.id ? String(user.id) : null;
 
   // Load creator profile & products
   useEffect(() => {
@@ -240,8 +287,8 @@ export default function DashboardPage() {
             typeof priceRaw === "number"
               ? priceRaw
               : typeof priceRaw === "string"
-              ? Number(priceRaw)
-              : 0;
+                ? Number(priceRaw)
+                : 0;
           return { id, title, description, product_type, price };
         });
         setProducts(typedProducts);
@@ -535,10 +582,10 @@ export default function DashboardPage() {
         {/* Header: avatar + name + stats */}
         <header className="flex items-center gap-4">
           <div className="relative h-20 w-20 overflow-hidden rounded-full bg-neutral-100">
-      {creator?.profile_image ? (
+            {creator?.profile_image ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-        src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
+                src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
                 alt={creator.display_name || "Creator"}
                 className="h-full w-full object-cover"
               />
@@ -641,9 +688,8 @@ export default function DashboardPage() {
                           key={cat.id || cat.name}
                           type="button"
                           onClick={() => toggleCategoryName(cat.name)}
-                          className={`rounded-full border px-3 py-1 text-sm ${
-                            active ? "bg-black text-white border-black" : "hover:bg-neutral-100"
-                          }`}
+                          className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-black text-white border-black" : "hover:bg-neutral-100"
+                            }`}
                           aria-pressed={active}
                           title={cat.name}
                         >
@@ -705,10 +751,10 @@ export default function DashboardPage() {
                     className="relative h-20 w-20 overflow-hidden rounded-full border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
                     aria-label="Change profile image"
                   >
-          {creator?.profile_image ? (
+                    {creator?.profile_image ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-            src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
+                        src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
                         alt="Profile"
                         className="h-full w-full object-cover"
                       />
@@ -804,8 +850,8 @@ export default function DashboardPage() {
                                 ph.position === g.position
                                   ? { ...ph, url: newUrl || ph.url }
                                   : newGallery && newGallery[ph.position - 1]
-                                  ? { ...ph, url: newGallery[ph.position - 1] }
-                                  : ph
+                                    ? { ...ph, url: newGallery[ph.position - 1] }
+                                    : ph
                               )
                             );
                             showToast(`Gallery photo ${g.position} updated`);
@@ -827,17 +873,15 @@ export default function DashboardPage() {
                 <button
                   onClick={saveQuickProfile}
                   disabled={savingProfile}
-                  className={`rounded-xl px-4 py-2 text-sm ${
-                    savingProfile ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
-                  }`}
+                  className={`rounded-xl px-4 py-2 text-sm ${savingProfile ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
+                    }`}
                 >
                   {savingProfile ? "Saving…" : "Save"}
                 </button>
                 {saveMsg && (
                   <span
-                    className={`text-sm ${
-                      saveMsg.includes("Saved") ? "text-green-700" : "text-red-700"
-                    }`}
+                    className={`text-sm ${saveMsg.includes("Saved") ? "text-green-700" : "text-red-700"
+                      }`}
                   >
                     {saveMsg}
                   </span>
@@ -848,8 +892,59 @@ export default function DashboardPage() {
 
           {/* Pending Requests */}
           <div className="rounded-2xl border p-4">
-            <div className="font-semibold mb-2">Pending Requests</div>
-            <div className="text-sm text-neutral-600">(none yet)</div>
+            <div className="flex justify-between items-center mb-2">
+              <div className="font-semibold">Pending Requests</div>
+              <button
+                onClick={() => loadPending()} // Add manual refresh
+                className="text-xs text-neutral-500 hover:text-neutral-700"
+              >
+                Refresh
+              </button>
+            </div>
+            {pendingLoading ? (
+              <div className="text-sm text-neutral-600">Loading…</div>
+            ) : pendingRequests.length === 0 ? (
+              <div className="text-sm text-neutral-600">
+                No pending requests yet.
+                <div className="text-xs text-neutral-500 mt-1">
+                  Requests will appear here when buyers submit them.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-157 overflow-y-auto">
+                {pendingRequests.map((req) => (
+                  <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition-colors">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="text-sm font-medium">Request #{req.id}</div>
+                        {req.details && (
+                          <div className="text-sm text-neutral-700 mt-1 line-clamp-2">{req.details}</div>
+                        )}
+                        <div className="text-xs text-neutral-500 mt-1">
+                          From: {req.buyer_email || req.buyer_username || "Unknown"}
+                        </div>
+                        {req.amount !== undefined && req.amount !== null && (
+                          <div className="text-sm font-medium text-neutral-900 mt-1">
+                            ${(req.amount / 100).toFixed(2)}
+                          </div>
+                        )}
+                        <div className="text-xs text-neutral-500 mt-1">
+                          {new Date(req.created_at).toLocaleDateString()} at {new Date(req.created_at).toLocaleTimeString()}
+                        </div>
+                      </div>
+                      <div className="ml-2">
+                        <button
+                          onClick={() => router.push(`/dashboard/requests/${req.id}`)}
+                          className="text-xs px-2 py-1 rounded-md bg-black text-white hover:bg-black/90"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
@@ -861,19 +956,18 @@ export default function DashboardPage() {
 
             <div className="flex items-center gap-2">
               <span
-                className={`inline-block h-2 w-2 rounded-full ${
-                  stripeConnected ? "bg-green-500" : stripeConnected === false ? "bg-red-500" : "bg-neutral-300"
-                }`}
+                className={`inline-block h-2 w-2 rounded-full ${stripeConnected ? "bg-green-500" : stripeConnected === false ? "bg-red-500" : "bg-neutral-300"
+                  }`}
                 aria-hidden="true"
               />
               <span className="text-sm text-neutral-700">
                 {stripeLoading
                   ? "Checking status…"
                   : stripeConnected
-                  ? "Connected"
-                  : stripeConnected === false
-                  ? "Not connected"
-                  : "Status unavailable"}
+                    ? "Connected"
+                    : stripeConnected === false
+                      ? "Not connected"
+                      : "Status unavailable"}
               </span>
             </div>
 
@@ -965,9 +1059,8 @@ export default function DashboardPage() {
                 </button>
                 <button
                   onClick={confirmDelete}
-                  className={`rounded-xl px-4 py-2 text-sm text-white ${
-                    deleting ? "bg-neutral-400" : "bg-black"
-                  }`}
+                  className={`rounded-xl px-4 py-2 text-sm text-white ${deleting ? "bg-neutral-400" : "bg-black"
+                    }`}
                   disabled={deleting}
                 >
                   {deleting ? "Deleting…" : "Yes, delete"}

@@ -1,11 +1,10 @@
 // app/requests/new/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+import { API_BASE } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
 
 // Replace with your real toast system/hook
 function useToast() {
@@ -24,6 +23,7 @@ export default function NewRequestPage() {
   const search = useSearchParams();
   const router = useRouter();
   const { success, error } = useToast();
+  const { token } = useAuth();
 
   const orderId = useMemo(() => {
     const raw = search.get("orderId");
@@ -31,18 +31,22 @@ export default function NewRequestPage() {
     return Number.isFinite(num) ? num : 0;
   }, [search]);
 
+  const sid = search.get("sid");
+
   const initialToast = search.get("toast");
 
   const [details, setDetails] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const submittingRef = useRef(false);
 
   // If a toast was passed via query (legacy), show it once via console placeholder
   useEffect(() => {
     if (initialToast && initialToast.trim()) success(initialToast);
   }, [initialToast, success]);
 
-  if (!orderId) {
+  // If no orderId but we have a Stripe session id, we can still create the request from session
+  if (!orderId && !sid) {
     return (
       <div className="mx-auto max-w-xl p-8">
         <h1 className="text-xl font-semibold">Invalid request</h1>
@@ -59,28 +63,75 @@ export default function NewRequestPage() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (submittingRef.current) return;
     setSubmitting(true);
+    submittingRef.current = true;
     try {
       const formData = new FormData();
-      formData.append("orderId", String(orderId));
-      formData.append("details", details);
-      if (file) formData.append("attachment", file);
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      const res = await fetch(`${API_BASE}/api/requests`, {
+      // Prefer session-based creation when sid is present, even if orderId is provided
+      let url = `${API_BASE}/api/requests`;
+
+      if (sid) {
+        url = `${API_BASE}/api/requests/create-from-session`;
+        formData.append("session_id", String(sid));
+        formData.append("message", details);
+        if (file) formData.append("attachment", file);
+      } else if (orderId) {
+        formData.append("orderId", String(orderId));
+        formData.append("details", details);
+        if (file) formData.append("attachment", file);
+      }
+
+      let res = await fetch(url, {
         method: "POST",
         credentials: "include",
+        headers,
         body: formData,
       });
 
-      const payload: unknown = await res.json();
-      // Narrow unknown to our expected shape:
-      const parsed = payload as CreateRequestResponse;
+      if (res.status === 401 || res.status === 403) {
+        const params = new URLSearchParams();
+        if (orderId) params.set("orderId", String(orderId));
+        if (sid) params.set("sid", String(sid));
+        const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
+        router.replace(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
 
-      if (!res.ok || !parsed || parsed.ok !== true) {
-        const message =
-          parsed && "error" in parsed && typeof parsed.error === "string"
-            ? parsed.error
-            : "Request failed";
+      let payload: any = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        // If we tried create-from-session (sid present), only fallback on server errors (5xx).
+        // For client errors (4xx), surface the specific message instead of masking with 'Failed'.
+        const isCreateFromSession = Boolean(sid);
+        const isServerError = res.status >= 500;
+        if (isCreateFromSession && isServerError && orderId) {
+          const fd2 = new FormData();
+          fd2.append("orderId", String(orderId));
+          fd2.append("details", details);
+          if (file) fd2.append("attachment", file);
+          res = await fetch(`${API_BASE}/api/requests`, {
+            method: "POST",
+            credentials: "include",
+            headers,
+            body: fd2,
+          });
+          payload = await res.json().catch(() => ({}));
+        }
+        if (!res.ok) {
+          const message = payload?.error || `${res.status} ${res.statusText}`;
+          throw new Error(message);
+        }
+      }
+
+      // Support both legacy and new shapes
+      const newOk = payload && payload.success === true;
+      const legacyOk = payload && payload.ok === true;
+      if (!newOk && !legacyOk) {
+        const message = payload?.error || "Request failed";
         throw new Error(message);
       }
 
@@ -90,7 +141,7 @@ export default function NewRequestPage() {
       try {
         const { setFlash } = await import("@/lib/flash");
         setFlash({ kind: "success", title: toastMsg, ts: Date.now() });
-      } catch {}
+      } catch { }
       router.replace(`/purchases`);
     } catch (e) {
       const message =
@@ -98,6 +149,7 @@ export default function NewRequestPage() {
       error(message);
     } finally {
       setSubmitting(false);
+      submittingRef.current = false;
     }
   }
 
@@ -110,7 +162,7 @@ export default function NewRequestPage() {
     const toastMsg = initialToast && initialToast.includes("Thanks for Supporting")
       ? initialToast
       : "Thanks for Supporting Your Creator";
-    import("@/lib/flash").then(m => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() })).catch(()=>{});
+    import("@/lib/flash").then(m => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() })).catch(() => { });
     router.replace(`/purchases`);
   }
 

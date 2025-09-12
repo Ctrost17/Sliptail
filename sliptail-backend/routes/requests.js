@@ -134,7 +134,7 @@ router.post(
       notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
     } catch (err) {
       // rollback if we started a tx
-      try { await db.query("ROLLBACK"); } catch {}
+      try { await db.query("ROLLBACK"); } catch { }
       console.error("Create request error:", err);
       res.status(500).json({ error: "Failed to create request" });
     }
@@ -216,28 +216,85 @@ router.post(
  * CREATOR inbox: list requests for me (optionally filter by status)
  * Query: ?status=pending|accepted|declined|delivered
  */
+// router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
+//   const creatorId = req.user.id;
+//   const { status } = req.query;
+
+//   try {
+//     const params = [creatorId];
+//     let where = `cr.creator_id = $1`;
+//     if (status) {
+//       params.push(status);
+//       where += ` AND cr.status = $2`;
+//     }
+
+//     const { rows } = await db.query(
+//       `SELECT cr.*, o.status AS order_status, o.amount,
+//               u.email AS buyer_email, u.username AS buyer_username
+//          FROM custom_requests cr
+//          JOIN orders o ON o.id = cr.order_id
+//          JOIN users u  ON u.id = cr.buyer_id
+//         WHERE ${where}
+//         ORDER BY cr.created_at DESC`,
+//       params
+//     );
+
+//     res.json({ requests: rows });
+//   } catch (err) {
+//     console.error("Inbox error:", err);
+//     res.status(500).json({ error: "Failed to fetch requests" });
+//   }
+// });
+
 router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
   const creatorId = req.user.id;
   const { status } = req.query;
 
   try {
+    // First, let's check if there are ANY requests for this creator
+    const { rows: allRequests } = await db.query(
+      `SELECT cr.id, cr.status, cr.creator_id 
+       FROM custom_requests cr 
+       WHERE cr.creator_id = $1`,
+      [creatorId]
+    );
+    console.log('All requests for creator', creatorId, ':', allRequests);
+
+    // Now run the main query
     const params = [creatorId];
     let where = `cr.creator_id = $1`;
     if (status) {
-      params.push(status);
-      where += ` AND cr.status = $2`;
+      const s = String(status).toLowerCase();
+      if (s === "pending") {
+        // Support legacy rows with status='open' as pending
+        params.push("pending");
+        where += ` AND (cr.status = $2 OR cr.status = 'open')`;
+      } else {
+        params.push(s);
+        where += ` AND cr.status = $2`;
+      }
     }
 
     const { rows } = await db.query(
-      `SELECT cr.*, o.status AS order_status, o.amount,
-              u.email AS buyer_email, u.username AS buyer_username
-         FROM custom_requests cr
-         JOIN orders o ON o.id = cr.order_id
-         JOIN users u  ON u.id = cr.buyer_id
-        WHERE ${where}
-        ORDER BY cr.created_at DESC`,
+      `SELECT cr.*, 
+              o.status AS order_status,
+              p.price AS amount,
+              u.email AS buyer_email, 
+              u.username AS buyer_username
+        FROM custom_requests cr
+        JOIN orders o ON o.id = cr.order_id
+        JOIN products p ON p.id = o.product_id
+        JOIN users u ON u.id = cr.buyer_id
+       WHERE ${where}
+       ORDER BY cr.created_at DESC`,
       params
     );
+    
+  console.log('Fetching requests for creator:', creatorId, 'with status:', status);
+    console.log('Found requests:', rows.length);
+    if (rows.length > 0) {
+      console.log('Sample request data:', rows[0]);
+    }
 
     res.json({ requests: rows });
   } catch (err) {
@@ -413,7 +470,6 @@ router.post(
       const sessionId = String(req.body.session_id || "").trim();
       const message = (req.body.message || "").toString();
       if (!sessionId) return res.status(400).json({ error: "session_id is required" });
-
       // Find the buyer's PAID order by session id
       const { rows } = await db.query(
         `SELECT o.id AS order_id,
@@ -456,8 +512,8 @@ router.post(
         request = upd[0];
       } else {
         const { rows: ins } = await db.query(
-          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, status, created_at)
-           VALUES ($1,$2,$3,$4,$5,'pending',NOW())
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, created_at)
+           VALUES ($1,$2,$3,$4,$5,NOW())
            RETURNING *`,
           [row.order_id, buyerId, row.creator_id, message || null, attachment_path]
         );

@@ -6,8 +6,42 @@ export default function Toast() {
   const [flash, setFlash] = useState<FlashPayload | null>(null);
 
   useEffect(() => {
+    // Show Toast on mount if flash exists
     const f = consumeFlash();
     if (f) setFlash(f);
+
+    // Listen for localStorage changes (cross-tab and same tab)
+    function handleStorage(e: StorageEvent) {
+      if (e.key === "sliptail_flash" && e.newValue) {
+        const f = consumeFlash();
+        if (f) setFlash(f);
+      }
+    }
+    window.addEventListener("storage", handleStorage);
+
+    // For same-tab: monkey-patch localStorage.setItem to emit a custom event
+    const origSetItem = localStorage.setItem;
+    localStorage.setItem = function(key: string, value: string): void {
+      origSetItem.call(this, key, value);
+      if (key === "sliptail_flash") {
+        window.dispatchEvent(new StorageEvent("storage", { key, newValue: value }));
+      }
+    };
+
+    // Listen for our custom event
+    function handleCustomStorage(e: StorageEvent) {
+      if (e.key === "sliptail_flash" && e.newValue) {
+        const f = consumeFlash();
+        if (f) setFlash(f);
+      }
+    }
+    window.addEventListener("storage", handleCustomStorage);
+
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("storage", handleCustomStorage);
+      localStorage.setItem = origSetItem;
+    };
   }, []);
 
   useEffect(() => {
