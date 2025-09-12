@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import CreatorCard from "@/components/CreatorCard";
 import StartSellingButton from "@/components/StartSellingButton";
-import { useAuth } from "@/components/auth/AuthProvider"; // <-- added
+import { useAuth } from "@/components/auth/AuthProvider";
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -29,10 +29,21 @@ interface CategoryRow {
   creators_count?: number;
 }
 
-/* --------------------------- Data loaders --------------------------- */
+/* --------------------------- API helpers --------------------------- */
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+/**
+ * Build a browser-safe base. In the client, envs are injected at build time.
+ * Supports either NEXT_PUBLIC_API_BASE or NEXT_PUBLIC_API_BASE_URL.
+ * Falls back to relative '/api' so Next rewrites proxy to your Express API.
+ */
+const API_BASE: string = (() => {
+  const a = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/$/, "");
+  const b = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+  return a || b || ""; // when empty, we’ll prefix paths with '/api/...'
+})();
+
+const api = (path: string) =>
+  `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
 
 /** Normalize featured creators payload */
 function normalizeFeatured(payload: FeaturedApiResponse): FeaturedApiCreator[] {
@@ -40,10 +51,14 @@ function normalizeFeatured(payload: FeaturedApiResponse): FeaturedApiCreator[] {
 }
 
 async function fetchFeatured(): Promise<FeaturedApiCreator[]> {
-  const res = await fetch(`${API_BASE}/api/creators/featured`, {
+  // Public endpoint; no auth needed. Keep credentials optional-safe.
+  const res = await fetch(api("/api/creators/featured"), {
     credentials: "include",
-  });
-  if (!res.ok) return [];
+    // Cache a bit so home loads snappy; adjust if you want fully fresh
+    next: { revalidate: 60 },
+  }).catch(() => null);
+
+  if (!res || !res.ok) return [];
   const payload: FeaturedApiResponse = await res.json();
   return normalizeFeatured(payload);
 }
@@ -51,31 +66,32 @@ async function fetchFeatured(): Promise<FeaturedApiCreator[]> {
 /** Normalize category array safely */
 function normalizeCategoryArray(payload: unknown): CategoryRow[] {
   if (Array.isArray(payload)) {
-    return payload.filter((r): r is CategoryRow => {
-      return typeof r === "object" && r !== null && "id" in r && "name" in r;
-    });
+    return payload.filter(
+      (r): r is CategoryRow =>
+        typeof r === "object" && r !== null && "id" in r && "name" in r
+    );
   }
   if (payload && typeof payload === "object") {
     const obj = payload as Record<string, unknown>;
-    if (Array.isArray(obj.categories)) {
-      return normalizeCategoryArray(obj.categories);
-    }
-    if (Array.isArray(obj.data)) {
-      return normalizeCategoryArray(obj.data);
-    }
+    if (Array.isArray(obj.categories)) return normalizeCategoryArray(obj.categories);
+    if (Array.isArray(obj.data)) return normalizeCategoryArray(obj.data);
   }
   return [];
 }
 
 async function fetchCategories(): Promise<CategoryRow[]> {
+  // Try the richer endpoint first (with counts), then fallback.
   const urls = [
-    `${API_BASE}/api/categories?count=true`,
-    `${API_BASE}/api/categories`,
+    api("/api/categories?count=true"),
+    api("/api/categories"),
   ];
 
   for (const url of urls) {
     try {
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(url, {
+        credentials: "include",
+        next: { revalidate: 300 },
+      });
       if (!res.ok) continue;
       const payload: unknown = await res.json();
       const rows = normalizeCategoryArray(payload).filter((r) =>
@@ -97,11 +113,10 @@ export default function Home() {
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const { user, loading: authLoading } = useAuth(); // <-- read auth
+  const { user, loading: authLoading } = useAuth();
 
   // Helper: render the Start Selling CTA with routing override for signed-in users
   const StartSellingCTA = ({ children }: { children: React.ReactNode }) => {
-    // While auth is hydrating, render the original component (keeps your UX smooth)
     if (authLoading) {
       return (
         <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
@@ -110,7 +125,6 @@ export default function Home() {
       );
     }
 
-    // If signed out, keep your existing StartSellingButton behavior
     if (!user) {
       return (
         <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
@@ -119,10 +133,7 @@ export default function Home() {
       );
     }
 
-    // Signed-in: route based on role
-    const isCreatorLike =
-      user.role === "creator" || user.role === "admin" 
-
+    const isCreatorLike = user.role === "creator" || user.role === "admin";
     const href = isCreatorLike ? "/dashboard" : "/creator/setup";
 
     return (
@@ -140,10 +151,7 @@ export default function Home() {
     (async () => {
       setLoading(true);
       try {
-        const [feat, cats] = await Promise.all([
-          fetchFeatured(),
-          fetchCategories(),
-        ]);
+        const [feat, cats] = await Promise.all([fetchFeatured(), fetchCategories()]);
         if (!cancelled) {
           setFeatured(feat);
           setCategories(cats);
@@ -170,7 +178,7 @@ export default function Home() {
           <div className="mx-auto mb-6 w-40 animate-fade-in-up">
             <Image src="/sliptail-logo.png" alt="Sliptail" width={160} height={50} />
           </div>
-        <h1 className="mb-4 text-5xl font-bold animate-fade-in-up [animation-delay:200ms]">
+          <h1 className="mb-4 text-5xl font-bold animate-fade-in-up [animation-delay:200ms]">
             Support and Create
           </h1>
           <p className="mx-auto mb-8 max-w-2xl text-lg animate-fade-in-up [animation-delay:400ms]">
@@ -273,4 +281,3 @@ export default function Home() {
     </div>
   );
 }
-

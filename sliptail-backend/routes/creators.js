@@ -62,6 +62,25 @@ async function usersEnabledClause() {
   return has ? "u.enabled = TRUE" : "TRUE";
 }
 
+/**
+ * FEATURED support across schemas:
+ * Some DBs have creator_profiles.is_featured; others have creator_profiles.featured.
+ * Use a COALESCE in reads, and set whichever column exists in writes.
+ */
+const FEATURED_COLS = ["is_featured", "featured"];
+
+async function getFeaturedColumnName() {
+  for (const c of FEATURED_COLS) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await hasColumn("creator_profiles", c)) return c;
+  }
+  // default to 'featured' (keeps prior behavior if neither was found — rare)
+  return "featured";
+}
+
+// Reusable SQL expression for reading "is featured?"
+const featuredExpr = "COALESCE(cp.is_featured, cp.featured, FALSE)";
+
 /* --------------------------- media upload setup --------------------------- */
 
 const creatorUploadRoot = path.join(__dirname, "..", "public", "uploads", "creators");
@@ -226,19 +245,17 @@ router.post(
         return res.status(500).json({ error: "Failed to generate public URLs" });
       }
 
-      const fallbackDisplayName =
-        (req.user?.username && String(req.user.username).trim()) ||
-        (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
-
       await db.query("BEGIN");
 
+      // INSERT/UPSERT profile row; set whichever featured column exists to FALSE on first insert
+      const featCol = await getFeaturedColumnName();
       await db.query(
-        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, featured, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())
+        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, created_at, updated_at)
+         VALUES ($1, NULL, NULL, $2, FALSE, NOW(), NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET profile_image = EXCLUDED.profile_image,
                updated_at = NOW()`,
-        [userId, fallbackDisplayName, "", profilePublic]
+        [userId, profilePublic]
       );
 
       await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
@@ -312,8 +329,9 @@ router.post(
 
       await db.query("BEGIN");
 
+      const featCol = await getFeaturedColumnName();
       const { rows: profRows } = await db.query(
-        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, featured, is_profile_complete, created_at, updated_at)
+        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, is_profile_complete, created_at, updated_at)
          VALUES ($1,$2,$3,$4,false, TRUE, NOW(), NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET display_name        = COALESCE(EXCLUDED.display_name, creator_profiles.display_name),
@@ -321,7 +339,7 @@ router.post(
                profile_image       = COALESCE(EXCLUDED.profile_image,creator_profiles.profile_image),
                is_profile_complete = TRUE,
                updated_at          = NOW()
-         RETURNING user_id, display_name, bio, profile_image, featured, is_profile_complete`,
+         RETURNING user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured, is_profile_complete`,
         [userId, display_name || null, bio || null, profile_image_url || null]
       );
 
@@ -351,6 +369,8 @@ router.post(
       return res.json({
         profile: {
           ...profRows[0],
+          // keep legacy "featured" field in payload for callers that expect it
+          featured: !!profRows[0]?.is_featured,
           gallery: galleryRows?.[0]?.gallery || [],
         },
         creator_status: status,
@@ -370,8 +390,8 @@ router.get("/me", requireAuth, async (req, res) => {
   const userId = req.user.id;
   try {
     const { rows: prof } = await db.query(
-      `SELECT user_id, display_name, bio, profile_image, featured, is_profile_complete, is_active
-         FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
+      `SELECT user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured, is_profile_complete, is_active
+         FROM creator_profiles cp WHERE user_id=$1 LIMIT 1`,
       [userId]
     );
     const profile = prof[0] || null;
@@ -387,7 +407,9 @@ router.get("/me", requireAuth, async (req, res) => {
       display_name: profile?.display_name || null,
       bio: profile?.bio || null,
       profile_image: profile?.profile_image || null,
-      featured: profile?.featured || false,
+      // keep "featured" for legacy; expose new "is_featured" too
+      featured: !!profile?.is_featured,
+      is_featured: !!profile?.is_featured,
       is_profile_complete: profile?.is_profile_complete || false,
       is_active: profile?.is_active || false,
       gallery,
@@ -420,14 +442,12 @@ router.patch(
 
       if (upd.rowCount === 0) {
         // Need to INSERT minimal row (schema-aware for optional columns)
-        const cols = ["user_id", "display_name", "bio", "profile_image"]; // mandatory
-        const vals = ["$1", "$2", "$3", "$4"]; // placeholders
-        const fallbackDisplayName =
-          (req.user?.username && String(req.user.username).trim()) ||
-          (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
-        const params = [userId, fallbackDisplayName, "", url];
+        const cols = ["user_id", "profile_image"]; // mandatory
+        const vals = ["$1", "$2"]; // placeholders
+        const params = [userId, url];
         const optionalCols = [
           { name: "featured", value: "FALSE" },
+          { name: "is_featured", value: "FALSE" },
           { name: "is_profile_complete", value: "FALSE" },
           { name: "created_at", value: "NOW()" },
           { name: "updated_at", value: "NOW()" },
@@ -475,13 +495,11 @@ router.patch(
         [userId]
       );
       if (!existing.length) {
-        const cols = ["user_id", "display_name", "bio"]; const vals = ["$1", "$2", "$3"]; const fallbackDisplayName =
-          (req.user?.username && String(req.user.username).trim()) ||
-          (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
-        const params = [userId, fallbackDisplayName, ""];
+        const cols = ["user_id"]; const vals = ["$1"]; const params = [userId];
         const optionalCols = [
           { name: "is_active", value: "FALSE" },
           { name: "featured", value: "FALSE" },
+          { name: "is_featured", value: "FALSE" },
           { name: "is_profile_complete", value: "FALSE" },
           { name: "created_at", value: "NOW()" },
           { name: "updated_at", value: "NOW()" },
@@ -530,7 +548,7 @@ router.get("/:creatorId", async (req, res) => {
         cp.display_name,
         cp.bio,
         cp.profile_image,
-        cp.featured,
+        ${featuredExpr} AS is_featured,
         COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
         COUNT(DISTINCT p.id)::int               AS products_count
       FROM creator_profiles cp
@@ -546,7 +564,7 @@ router.get("/:creatorId", async (req, res) => {
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, cp.featured
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       HAVING COUNT(DISTINCT p.id) > 0
       `,
       [creatorId]
@@ -574,6 +592,7 @@ router.get("/:creatorId", async (req, res) => {
 
     res.json({
       ...base,
+      featured: !!base.is_featured, // keep legacy field name too
       categories,
       gallery: photos?.[0]?.gallery || [],
     });
@@ -628,8 +647,9 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
       );
 
       if (rowCount === 0) {
+        const featCol = await getFeaturedColumnName();
         await db.query(
-          `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, featured, is_profile_complete, created_at, updated_at)
+          `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, is_profile_complete, created_at, updated_at)
            VALUES ($1, $2, $3, NULL, FALSE, FALSE, NOW(), NOW())`,
           [creatorId, display_name, bio]
         );
@@ -667,8 +687,8 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
     }
 
     const { rows: prof } = await db.query(
-      `SELECT user_id AS creator_id, display_name, bio, profile_image
-         FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
+      `SELECT user_id AS creator_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured
+         FROM creator_profiles cp WHERE user_id=$1 LIMIT 1`,
       [creatorId]
     );
 
@@ -684,7 +704,8 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
     await db.query("COMMIT");
 
     return res.json({
-      ...(prof[0] || { creator_id: creatorId, display_name, bio, profile_image: null }),
+      ...(prof[0] || { creator_id: creatorId, display_name, bio, profile_image: null, is_featured: false }),
+      featured: !!(prof[0]?.is_featured || false), // legacy field
       categories: cats.map((c) => c.name),
     });
   } catch (e) {
@@ -729,11 +750,12 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
   const flag = !!featured;
 
   try {
+    const featCol = await getFeaturedColumnName();
     const { rows } = await db.query(
       `UPDATE creator_profiles
-          SET featured=$1, updated_at=NOW()
+          SET ${featCol}=$1, updated_at=NOW()
         WHERE user_id=$2
-        RETURNING user_id, display_name, bio, profile_image, featured`,
+        RETURNING user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured`,
       [flag, creatorId]
     );
     if (!rows.length) return res.status(404).json({ error: "Creator profile not found" });
@@ -746,7 +768,7 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
       );
     } catch {}
 
-    res.json({ success: true, profile: rows[0] });
+    res.json({ success: true, profile: { ...rows[0], featured: !!rows[0].is_featured } });
   } catch (e) {
     console.error("set featured error:", e);
     res.status(500).json({ error: "Failed to update featured flag" });
@@ -769,7 +791,7 @@ router.get("/:creatorId/card", async (req, res) => {
         cp.display_name,
         cp.bio,
         cp.profile_image,
-        cp.featured,
+        ${featuredExpr} AS is_featured,
         COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
         COUNT(DISTINCT p.id)::int               AS products_count
       FROM creator_profiles cp
@@ -785,7 +807,7 @@ router.get("/:creatorId/card", async (req, res) => {
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, cp.featured
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       HAVING COUNT(DISTINCT p.id) > 0
       `,
       [creatorId]
@@ -837,7 +859,7 @@ router.get("/:creatorId/card", async (req, res) => {
         categories: cats,
         average_rating: p.average_rating,
         products_count: p.products_count,
-        featured: p.featured,
+        featured: !!p.is_featured,
         products_preview: prods,
       },
       back: { gallery },
@@ -893,7 +915,7 @@ router.get("/", async (req, res) => {
         cp.display_name,
         cp.bio,
         cp.profile_image,
-        cp.featured,
+        ${featuredExpr} AS is_featured,
         COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
         COUNT(DISTINCT p.id)::int               AS products_count
       FROM creator_profiles cp
@@ -905,7 +927,7 @@ router.get("/", async (req, res) => {
         ON p.user_id = cp.user_id
        AND p.active  = TRUE
       ${whereSql}
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, cp.featured
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       HAVING COUNT(DISTINCT p.id) > 0
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -970,6 +992,8 @@ router.get("/", async (req, res) => {
       average_rating: p.average_rating,
       products_count: p.products_count,
       categories: categoriesByCreator[p.creator_id] || [],
+      featured: !!p.is_featured,         // legacy naming
+      is_featured: !!p.is_featured,      // new naming
     }));
 
     res.json({ creators: out });
@@ -978,19 +1002,22 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch creators" });
   }
 });
+
 /**
  * PUBLIC: Featured creators (eligible only)
- * - u.enabled = TRUE
+ * - users.enabled = TRUE (if column exists)
  * - u.role = 'creator'
  * - cp.is_profile_complete = TRUE
  * - cp.is_active = TRUE
- * - cp.featured = TRUE
+ * - cp.is_featured/featured = TRUE
  * - ≥1 active product
  */
 router.get("/featured", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "12", 10), 24);
 
   try {
+    const enabledClause = await usersEnabledClause();
+
     const { rows: profiles } = await db.query(
       `
       SELECT
@@ -998,7 +1025,7 @@ router.get("/featured", async (req, res) => {
         cp.display_name,
         cp.bio,
         cp.profile_image,
-        cp.featured,
+        ${featuredExpr} AS is_featured,
         COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
         COUNT(DISTINCT p.id)::int               AS products_count
       FROM creator_profiles cp
@@ -1009,13 +1036,12 @@ router.get("/featured", async (req, res) => {
       LEFT JOIN products p
         ON p.user_id = cp.user_id
        AND p.active  = TRUE
-      WHERE u.enabled = TRUE
+      WHERE ${enabledClause}
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
-        AND cp.featured = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, cp.featured
-      HAVING COUNT(DISTINCT p.id) > 0
+        AND ${featuredExpr} = TRUE
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
       LIMIT $1
       `,
@@ -1067,6 +1093,8 @@ router.get("/featured", async (req, res) => {
       products_count: p.products_count,
       categories: catsByCreator[p.creator_id] || [],
       gallery: photosByCreator[p.creator_id] || [],
+      featured: !!p.is_featured,
+      is_featured: !!p.is_featured,
     }));
 
     res.json({ creators: out });
