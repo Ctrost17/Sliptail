@@ -1042,7 +1042,6 @@ router.get("/featured", async (req, res) => {
         AND cp.is_active = TRUE
         AND ${featuredExpr} = TRUE
       GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
       LIMIT $1
       `,
