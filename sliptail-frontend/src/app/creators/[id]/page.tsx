@@ -240,7 +240,11 @@ export default function CreatorProfilePage() {
 
   const apiBase = useMemo(() => toApiBase(), []);
   const router = useRouter();
-  const { user } = useAuth?.() ?? { user: null };
+  const { user, token, loading: authLoading } = useAuth?.() ?? {
+    user: null,
+    token: null,
+    loading: false,
+  };
 
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -365,6 +369,17 @@ export default function CreatorProfilePage() {
   async function startCheckout(p: Product) {
     if (!creatorId) return;
 
+    console.log("Here's USER:", user);
+
+    // If auth is still hydrating, queue the intent and retry after user loads
+    if (authLoading) {
+      const selfWithCheckout = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
+        p.id
+      )}`;
+      router.replace(selfWithCheckout);
+      return;
+    }
+
     if (!user) {
       const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
         p.id
@@ -374,7 +389,74 @@ export default function CreatorProfilePage() {
     }
 
     setCheckingOutId(p.id);
+    console.log("Starting checkout for", p);
+    
     try {
+      // Prefer direct backend call with Authorization header to avoid SSR cookie issues
+      const mode = p.product_type === "membership" ? "subscription" : "payment";
+      const origin = window.location.origin;
+      const successUrl =
+        p.product_type === "request"
+          ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
+              p.product_type
+            )}`
+          : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+              p.id
+            )}&action=${encodeURIComponent(p.product_type)}`;
+      const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
+        p.id
+      )}&action=${encodeURIComponent(p.product_type)}`;
+
+      const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          product_id: Number(p.id) || p.id,
+          mode,
+          quantity: 1,
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+        }),
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
+          p.id
+        )}`;
+        router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
+
+      if (!res.ok) {
+        // Try JSON, else text
+        let msg = "Checkout failed";
+        try {
+          const j = await res.json();
+          msg = (j && (j.error || j.message)) || msg;
+        } catch {
+          try {
+            msg = await res.text();
+          } catch {}
+        }
+        console.error("Checkout error:", msg);
+        router.push(
+          `/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(msg || "Checkout failed")}`
+        );
+        return;
+      }
+
+      const data = (await res.json().catch(() => ({}))) as { url?: string };
+      if (data?.url) {
+        window.location.href = data.url;
+        return;
+      }
+
+      // Fallback to server route if direct call didn't return a URL
       window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(
         p.id
       )}&action=${encodeURIComponent(p.product_type)}`;
@@ -506,7 +588,7 @@ export default function CreatorProfilePage() {
                           </button>
                         ) : (
                           <button
-                            className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg黑/90 disabled:opacity-60"
+                            className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg-black/90 disabled:opacity-60"
                             onClick={() => void startCheckout(p)}
                             disabled={checkingOutId === p.id}
                           >
