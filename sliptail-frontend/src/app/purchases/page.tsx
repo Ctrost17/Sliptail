@@ -2,9 +2,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api"; // your helper
+import { loadAuth } from "@/lib/auth";
 // optional: your toast hook
-function useToast(){ return { error:(m:string)=>console.error(m), success:(m:string)=>console.log(m) } }
+function useToast(){
+  return {
+    showError: (m: string) => console.error(m),
+    showSuccess: (m: string) => console.log(m),
+  };
+}
 
 type Order = {
   id: number;
@@ -14,33 +21,49 @@ type Order = {
   created_at: string;
 };
 
-export default function PurchasesPage({ searchParams }: { searchParams: { toast?: string } }) {
+export default function PurchasesPage() {
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const { success, error } = useToast();
+  const { showSuccess, showError } = useToast();
+  const searchParams = useSearchParams();
+  const toast = searchParams.get("toast");
 
   useEffect(() => {
-    if (searchParams.toast) success(searchParams.toast);
-  }, [searchParams.toast, success]);
+    if (toast) showSuccess(toast);
+  }, [toast]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchApi<Order[]>("/api/orders", {
-          // IMPORTANT: see api.ts change below — credentials must be included
+        const { token } = loadAuth();
+        const legacy = await fetchApi<{ orders: any[] }>("/api/orders/mine", {
           method: "GET",
+          token,
+          cache: "no-store",
         });
-        if (!cancelled) setOrders(data);
+        const mapped: Order[] = (legacy?.orders || []).map((o: any) => ({
+          id: Number(o.id),
+          product_id: o.product_id ?? (o.product?.id ?? null),
+          amount_cents:
+            typeof o.amount_cents === "number"
+              ? o.amount_cents
+              : typeof o.amount === "number"
+              ? Math.round(o.amount * 100)
+              : 0,
+          status: String(o.status ?? "unknown"),
+          created_at: String(o.created_at ?? new Date().toISOString()),
+        }));
+        if (!cancelled) setOrders(mapped);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to load purchases.";
-        error(msg);
+        showError(msg);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [error]);
+  }, []);
 
   return (
     <div className="mx-auto max-w-3xl p-6">

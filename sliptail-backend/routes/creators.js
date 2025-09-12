@@ -226,15 +226,19 @@ router.post(
         return res.status(500).json({ error: "Failed to generate public URLs" });
       }
 
+      const fallbackDisplayName =
+        (req.user?.username && String(req.user.username).trim()) ||
+        (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
+
       await db.query("BEGIN");
 
       await db.query(
         `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, featured, created_at, updated_at)
-         VALUES ($1, NULL, NULL, $2, FALSE, NOW(), NOW())
+         VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET profile_image = EXCLUDED.profile_image,
                updated_at = NOW()`,
-        [userId, profilePublic]
+        [userId, fallbackDisplayName, "", profilePublic]
       );
 
       await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
@@ -416,9 +420,12 @@ router.patch(
 
       if (upd.rowCount === 0) {
         // Need to INSERT minimal row (schema-aware for optional columns)
-        const cols = ["user_id", "profile_image"]; // mandatory
-        const vals = ["$1", "$2"]; // placeholders
-        const params = [userId, url];
+        const cols = ["user_id", "display_name", "bio", "profile_image"]; // mandatory
+        const vals = ["$1", "$2", "$3", "$4"]; // placeholders
+        const fallbackDisplayName =
+          (req.user?.username && String(req.user.username).trim()) ||
+          (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
+        const params = [userId, fallbackDisplayName, "", url];
         const optionalCols = [
           { name: "featured", value: "FALSE" },
           { name: "is_profile_complete", value: "FALSE" },
@@ -428,10 +435,10 @@ router.patch(
         for (const oc of optionalCols) {
           // eslint-disable-next-line no-await-in-loop
           const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
-            if (exists) {
-              cols.push(oc.name);
-              vals.push(oc.value);
-            }
+          if (exists) {
+            cols.push(oc.name);
+            vals.push(oc.value);
+          }
         }
         const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
         await db.query(insertSql, params);
@@ -468,7 +475,10 @@ router.patch(
         [userId]
       );
       if (!existing.length) {
-        const cols = ["user_id"]; const vals = ["$1"]; const params = [userId];
+        const cols = ["user_id", "display_name", "bio"]; const vals = ["$1", "$2", "$3"]; const fallbackDisplayName =
+          (req.user?.username && String(req.user.username).trim()) ||
+          (req.user?.email ? String(req.user.email).split("@")[0] : `user-${userId}`);
+        const params = [userId, fallbackDisplayName, ""];
         const optionalCols = [
           { name: "is_active", value: "FALSE" },
           { name: "featured", value: "FALSE" },

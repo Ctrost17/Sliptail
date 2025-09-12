@@ -351,7 +351,9 @@ export default function CreatorProfilePage() {
 
     return () => {
       cancelled = true;
-      ac.abort();
+      try {
+        ac.abort("route change/unmount");
+      } catch {}
     };
   }, [creatorId, apiBase]);
 
