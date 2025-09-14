@@ -135,6 +135,7 @@ notifyPurchase({ orderId }).catch(console.error);
  */
 router.get("/mine", requireAuth, async (req, res) => {
   const userId = req.user.id;
+  
 
   try {
     const { rows } = await db.query(
@@ -148,9 +149,16 @@ router.get("/mine", requireAuth, async (req, res) => {
                 'product_type', p.product_type,
                 'price', p.price,
                 'created_at', p.created_at
-              ) AS product
+              ) AS product,
+              json_build_object(
+                'user_id', c.user_id,
+                'display_name', c.display_name,
+                'bio', c.bio,
+                'profile_image', c.profile_image
+              ) AS creator_profile
          FROM orders o
          JOIN products p ON p.id = o.product_id
+         JOIN creator_profiles c ON c.user_id = p.user_id
         WHERE o.buyer_id = $1
         ORDER BY o.created_at DESC`,
       [userId]
@@ -159,7 +167,7 @@ router.get("/mine", requireAuth, async (req, res) => {
     const withLinks = rows.map(r => ({
       ...r,
       product: linkify(r.product)
-    }));
+    }));    
 
     res.json({ orders: withLinks });
   } catch (err) {

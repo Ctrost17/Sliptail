@@ -6,6 +6,17 @@ const { sendIfUserPref } = require("../utils/notify");
 
 const router = express.Router();
 
+// Build secure product links, mirroring orders route
+function linkify(product) {
+  if (!product) return null;
+  const id = product.id;
+  return {
+    ...product,
+    view_url: `/api/downloads/view/${id}`,
+    download_url: `/api/downloads/file/${id}`,
+  };
+}
+
 /**
  * POST /api/memberships/subscribe
  * Body: { creator_id, product_id }
@@ -118,13 +129,40 @@ router.get("/mine", requireAuth, async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT m.*,
-              (m.status IN ('active','trialing') AND NOW() <= m.current_period_end) AS has_access
+              (m.status IN ('active','trialing') AND NOW() <= m.current_period_end) AS has_access,
+              json_build_object(
+                'id', p.id,
+                'user_id', p.user_id,
+                'title', p.title,
+                'description', p.description,
+                'filename', p.filename,
+                'product_type', p.product_type,
+                'price', p.price,
+                'created_at', p.created_at
+              ) AS product,
+              json_build_object(
+                'user_id', c.user_id,
+                'display_name', c.display_name,
+                'bio', c.bio,
+                'profile_image', c.profile_image
+              ) AS creator_profile
          FROM memberships m
+         JOIN products p ON p.id = m.product_id
+         JOIN creator_profiles c ON c.user_id = p.user_id
         WHERE m.buyer_id = $1
         ORDER BY m.current_period_end DESC`,
       [userId]
     );
-    res.json({ memberships: rows });
+
+    const withLinks = rows.map(r => ({
+      ...r,
+      product: linkify(r.product),
+    }));
+    // Optional: console.log("Fetched memberships:", withLinks);
+    console.log("Fetched memberships:", withLinks);
+    
+    
+    res.json({ memberships: withLinks });
   } catch (e) {
     console.error("mine error:", e);
     res.status(500).json({ error: "Could not fetch memberships" });
