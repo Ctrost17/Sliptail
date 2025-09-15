@@ -31,6 +31,7 @@ type Order = {
     download_url: string | null;
     product_type: string;
     title: string;
+    filename: string;
   };
   // For requests
   request_response?: string | null;
@@ -111,6 +112,7 @@ export default function PurchasesPage() {
             download_url: o.product?.download_url ?? null,
             product_type: String(o.product?.product_type ?? "unknown"),
             title: String(o.product?.title ?? ""),
+            filename: String(o.product?.filename ?? ""),
           },
           request_response: o.request_response ?? null,
           request_media_url: o.request_media_url ?? null,
@@ -139,6 +141,7 @@ export default function PurchasesPage() {
               download_url: m.product?.download_url ?? null,
               product_type: 'membership',
               title: String(m.product?.title ?? ''),
+              filename: '',
             },
           };
         });
@@ -206,6 +209,41 @@ export default function PurchasesPage() {
       setReviewRating(5);
     } catch (e) {
       showError("Failed to submit review");
+    }
+  };
+
+  // Trigger a reliable download for purchased files (works even cross-origin)
+  const handleDownload = async (item: Order) => {
+    try {
+      const candidate = item.product.filename ? `uploads/${item.product.filename}` : null;
+      if (!candidate) {
+        showError("No file available to download.");
+        return;
+      }
+      const url = resolveImageUrl(candidate, apiBase);
+      if (!url) {
+        showError("Invalid download URL.");
+        return;
+      }
+
+      // Fetch as blob and save with a suggested filename
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const suggestedName = item.product.filename || `${item.product.title || "download"}`;
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = suggestedName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      // Fallback: open in new tab
+      const fallback = item.product.download_url || (item.product.filename ? resolveImageUrl(`uploads/${item.product.filename}`, apiBase) : null);
+      if (fallback) window.open(fallback, "_blank", "noopener");
     }
   };
 
@@ -479,13 +517,13 @@ export default function PurchasesPage() {
                         </div>
 
                         <div className="flex items-center space-x-3">
-                          <a
-                            href={(purchase.product.download_url ? resolveImageUrl(purchase.product.download_url, apiBase) : '#')}
+                          <button
+                            onClick={() => handleDownload(purchase)}
                             className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 inline-flex items-center"
                           >
                             <Download className="w-4 h-4 mr-2" />
                             Download
-                          </a>
+                          </button>
                           <button
                             onClick={() => setShowReviewModal(purchase)}
                             className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
@@ -511,7 +549,7 @@ export default function PurchasesPage() {
                 <AlertCircle className="w-6 h-6 text-red-600" />
               </div>
               <h3 className="text-xl font-semibold text-center mb-2">Cancel Membership?</h3>
-              <p className="text-gray-600 text-center mb-6">This action cannot be undone. You'll lose access to this membership immediately.</p>
+              <p className="text-gray-600 text-center mb-6">This action cannot be undone. You'll lose access to this membership when membership expires.</p>
               <div className="flex space-x-3">
                 <button
                   onClick={() => setShowCancelConfirm(null)}

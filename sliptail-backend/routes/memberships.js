@@ -150,6 +150,7 @@ router.get("/mine", requireAuth, async (req, res) => {
          JOIN products p ON p.id = m.product_id
          JOIN creator_profiles c ON c.user_id = p.user_id
         WHERE m.buyer_id = $1
+          AND m.cancel_at_period_end = FALSE
         ORDER BY m.current_period_end DESC`,
       [userId]
     );
