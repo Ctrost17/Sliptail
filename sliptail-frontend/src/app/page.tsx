@@ -32,9 +32,19 @@ interface CategoryRow {
 /* --------------------------- API helpers --------------------------- */
 
 /**
- * Build a browser-safe base. In the client, envs are injected at build time.
- * Supports either NEXT_PUBLIC_API_BASE or NEXT_PUBLIC_API_BASE_URL.
- * Falls back to relative '/api' so Next rewrites proxy to your Express API.
+ * BACKEND ORIGIN (no trailing slash)
+ * Prefer NEXT_PUBLIC_API_URL; fall back to legacy NEXT_PUBLIC_API_BASE* if present.
+ */
+const API_ORIGIN: string = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API_BASE ||
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  ""
+).replace(/\/$/, "");
+
+/**
+ * Build a browser-safe base. Falls back to relative '/api' so Next rewrites
+ * proxy to your Express API for API requests.
  */
 const API_BASE: string = (() => {
   const a = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/$/, "");
@@ -50,11 +60,29 @@ function normalizeFeatured(payload: FeaturedApiResponse): FeaturedApiCreator[] {
   return Array.isArray(payload) ? payload : payload.creators ?? [];
 }
 
+/**
+ * Ensure image URLs are acceptable to next/image:
+ * - Collapse protocol-relative `//uploads/...` -> `/uploads/...`
+ * - Make absolute (http/https) using API_ORIGIN when available
+ * - Keep https/http URLs untouched
+ * Returns null if src is unusable.
+ */
+function resolveImageUrl(src?: string | null): string | null {
+  if (!src) return null;
+  let s = src.trim();
+  if (!s) return null;
+  if (s.startsWith("//")) s = s.slice(1); // "//uploads/..." -> "/uploads/..."
+  if (/^https?:\/\//i.test(s)) return s; // already absolute
+  if (!s.startsWith("/")) s = `/${s}`;
+  if (API_ORIGIN) return `${API_ORIGIN}${s}`;
+  // As a last resort, return the path (may 404 unless you proxy /uploads/* in Next)
+  return s;
+}
+
 async function fetchFeatured(): Promise<FeaturedApiCreator[]> {
   // Public endpoint; no auth needed. Keep credentials optional-safe.
   const res = await fetch(api("/api/creators/featured"), {
     credentials: "include",
-    // Cache a bit so home loads snappy; adjust if you want fully fresh
     next: { revalidate: 60 },
   }).catch(() => null);
 
@@ -81,10 +109,7 @@ function normalizeCategoryArray(payload: unknown): CategoryRow[] {
 
 async function fetchCategories(): Promise<CategoryRow[]> {
   // Try the richer endpoint first (with counts), then fallback.
-  const urls = [
-    api("/api/categories?count=true"),
-    api("/api/categories"),
-  ];
+  const urls = [api("/api/categories?count=true"), api("/api/categories")];
 
   for (const url of urls) {
     try {
@@ -216,13 +241,16 @@ export default function Home() {
                   creator={{
                     id: String(c.creator_id),
                     displayName: c.display_name,
-                    avatar: c.profile_image ?? "",
+                    avatar: resolveImageUrl(c.profile_image) || "/placeholder-avatar.png",
                     bio: c.bio ?? "",
                     rating:
                       typeof c.average_rating === "string"
                         ? parseFloat(c.average_rating) || 0
                         : Number(c.average_rating || 0),
-                    photos: (c.gallery ?? []).slice(0, 4),
+                    photos: (c.gallery ?? [])
+                      .slice(0, 4)
+                      .map((g) => resolveImageUrl(g))
+                      .filter(Boolean) as string[],
                   }}
                 />
               ))}

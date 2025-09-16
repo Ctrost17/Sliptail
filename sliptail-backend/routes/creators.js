@@ -11,6 +11,15 @@ const fs = require("fs");
 
 const router = express.Router();
 
+/* ------------------------------- PARAM GUARD ------------------------------ */
+/** Skip any :creatorId route if the param isn’t a finite integer (prevents "/featured" from matching). */
+router.param("creatorId", (req, res, next, val) => {
+  const id = Number.parseInt(String(val), 10);
+  if (!Number.isFinite(id)) return next("route");
+  req.creatorId = id;
+  return next();
+});
+
 /* -------------------------------- helpers -------------------------------- */
 
 function toSafeUser(u) {
@@ -41,8 +50,9 @@ function toPublicUrl(absPath) {
   const marker = `${path.sep}uploads${path.sep}`;
   const idx = absPath.lastIndexOf(marker);
   if (idx === -1) return null;
-  const rel = absPath.slice(idx).replace(/\\/g, "/");
-  return `/${rel}`;
+  const rel = absPath.slice(idx).replace(/\\/g, "/"); // => "/uploads/creators/..."
+  // Ensure we DO NOT produce "//uploads/..."
+  return rel.startsWith("/") ? rel : `/${rel}`;
 }
 
 // column-existence helper (so we can handle missing categories.slug, users.enabled)
@@ -536,7 +546,7 @@ router.patch(
  * PUBLIC: Get a creator profile (gated/eligible)
  */
 router.get("/:creatorId", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const creatorId = req.creatorId;
 
   try {
     const enabledClause = await usersEnabledClause();
@@ -606,8 +616,7 @@ router.get("/:creatorId", async (req, res) => {
  * Update my creator profile + categories (admin or self)
  */
 router.put("/:creatorId", requireAuth, async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
-  if (Number.isNaN(creatorId)) return res.status(400).json({ error: "Invalid id" });
+  const creatorId = req.creatorId;
 
   const isAdmin = req.user?.role === "admin";
   if (!isAdmin && req.user?.id !== creatorId) {
@@ -745,7 +754,7 @@ router.post("/me/categories", requireAuth, async (req, res) => {
  * ADMIN: Set/unset featured creator
  */
 router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const creatorId = req.creatorId;
   const { featured } = req.body || {};
   const flag = !!featured;
 
@@ -779,7 +788,7 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
  * PUBLIC: Creator card (front/back) — eligible only
  */
 router.get("/:creatorId/card", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const creatorId = req.creatorId;
 
   try {
     const enabledClause = await usersEnabledClause();
