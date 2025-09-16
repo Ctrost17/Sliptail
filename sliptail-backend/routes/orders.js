@@ -169,6 +169,9 @@ router.get("/mine", requireAuth, async (req, res) => {
       product: linkify(r.product)
     }));    
 
+    console.log("Fetched orders:", withLinks);
+    
+
     res.json({ orders: withLinks });
   } catch (err) {
     console.error("Orders mine error:", err);
