@@ -114,23 +114,7 @@ router.post(
     let session;
 
     if (mode === "payment") {
-      // ────────────────────────────────────────────────────────────────────────────
-      // ONE-TIME: Create a PENDING order now; mark it PAID in webhook/finalizer
-      // ────────────────────────────────────────────────────────────────────────────
-
-      // DB matches your schema: amount_cents integer NOT NULL
-      const { rows: ord } = await db.query(
-        `
-        INSERT INTO public.orders
-          (buyer_id, product_id, amount_cents, status, created_at)
-        VALUES
-          ($1, $2, $3, 'pending', NOW())
-        RETURNING id
-        `,
-        [buyerId, p.id, amountCents]
-      );
-      const orderId = ord[0].id;
-
+      // ONE-TIME: Do NOT create DB order yet. We'll create it in finalize after success.
       const payload = {
         mode: "payment",
         line_items: [
@@ -146,23 +130,19 @@ router.post(
         payment_intent_data: {
           application_fee_amount: feeAmount,
           transfer_data: { destination: p.stripe_account_id },
-          metadata: { ...baseMetadata, order_id: String(orderId) },
+          metadata: { ...baseMetadata },
         },
-        metadata: { ...baseMetadata, order_id: String(orderId) },
+        metadata: { ...baseMetadata },
         success_url: successUrl, // -> /checkout/success?...session_id={CHECKOUT_SESSION_ID}
         cancel_url: cancelUrl,
       };
 
-      // Use client key if provided; else a stable order-based key
-      const idempotencyKey = clientKey || `co_${orderId}`;
-
-      session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
-
-      // Stash session id on the order (useful for support and request form)
-      await db.query(
-        `UPDATE public.orders SET stripe_checkout_session_id = $1 WHERE id = $2`,
-        [session.id, orderId]
-      );
+      // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
+      if (clientKey) {
+        session = await stripe.checkout.sessions.create(payload, { idempotencyKey: clientKey });
+      } else {
+        session = await stripe.checkout.sessions.create(payload);
+      }
     } else if (mode === "subscription") {
       // ────────────────────────────────────────────────────────────────────────────
       // SUBSCRIPTION: No orders row now; webhook/finalizer will upsert membership
@@ -193,9 +173,12 @@ router.post(
         cancel_url: cancelUrl,
       };
 
-      // If you want multiple concurrent subs to same product, provide unique X-Idempotency-Key from client
-      const idempotencyKey = clientKey || `sub_${buyerId}_${p.id}`;
-      session = await stripe.checkout.sessions.create(payload, { idempotencyKey });
+      // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
+      if (clientKey) {
+        session = await stripe.checkout.sessions.create(payload, { idempotencyKey: clientKey });
+      } else {
+        session = await stripe.checkout.sessions.create(payload);
+      }
     } else {
       return res.status(400).json({ error: "mode must be 'payment' or 'subscription'" });
     }
@@ -245,34 +228,21 @@ router.get("/finalize", requireAuth, async (req, res) => {
     }
 
     if (session.mode === "payment") {
-      // Attempt to mark the related order paid (mirrors webhook logic) if payment succeeded.
+      // Only create order after successful payment
       const paid = session.payment_status === "paid" || session.status === "complete";
-      const orderId = meta.order_id ? parseInt(meta.order_id, 10) : null;
-      let finalOrderId = orderId;
+  let finalOrderId = null;
 
-      if (paid && orderId) {
-        await db.query(
-          `UPDATE public.orders
-              SET status='paid',
-                  stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $1),
-                  stripe_checkout_session_id = COALESCE(stripe_checkout_session_id, $2)
-            WHERE id=$3 AND status <> 'paid'`,
-          [session.payment_intent || null, session.id, orderId]
-        );
-      }
-
-      // Fallback: if we somehow never created the pending order (edge), create it now.
-      if (paid && !finalOrderId) {
+      if (paid) {
         const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
         if (productId) {
           const amount = Number.isFinite(session.amount_total) ? Number(session.amount_total) : 0;
-            const { rows } = await db.query(
-              `INSERT INTO public.orders (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
-               VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
-               RETURNING id`,
-              [req.user.id, productId, amount, session.payment_intent || null, session.id]
-            );
-            finalOrderId = rows[0].id;
+          const { rows } = await db.query(
+            `INSERT INTO public.orders (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
+             VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
+             RETURNING id`,
+            [req.user.id, productId, amount, session.payment_intent || null, session.id]
+          );
+          finalOrderId = rows[0].id;
         }
       }
 
