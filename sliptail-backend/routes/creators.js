@@ -8,6 +8,7 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { log } = require("console");
 
 const router = express.Router();
 
@@ -159,7 +160,7 @@ router.post("/become", requireAuth, async (req, res) => {
 
     return res.json({ success: true, creator_id: userId, token, user: toSafeUser(user) });
   } catch (e) {
-    await db.query("ROLLBACK").catch(() => {});
+    await db.query("ROLLBACK").catch(() => { });
     console.error("become creator error:", e);
     return res.status(500).json({ error: "Failed to become a creator" });
   }
@@ -212,7 +213,7 @@ router.post("/activate", requireAuth, async (req, res) => {
 
     return res.json({ success: true, token, user: toSafeUser(user) });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch {}
+    try { await db.query("ROLLBACK"); } catch { }
     console.error("activate error:", e);
     return res.status(500).json({ error: "Failed to activate creator" });
   }
@@ -270,7 +271,7 @@ router.post(
 
       res.json({ profile_image: profilePublic, gallery: galleryPublic });
     } catch (e) {
-      try { await db.query("ROLLBACK"); } catch {}
+      try { await db.query("ROLLBACK"); } catch { }
       console.error("creator media upload error:", e);
       res.status(500).json({ error: "Failed to upload creator media" });
     }
@@ -376,7 +377,7 @@ router.post(
         creator_status: status,
       });
     } catch (e) {
-      try { await db.query("ROLLBACK"); } catch {}
+      try { await db.query("ROLLBACK"); } catch { }
       console.error("creator profile save error:", e);
       return res.status(500).json({ error: "Failed to save profile" });
     }
@@ -531,12 +532,118 @@ router.patch(
     }
   }
 );
+/**
+ * PUBLIC: Featured creators (eligible only)
+ * NOTE: Keep this BEFORE any dynamic "/:creatorId" routes so "/featured" doesn't match the param route.
+ * - users.enabled = TRUE (if column exists)
+ * - u.role = 'creator'
+ * - cp.is_profile_complete = TRUE
+ * - cp.is_active = TRUE
+ * - cp.is_featured/featured = TRUE
+ * - ≥1 active product
+ */
+router.get("/featured", async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || "12", 10), 24);
+  
+
+  try {
+    const enabledClause = await usersEnabledClause();
+
+    const { rows: profiles } = await db.query(
+      `
+      SELECT
+        cp.user_id AS creator_id,
+        cp.display_name,
+        cp.bio,
+        cp.profile_image,
+        ${featuredExpr} AS is_featured,
+        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
+        COUNT(DISTINCT p.id)::int               AS products_count
+      FROM creator_profiles cp
+      JOIN users u
+        ON u.id = cp.user_id
+      LEFT JOIN reviews  r
+        ON r.creator_id = cp.user_id
+      LEFT JOIN products p
+        ON p.user_id = cp.user_id
+       AND p.active  = TRUE
+      WHERE ${enabledClause}
+        AND u.role = 'creator'
+        AND cp.is_profile_complete = TRUE
+        AND cp.is_active = TRUE
+        AND ${featuredExpr} = TRUE
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
+      ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    if (profiles.length === 0) return res.json({ creators: [] });
+    
+
+    const creatorIds = profiles.map((p) => p.creator_id);
+    
+    // categories (slug-safe)
+    const slugExists = await hasColumn("categories", "slug");
+    const catExpr = slugExists ? "c.slug" : "lower(regexp_replace(c.name,'\\s+','-','g'))";
+    const { rows: categories } = await db.query(
+      `
+      SELECT
+        cc.creator_id,
+        JSON_AGG(
+          JSON_BUILD_OBJECT('id', c.id, 'name', c.name, 'slug', ${catExpr})
+          ORDER BY c.name
+        ) AS categories
+      FROM creator_categories cc
+      JOIN categories c ON c.id = cc.category_id
+      WHERE cc.creator_id = ANY($1::int[])
+      GROUP BY cc.creator_id
+      `,
+      [creatorIds]
+    );
+    const catsByCreator = Object.fromEntries(categories.map((r) => [r.creator_id, r.categories || []]));
+
+    // gallery (first 4)
+    const { rows: photos } = await db.query(
+      `
+      SELECT user_id AS creator_id, ARRAY_AGG(url ORDER BY position) AS gallery
+      FROM creator_profile_photos
+      WHERE user_id = ANY($1::int[])
+      GROUP BY user_id
+      `,
+      [creatorIds]
+    );
+    const photosByCreator = Object.fromEntries(photos.map((r) => [r.creator_id, (r.gallery || []).slice(0, 4)]));
+
+    const out = profiles.map((p) => ({
+      creator_id: p.creator_id,
+      display_name: p.display_name,
+      bio: p.bio,
+      profile_image: p.profile_image,
+      average_rating: p.average_rating,
+      products_count: p.products_count,
+      categories: catsByCreator[p.creator_id] || [],
+      gallery: photosByCreator[p.creator_id] || [],
+      featured: !!p.is_featured,
+      is_featured: !!p.is_featured,
+    }));
+
+    console.log("Featured creators output:", out);
+    
+
+    res.json({ creators: out });
+  } catch (e) {
+    console.error("featured creators error:", e);
+    res.status(500).json({ error: "Failed to fetch featured creators" });
+  }
+});
 
 /**
  * PUBLIC: Get a creator profile (gated/eligible)
  */
 router.get("/:creatorId", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const creatorId = parseInt(req.params.creatorId, 10);  
 
   try {
     const enabledClause = await usersEnabledClause();
@@ -709,7 +816,7 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
       categories: cats.map((c) => c.name),
     });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch {}
+    try { await db.query("ROLLBACK"); } catch { }
     console.error("update creator error:", e);
     return res.status(500).json({ error: "Could not update creator" });
   }
@@ -766,7 +873,7 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
          VALUES ($1,$2,$3,$4,$5)`,
         [req.user.id, flag ? "feature_creator" : "unfeature_creator", "user", creatorId, JSON.stringify({ featured: flag })]
       );
-    } catch {}
+    } catch { }
 
     res.json({ success: true, profile: { ...rows[0], featured: !!rows[0].is_featured } });
   } catch (e) {
@@ -1003,105 +1110,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-/**
- * PUBLIC: Featured creators (eligible only)
- * - users.enabled = TRUE (if column exists)
- * - u.role = 'creator'
- * - cp.is_profile_complete = TRUE
- * - cp.is_active = TRUE
- * - cp.is_featured/featured = TRUE
- * - ≥1 active product
- */
-router.get("/featured", async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit || "12", 10), 24);
-
-  try {
-    const enabledClause = await usersEnabledClause();
-
-    const { rows: profiles } = await db.query(
-      `
-      SELECT
-        cp.user_id AS creator_id,
-        cp.display_name,
-        cp.bio,
-        cp.profile_image,
-        ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
-      FROM creator_profiles cp
-      JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
-      WHERE ${enabledClause}
-        AND u.role = 'creator'
-        AND cp.is_profile_complete = TRUE
-        AND cp.is_active = TRUE
-        AND ${featuredExpr} = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
-      LIMIT $1
-      `,
-      [limit]
-    );
-
-    if (profiles.length === 0) return res.json({ creators: [] });
-
-    const creatorIds = profiles.map((p) => p.creator_id);
-
-    // categories (slug-safe)
-    const slugExists = await hasColumn("categories", "slug");
-    const catExpr = slugExists ? "c.slug" : "lower(regexp_replace(c.name,'\\s+','-','g'))";
-    const { rows: categories } = await db.query(
-      `
-      SELECT
-        cc.creator_id,
-        JSON_AGG(
-          JSON_BUILD_OBJECT('id', c.id, 'name', c.name, 'slug', ${catExpr})
-          ORDER BY c.name
-        ) AS categories
-      FROM creator_categories cc
-      JOIN categories c ON c.id = cc.category_id
-      WHERE cc.creator_id = ANY($1::int[])
-      GROUP BY cc.creator_id
-      `,
-      [creatorIds]
-    );
-    const catsByCreator = Object.fromEntries(categories.map((r) => [r.creator_id, r.categories || []]));
-
-    // gallery (first 4)
-    const { rows: photos } = await db.query(
-      `
-      SELECT user_id AS creator_id, ARRAY_AGG(url ORDER BY position) AS gallery
-      FROM creator_profile_photos
-      WHERE user_id = ANY($1::int[])
-      GROUP BY user_id
-      `,
-      [creatorIds]
-    );
-    const photosByCreator = Object.fromEntries(photos.map((r) => [r.creator_id, (r.gallery || []).slice(0, 4)]));
-
-    const out = profiles.map((p) => ({
-      creator_id: p.creator_id,
-      display_name: p.display_name,
-      bio: p.bio,
-      profile_image: p.profile_image,
-      average_rating: p.average_rating,
-      products_count: p.products_count,
-      categories: catsByCreator[p.creator_id] || [],
-      gallery: photosByCreator[p.creator_id] || [],
-      featured: !!p.is_featured,
-      is_featured: !!p.is_featured,
-    }));
-
-    res.json({ creators: out });
-  } catch (e) {
-    console.error("featured creators error:", e);
-    res.status(500).json({ error: "Failed to fetch featured creators" });
-  }
-});
+// (duplicate /featured handler removed; see earlier definition before :creatorId)
 
 module.exports = router;

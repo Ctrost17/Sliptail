@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { useMemo } from "react";
 
 interface Creator {
   id: string;
@@ -10,14 +11,31 @@ interface Creator {
   photos: string[];
 }
 
+function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
+  if (!src) return null;
+  let s = src.trim();
+  if (s.startsWith("//")) s = s.slice(1);
+  if (/^https?:\/\//i.test(s)) return s;
+  if (!s.startsWith("/")) s = `/${s}`;
+  return `${apiBase}${s}`;
+}
+function toApiBase(): string {
+  return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
+}
+
 export default function CreatorCard({ creator }: { creator: Creator }) {
+
+  
+  const apiBase = useMemo(() => toApiBase(), []);
+  console.log("Rendering CreatorCard for:", creator);
+  
   return (
     <div className="group relative h-80 w-64 [perspective:1000px]">
       <div className="relative h-full w-full transition-transform duration-500 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)]">
         {/* front */}
         <div className="absolute inset-0 flex flex-col items-center rounded border bg-white p-4 [backface-visibility:hidden]">
           <Image
-            src={creator.avatar}
+            src={resolveImageUrl(creator.avatar, apiBase) || "/default-avatar.png"}
             alt={creator.displayName}
             width={80}
             height={80}
@@ -42,7 +60,7 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
           {creator.photos.slice(0, 4).map((src, i) => (
             <Image
               key={i}
-              src={src}
+              src={resolveImageUrl(src, apiBase)  || "/placeholder-image.png"  }
               alt=""
               width={120}
               height={120}

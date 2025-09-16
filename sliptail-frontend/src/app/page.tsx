@@ -57,9 +57,9 @@ async function fetchFeatured(): Promise<FeaturedApiCreator[]> {
     // Cache a bit so home loads snappy; adjust if you want fully fresh
     next: { revalidate: 60 },
   }).catch(() => null);
-
+  
   if (!res || !res.ok) return [];
-  const payload: FeaturedApiResponse = await res.json();
+  const payload: FeaturedApiResponse = await res.json();  
   return normalizeFeatured(payload);
 }
 
@@ -144,7 +144,7 @@ export default function Home() {
         {children}
       </Link>
     );
-  };
+  };  
 
   useEffect(() => {
     let cancelled = false;
@@ -168,7 +168,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, []);  
 
   return (
     <div className="font-sans">
