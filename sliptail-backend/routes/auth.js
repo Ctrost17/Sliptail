@@ -57,7 +57,15 @@ async function hasColumn(table, column) {
   return rows.length > 0;
 }
 
+/** For legacy compat: figure out which pending timestamp column is present */
+async function getPendingSetAtColumn() {
+  if (await hasColumn("users", "pending_email_set_at")) return "pending_email_set_at";
+  if (await hasColumn("users", "pending_set_at")) return "pending_set_at"; // legacy name
+  return null;
+}
+
 async function sendVerifyEmail(userId, email) {
+  // Invalidate any prior unconsumed verify tokens
   await db.query(
     `UPDATE user_tokens
         SET consumed_at = NOW()
@@ -76,6 +84,8 @@ async function sendVerifyEmail(userId, email) {
 
   const verifyUrl = `${BASE_URL}/api/auth/verify?token=${token}`;
 
+  // If email_queue has a strict CHECK on status and your system isn't fully wired,
+  // this may throw. We let it throw here and catch at call-site so it NEVER rolls back the user update.
   await enqueueAndSend({
     to: email,
     subject: "Verify your email",
@@ -84,7 +94,7 @@ async function sendVerifyEmail(userId, email) {
   });
 }
 
-/** Allow auth via Bearer OR cookie (for settings page with credentials: 'include') */
+/** Allow auth via Bearer OR cookie (for settings with credentials: 'include') */
 function authFromBearer(req, res, next) {
   try {
     const h = req.headers.authorization || "";
@@ -189,7 +199,8 @@ router.post("/verify/resend", strictLimiter, async (req, res) => {
 
 /**
  * GET /api/auth/verify?token=...
- * Marks user verified and redirects to FRONTEND_URL/auth/verified
+ * If user has a pending email, swap it in and verify.
+ * Otherwise, mark current email as verified (signup flow).
  */
 router.get("/verify", async (req, res) => {
   const { token } = req.query || {};
@@ -212,13 +223,26 @@ router.get("/verify", async (req, res) => {
 
     await db.query("BEGIN");
 
-    const sets = ["email_verified_at = NOW()"];
+    // Swap-in pending email if present; else leave as-is (signup verify)
+    const pendingCol = await getPendingSetAtColumn();
+    const sets = [
+      "email = COALESCE(pending_email, email)",
+      "pending_email = NULL",
+      "email_verified_at = NOW()",
+      "updated_at = NOW()",
+    ];
+    if (pendingCol) sets.push(`${pendingCol} = NULL`);
     if (await hasColumn("users", "email_verified")) {
       sets.push("email_verified = TRUE");
     }
 
     await db.query(`UPDATE users SET ${sets.join(", ")} WHERE id = $1`, [userId]);
-    await db.query(`UPDATE user_tokens SET consumed_at = NOW() WHERE token = $1`, [token]);
+    await db.query(
+      `UPDATE user_tokens
+         SET consumed_at = NOW()
+       WHERE token = $1`,
+      [token]
+    );
 
     await db.query("COMMIT");
 
@@ -364,6 +388,7 @@ router.post("/reset", strictLimiter, async (req, res) => {
  * PATCH /api/auth/change-email
  * Body: { new_email, password }
  * Requires auth (Bearer or cookie)
+ * Writes pending_email, then *attempts* to enqueue verify email OUTSIDE any transaction.
  */
 router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) => {
   try {
@@ -373,6 +398,7 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
     }
     const lower = String(new_email).toLowerCase();
 
+    // Block if someone else already owns that email
     const { rows: dupe } = await db.query(
       `SELECT id FROM users WHERE email=$1 LIMIT 1`,
       [lower]
@@ -381,6 +407,7 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
       return res.status(409).json({ error: "Email already in use" });
     }
 
+    // Check current password
     const { rows } = await db.query(
       `SELECT id, email, password_hash FROM users WHERE id=$1 LIMIT 1`,
       [req.user.id]
@@ -391,15 +418,16 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
     const ok = await bcrypt.compare(String(password), me.password_hash || "");
     if (!ok) return res.status(400).json({ error: "Invalid password" });
 
-    await db.query("BEGIN");
+    // SET pending_email + timestamp (no transaction; we want this to persist even if email fails)
+    const pendingCol = await getPendingSetAtColumn();
+    const sets = ["pending_email = $1", "updated_at = NOW()"];
+    if (pendingCol) sets.push(`${pendingCol} = NOW()`);
+    await db.query(
+      `UPDATE users SET ${sets.join(", ")} WHERE id = $2`,
+      [lower, req.user.id]
+    );
 
-    const sets = ["email = $1", "email_verified_at = NULL", "updated_at = NOW()"];
-    if (await hasColumn("users", "email_verified")) {
-      sets.push("email_verified = FALSE");
-    }
-
-    await db.query(`UPDATE users SET ${sets.join(", ")} WHERE id = $2`, [lower, req.user.id]);
-
+    // Try to send verify email to the pending address; swallow any email-queue errors
     try {
       await sendVerifyEmail(req.user.id, lower);
     } catch (e) {
@@ -407,15 +435,12 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
       console.warn("change-email: enqueue verify failed:", e?.message || e);
     }
 
-    await db.query("COMMIT");
-
     return res.json({
       success: true,
       requires_email_verify: true,
       message: "Email updated. Please verify your new email to continue.",
     });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch {}
     // eslint-disable-next-line no-console
     console.error("change-email error:", e);
     return res.status(500).json({ error: "Failed to change email" });
