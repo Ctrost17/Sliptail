@@ -50,9 +50,8 @@ function toPublicUrl(absPath) {
   const marker = `${path.sep}uploads${path.sep}`;
   const idx = absPath.lastIndexOf(marker);
   if (idx === -1) return null;
-  const rel = absPath.slice(idx).replace(/\\/g, "/"); // => "/uploads/creators/..."
-  // Ensure we DO NOT produce "//uploads/..."
-  return rel.startsWith("/") ? rel : `/${rel}`;
+  const rel = absPath.slice(idx).replace(/\\/g, "/");
+  return `/${rel}`;
 }
 
 // column-existence helper (so we can handle missing categories.slug, users.enabled)
@@ -308,8 +307,8 @@ router.post(
     const isMultipart = !!req.files;
 
     try {
-      let display_name = (req.body?.display_name || "").trim();
-      let bio = (req.body?.bio || "").trim();
+      const display_name = (req.body?.display_name || "").trim();
+      const bio = (req.body?.bio || "").trim();
 
       if (!display_name || !bio) {
         return res.status(400).json({ error: "display_name and bio are required" });
@@ -430,457 +429,9 @@ router.get("/me", requireAuth, async (req, res) => {
   }
 });
 
-/**
- * PATCH: Update ONLY my profile image (single file)
- */
-router.patch(
-  "/me/profile-image",
-  requireAuth,
-  uploadSingleImage.single("profile_image"),
-  async (req, res) => {
-    const userId = req.user.id;
-    try {
-      if (!req.file) return res.status(400).json({ error: "profile_image file is required" });
-      const url = toPublicUrl(req.file.path);
-      if (!url) return res.status(500).json({ error: "Failed to store image" });
-      // Try UPDATE first (schema-aware update of updated_at if column exists)
-      const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at").catch(() => false);
-      const updateSets = ["profile_image=$2"]; // base set
-      if (hasUpdatedAt) updateSets.push("updated_at=NOW()");
-      const updateSql = `UPDATE creator_profiles SET ${updateSets.join(",")} WHERE user_id=$1`;
-      const upd = await db.query(updateSql, [userId, url]);
-
-      if (upd.rowCount === 0) {
-        // Need to INSERT minimal row (schema-aware for optional columns)
-        const cols = ["user_id", "profile_image"]; // mandatory
-        const vals = ["$1", "$2"]; // placeholders
-        const params = [userId, url];
-        const optionalCols = [
-          { name: "featured", value: "FALSE" },
-          { name: "is_featured", value: "FALSE" },
-          { name: "is_profile_complete", value: "FALSE" },
-          { name: "created_at", value: "NOW()" },
-          { name: "updated_at", value: "NOW()" },
-        ];
-        for (const oc of optionalCols) {
-          // eslint-disable-next-line no-await-in-loop
-          const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
-          if (exists) {
-            cols.push(oc.name);
-            vals.push(oc.value);
-          }
-        }
-        const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
-        await db.query(insertSql, params);
-      }
-      return res.json({ profile_image: url });
-    } catch (e) {
-      console.error("update profile image error:", e);
-      return res.status(500).json({ error: "Failed to update profile image" });
-    }
-  }
-);
-
-/**
- * PATCH: Replace ONE gallery photo by position (1-4)
- * Field name: photo
- */
-router.patch(
-  "/me/gallery/:position",
-  requireAuth,
-  uploadSingleImage.single("photo"),
-  async (req, res) => {
-    const userId = req.user.id;
-    const pos = parseInt(req.params.position, 10);
-    if (Number.isNaN(pos) || pos < 1 || pos > 4) {
-      return res.status(400).json({ error: "position must be 1-4" });
-    }
-    try {
-      if (!req.file) return res.status(400).json({ error: "photo file is required" });
-      const url = toPublicUrl(req.file.path);
-      if (!url) return res.status(500).json({ error: "Failed to store image" });
-      // Ensure profile row exists (schema-aware minimal insert)
-      const { rows: existing } = await db.query(
-        `SELECT 1 FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
-        [userId]
-      );
-      if (!existing.length) {
-        const cols = ["user_id"]; const vals = ["$1"]; const params = [userId];
-        const optionalCols = [
-          { name: "is_active", value: "FALSE" },
-          { name: "featured", value: "FALSE" },
-          { name: "is_featured", value: "FALSE" },
-          { name: "is_profile_complete", value: "FALSE" },
-          { name: "created_at", value: "NOW()" },
-          { name: "updated_at", value: "NOW()" },
-        ];
-        for (const oc of optionalCols) {
-          // eslint-disable-next-line no-await-in-loop
-          const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
-          if (exists) { cols.push(oc.name); vals.push(oc.value); }
-        }
-        const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
-        await db.query(insertSql, params);
-      }
-
-      await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1 AND position=$2`, [userId, pos]);
-      await db.query(
-        `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ($1,$2,$3)`,
-        [userId, url, pos]
-      );
-
-      const { rows: photos } = await db.query(
-        `SELECT url, position FROM creator_profile_photos WHERE user_id=$1 ORDER BY position`,
-        [userId]
-      );
-      const gallery = photos.map((p) => p.url).slice(0, 4);
-      return res.json({ position: pos, url, gallery });
-    } catch (e) {
-      console.error("update gallery photo error:", e);
-      return res.status(500).json({ error: "Failed to update gallery photo" });
-    }
-  }
-);
-
-/**
- * PUBLIC: Get a creator profile (gated/eligible)
- */
-router.get("/:creatorId", async (req, res) => {
-  const creatorId = req.creatorId;
-
-  try {
-    const enabledClause = await usersEnabledClause();
-
-    const { rows } = await db.query(
-      `
-      SELECT
-        cp.user_id,
-        cp.display_name,
-        cp.bio,
-        cp.profile_image,
-        ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
-      FROM creator_profiles cp
-      JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
-      WHERE cp.user_id = $1
-        AND ${enabledClause}
-        AND u.role = 'creator'
-        AND cp.is_profile_complete = TRUE
-        AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
-      `,
-      [creatorId]
-    );
-
-    if (!rows.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
-
-    const base = rows[0];
-
-    const { rows: cats } = await db.query(
-      `SELECT c.name
-         FROM creator_categories cc
-         JOIN categories c ON c.id = cc.category_id
-        WHERE cc.creator_id = $1
-        ORDER BY c.name ASC`,
-      [creatorId]
-    );
-    const categories = cats.map((c) => c.name);
-
-    const { rows: photos } = await db.query(
-      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
-         FROM creator_profile_photos WHERE user_id=$1`,
-      [creatorId]
-    );
-
-    res.json({
-      ...base,
-      featured: !!base.is_featured, // keep legacy field name too
-      categories,
-      gallery: photos?.[0]?.gallery || [],
-    });
-  } catch (e) {
-    console.error("public profile error:", e);
-    res.status(500).json({ error: "Failed to fetch profile" });
-  }
-});
-
-/**
- * Update my creator profile + categories (admin or self)
- */
-router.put("/:creatorId", requireAuth, async (req, res) => {
-  const creatorId = req.creatorId;
-
-  const isAdmin = req.user?.role === "admin";
-  if (!isAdmin && req.user?.id !== creatorId) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  const display_name = typeof req.body.display_name === "string" ? req.body.display_name.trim() : null;
-  const bio = typeof req.body.bio === "string" ? req.body.bio.trim() : null;
-
-  const rawCats = Array.isArray(req.body.categories) ? req.body.categories : null;
-  const toLower = (s) => String(s || "").trim().toLowerCase();
-  const parseCategoryInput = (arr) => {
-    const names = [];
-    const ids = [];
-    for (const it of arr) {
-      if (typeof it === "string") names.push(it.trim());
-      else if (typeof it === "number") ids.push(it);
-      else if (it && typeof it === "object") {
-        if (typeof it.id === "number") ids.push(it.id);
-        else if (typeof it.name === "string") names.push(it.name.trim());
-      }
-    }
-    return { names, ids };
-  };
-
-  try {
-    await db.query("BEGIN");
-
-    if (display_name !== null || bio !== null) {
-      const { rowCount } = await db.query(
-        `UPDATE creator_profiles
-            SET display_name = COALESCE($1, display_name),
-                bio          = COALESCE($2, bio),
-                updated_at   = NOW()
-          WHERE user_id = $3`,
-        [display_name, bio, creatorId]
-      );
-
-      if (rowCount === 0) {
-        const featCol = await getFeaturedColumnName();
-        await db.query(
-          `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, is_profile_complete, created_at, updated_at)
-           VALUES ($1, $2, $3, NULL, FALSE, FALSE, NOW(), NOW())`,
-          [creatorId, display_name, bio]
-        );
-      }
-    }
-
-    if (rawCats) {
-      const { names, ids } = parseCategoryInput(rawCats);
-      let allIds = ids.slice();
-
-      if (names.length) {
-        const { rows } = await db.query(
-          `SELECT id, name FROM categories WHERE active = TRUE AND lower(name) = ANY($1::text[])`,
-          [names.map(toLower)]
-        );
-        const foundLower = rows.map((r) => r.name.toLowerCase());
-        const missing = names.filter((n) => !foundLower.includes(n.toLowerCase()));
-
-        if (missing.length) {
-          await db.query("ROLLBACK");
-          return res.status(400).json({ error: "Unknown categories", details: { missing } });
-        }
-
-        allIds = allIds.concat(rows.map((r) => r.id));
-      }
-
-      await db.query(`DELETE FROM creator_categories WHERE creator_id=$1`, [creatorId]);
-      if (allIds.length) {
-        const values = allIds.map((_, i) => `($1,$${i + 2})`).join(",");
-        await db.query(
-          `INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`,
-          [creatorId, ...allIds]
-        );
-      }
-    }
-
-    const { rows: prof } = await db.query(
-      `SELECT user_id AS creator_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured
-         FROM creator_profiles cp WHERE user_id=$1 LIMIT 1`,
-      [creatorId]
-    );
-
-    const { rows: cats } = await db.query(
-      `SELECT c.name
-         FROM creator_categories cc
-         JOIN categories c ON c.id = cc.category_id
-        WHERE cc.creator_id = $1
-        ORDER BY c.name ASC`,
-      [creatorId]
-    );
-
-    await db.query("COMMIT");
-
-    return res.json({
-      ...(prof[0] || { creator_id: creatorId, display_name, bio, profile_image: null, is_featured: false }),
-      featured: !!(prof[0]?.is_featured || false), // legacy field
-      categories: cats.map((c) => c.name),
-    });
-  } catch (e) {
-    try { await db.query("ROLLBACK"); } catch {}
-    console.error("update creator error:", e);
-    return res.status(500).json({ error: "Could not update creator" });
-  }
-});
-
-/**
- * Set my categories
- */
-router.post("/me/categories", requireAuth, async (req, res) => {
-  const userId = req.user.id;
-  const { category_ids } = req.body || {};
-  const ids = Array.isArray(category_ids) ? category_ids.map((n) => parseInt(n, 10)).filter(Boolean) : [];
-
-  try {
-    await db.query("BEGIN");
-    await db.query(`DELETE FROM creator_categories WHERE creator_id=$1`, [userId]);
-
-    if (ids.length) {
-      const values = ids.map((_, i) => `($1,$${i + 2})`).join(",");
-      await db.query(`INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`, [userId, ...ids]);
-    }
-    await db.query("COMMIT");
-
-    res.json({ success: true, category_ids: ids });
-  } catch (e) {
-    await db.query("ROLLBACK");
-    console.error("set categories error:", e);
-    res.status(500).json({ error: "Failed to set categories" });
-  }
-});
-
-/**
- * ADMIN: Set/unset featured creator
- */
-router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res) => {
-  const creatorId = req.creatorId;
-  const { featured } = req.body || {};
-  const flag = !!featured;
-
-  try {
-    const featCol = await getFeaturedColumnName();
-    const { rows } = await db.query(
-      `UPDATE creator_profiles
-          SET ${featCol}=$1, updated_at=NOW()
-        WHERE user_id=$2
-        RETURNING user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured`,
-      [flag, creatorId]
-    );
-    if (!rows.length) return res.status(404).json({ error: "Creator profile not found" });
-
-    try {
-      await db.query(
-        `INSERT INTO admin_actions (admin_id, action, target_type, target_id, payload_json)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [req.user.id, flag ? "feature_creator" : "unfeature_creator", "user", creatorId, JSON.stringify({ featured: flag })]
-      );
-    } catch {}
-
-    res.json({ success: true, profile: { ...rows[0], featured: !!rows[0].is_featured } });
-  } catch (e) {
-    console.error("set featured error:", e);
-    res.status(500).json({ error: "Failed to update featured flag" });
-  }
-});
-
-/**
- * PUBLIC: Creator card (front/back) — eligible only
- */
-router.get("/:creatorId/card", async (req, res) => {
-  const creatorId = req.creatorId;
-
-  try {
-    const enabledClause = await usersEnabledClause();
-
-    const { rows: prof } = await db.query(
-      `
-      SELECT
-        cp.user_id AS creator_id,
-        cp.display_name,
-        cp.bio,
-        cp.profile_image,
-        ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
-      FROM creator_profiles cp
-      JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
-      WHERE cp.user_id = $1
-        AND ${enabledClause}
-        AND u.role = 'creator'
-        AND cp.is_profile_complete = TRUE
-        AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
-      `,
-      [creatorId]
-    );
-    if (!prof.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
-
-    const p = prof[0];
-
-    // categories: include slug if present, else derive from name
-    const slugExists = await hasColumn("categories", "slug");
-
-    const { rows: cats } = await db.query(
-      `
-      SELECT ${slugExists ? "c.id, c.name, c.slug" : "c.id, c.name, lower(regexp_replace(c.name,'\\s+','-','g')) AS slug"}
-      FROM creator_categories cc
-      JOIN categories c ON c.id = cc.category_id
-      WHERE cc.creator_id = $1
-      ORDER BY c.name ASC
-      `,
-      [creatorId]
-    );
-
-    const { rows: photoAgg } = await db.query(
-      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
-         FROM creator_profile_photos WHERE user_id=$1`,
-      [creatorId]
-    );
-    const gallery = (photoAgg?.[0]?.gallery || []).slice(0, 4);
-
-    const { rows: prods } = await db.query(
-      `
-      SELECT id, title, product_type, price
-      FROM (
-        SELECT *,
-               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) rn
-        FROM products
-      ) t
-      WHERE user_id = $1 AND active = TRUE AND rn <= 4
-      `,
-      [creatorId]
-    );
-
-    const card = {
-      creator_id: p.creator_id,
-      front: {
-        display_name: p.display_name,
-        bio: p.bio,
-        profile_image: p.profile_image,
-        categories: cats,
-        average_rating: p.average_rating,
-        products_count: p.products_count,
-        featured: !!p.is_featured,
-        products_preview: prods,
-      },
-      back: { gallery },
-      links: { profile: `/creators/${p.creator_id}` },
-    };
-
-    res.json(card);
-  } catch (e) {
-    console.error("creator card error:", e);
-    res.status(500).json({ error: "Failed to fetch creator" });
-  }
-});
+/* ------------------------------------------------------------------------- */
+/* PUBLIC STATIC ROUTES FIRST (so they don't get captured by :creatorId)     */
+/* ------------------------------------------------------------------------- */
 
 /**
  * PUBLIC: Explore creators (eligible only)
@@ -906,7 +457,7 @@ router.get("/", async (req, res) => {
     where.push(`(cp.display_name ILIKE $${params.length} OR cp.bio ILIKE $${params.length})`);
   }
 
-  if (!isNaN(categoryId)) {
+  if (!Number.isNaN(categoryId)) {
     params.push(categoryId);
     where.push(`EXISTS (
       SELECT 1 FROM creator_categories cc
@@ -1110,6 +661,351 @@ router.get("/featured", async (req, res) => {
   } catch (e) {
     console.error("featured creators error:", e);
     res.status(500).json({ error: "Failed to fetch featured creators" });
+  }
+});
+
+/* ------------------------------------------------------------------------- */
+/* PARAMETERIZED PUBLIC ROUTES AFTER STATIC ONES                             */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * PUBLIC: Get a creator profile (gated/eligible)
+ */
+router.get("/:creatorId", async (req, res) => {
+  const creatorId = parseInt(req.params.creatorId, 10);
+
+  try {
+    const enabledClause = await usersEnabledClause();
+
+    const { rows } = await db.query(
+      `
+      SELECT
+        cp.user_id,
+        cp.display_name,
+        cp.bio,
+        cp.profile_image,
+        ${featuredExpr} AS is_featured,
+        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
+        COUNT(DISTINCT p.id)::int               AS products_count
+      FROM creator_profiles cp
+      JOIN users u
+        ON u.id = cp.user_id
+      LEFT JOIN reviews  r
+        ON r.creator_id = cp.user_id
+      LEFT JOIN products p
+        ON p.user_id = cp.user_id
+       AND p.active  = TRUE
+      WHERE cp.user_id = $1
+        AND ${enabledClause}
+        AND u.role = 'creator'
+        AND cp.is_profile_complete = TRUE
+        AND cp.is_active = TRUE
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
+      HAVING COUNT(DISTINCT p.id) > 0
+      `,
+      [creatorId]
+    );
+
+    if (!rows.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
+
+    const base = rows[0];
+
+    const { rows: cats } = await db.query(
+      `SELECT c.name
+         FROM creator_categories cc
+         JOIN categories c ON c.id = cc.category_id
+        WHERE cc.creator_id = $1
+        ORDER BY c.name ASC`,
+      [creatorId]
+    );
+    const categories = cats.map((c) => c.name);
+
+    const { rows: photos } = await db.query(
+      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
+         FROM creator_profile_photos WHERE user_id=$1`,
+      [creatorId]
+    );
+
+    res.json({
+      ...base,
+      featured: !!base.is_featured, // keep legacy field name too
+      categories,
+      gallery: photos?.[0]?.gallery || [],
+    });
+  } catch (e) {
+    console.error("public profile error:", e);
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+/**
+ * Update my creator profile + categories (admin or self)
+ */
+router.put("/:creatorId", requireAuth, async (req, res) => {
+  const creatorId = parseInt(req.params.creatorId, 10);
+  if (Number.isNaN(creatorId)) return res.status(400).json({ error: "Invalid id" });
+
+  const isAdmin = req.user?.role === "admin";
+  if (!isAdmin && req.user?.id !== creatorId) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const display_name = typeof req.body.display_name === "string" ? req.body.display_name.trim() : null;
+  const bio = typeof req.body.bio === "string" ? req.body.bio.trim() : null;
+
+  const rawCats = Array.isArray(req.body.categories) ? req.body.categories : null;
+  const toLower = (s) => String(s || "").trim().toLowerCase();
+  const parseCategoryInput = (arr) => {
+    const names = [];
+    const ids = [];
+    for (const it of arr) {
+      if (typeof it === "string") names.push(it.trim());
+      else if (typeof it === "number") ids.push(it);
+      else if (it && typeof it === "object") {
+        if (typeof it.id === "number") ids.push(it.id);
+        else if (typeof it.name === "string") names.push(it.name.trim());
+      }
+    }
+    return { names, ids };
+  };
+
+  try {
+    await db.query("BEGIN");
+
+    if (display_name !== null || bio !== null) {
+      const { rowCount } = await db.query(
+        `UPDATE creator_profiles
+            SET display_name = COALESCE($1, display_name),
+                bio          = COALESCE($2, bio),
+                updated_at   = NOW()
+          WHERE user_id = $3`,
+        [display_name, bio, creatorId]
+      );
+
+      if (rowCount === 0) {
+        const featCol = await getFeaturedColumnName();
+        await db.query(
+          `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, is_profile_complete, created_at, updated_at)
+           VALUES ($1, $2, $3, NULL, FALSE, FALSE, NOW(), NOW())`,
+          [creatorId, display_name, bio]
+        );
+      }
+    }
+
+    if (rawCats) {
+      const { names, ids } = parseCategoryInput(rawCats);
+      let allIds = ids.slice();
+
+      if (names.length) {
+        const { rows } = await db.query(
+          `SELECT id, name FROM categories WHERE active = TRUE AND lower(name) = ANY($1::text[])`,
+          [names.map(toLower)]
+        );
+        const foundLower = rows.map((r) => r.name.toLowerCase());
+        const missing = names.filter((n) => !foundLower.includes(n.toLowerCase()));
+
+        if (missing.length) {
+          await db.query("ROLLBACK");
+          return res.status(400).json({ error: "Unknown categories", details: { missing } });
+        }
+
+        allIds = allIds.concat(rows.map((r) => r.id));
+      }
+
+      await db.query(`DELETE FROM creator_categories WHERE creator_id=$1`, [creatorId]);
+      if (allIds.length) {
+        const values = allIds.map((_, i) => `($1,$${i + 2})`).join(",");
+        await db.query(
+          `INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`,
+          [creatorId, ...allIds]
+        );
+      }
+    }
+
+    const { rows: prof } = await db.query(
+      `SELECT user_id AS creator_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured
+         FROM creator_profiles cp WHERE user_id=$1 LIMIT 1`,
+      [creatorId]
+    );
+
+    const { rows: cats } = await db.query(
+      `SELECT c.name
+         FROM creator_categories cc
+         JOIN categories c ON c.id = cc.category_id
+        WHERE cc.creator_id = $1
+        ORDER BY c.name ASC`,
+      [creatorId]
+    );
+
+    await db.query("COMMIT");
+
+    return res.json({
+      ...(prof[0] || { creator_id: creatorId, display_name, bio, profile_image: null, is_featured: false }),
+      featured: !!(prof[0]?.is_featured || false), // legacy field
+      categories: cats.map((c) => c.name),
+    });
+  } catch (e) {
+    try { await db.query("ROLLBACK"); } catch {}
+    console.error("update creator error:", e);
+    return res.status(500).json({ error: "Could not update creator" });
+  }
+});
+
+/**
+ * Set my categories
+ */
+router.post("/me/categories", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { category_ids } = req.body || {};
+  const ids = Array.isArray(category_ids) ? category_ids.map((n) => parseInt(n, 10)).filter(Boolean) : [];
+
+  try {
+    await db.query("BEGIN");
+    await db.query(`DELETE FROM creator_categories WHERE creator_id=$1`, [userId]);
+
+    if (ids.length) {
+      const values = ids.map((_, i) => `($1,$${i + 2})`).join(",");
+      await db.query(`INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`, [userId, ...ids]);
+    }
+    await db.query("COMMIT");
+
+    res.json({ success: true, category_ids: ids });
+  } catch (e) {
+    await db.query("ROLLBACK");
+    console.error("set categories error:", e);
+    res.status(500).json({ error: "Failed to set categories" });
+  }
+});
+
+/**
+ * ADMIN: Set/unset featured creator
+ */
+router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res) => {
+  const creatorId = parseInt(req.params.creatorId, 10);
+  const { featured } = req.body || {};
+  const flag = !!featured;
+
+  try {
+    const featCol = await getFeaturedColumnName();
+    const { rows } = await db.query(
+      `UPDATE creator_profiles
+          SET ${featCol}=$1, updated_at=NOW()
+        WHERE user_id=$2
+        RETURNING user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured`,
+      [flag, creatorId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Creator profile not found" });
+
+    try {
+      await db.query(
+        `INSERT INTO admin_actions (admin_id, action, target_type, target_id, payload_json)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [req.user.id, flag ? "feature_creator" : "unfeature_creator", "user", creatorId, JSON.stringify({ featured: flag })]
+      );
+    } catch {}
+
+    res.json({ success: true, profile: { ...rows[0], featured: !!rows[0].is_featured } });
+  } catch (e) {
+    console.error("set featured error:", e);
+    res.status(500).json({ error: "Failed to update featured flag" });
+  }
+});
+
+/**
+ * PUBLIC: Creator card (front/back) — eligible only
+ */
+router.get("/:creatorId/card", async (req, res) => {
+  const creatorId = parseInt(req.params.creatorId, 10);
+
+  try {
+    const enabledClause = await usersEnabledClause();
+
+    const { rows: prof } = await db.query(
+      `
+      SELECT
+        cp.user_id AS creator_id,
+        cp.display_name,
+        cp.bio,
+        cp.profile_image,
+        ${featuredExpr} AS is_featured,
+        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
+        COUNT(DISTINCT p.id)::int               AS products_count
+      FROM creator_profiles cp
+      JOIN users u
+        ON u.id = cp.user_id
+      LEFT JOIN reviews  r
+        ON r.creator_id = cp.user_id
+      LEFT JOIN products p
+        ON p.user_id = cp.user_id
+       AND p.active  = TRUE
+      WHERE cp.user_id = $1
+        AND ${enabledClause}
+        AND u.role = 'creator'
+        AND cp.is_profile_complete = TRUE
+        AND cp.is_active = TRUE
+      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
+      HAVING COUNT(DISTINCT p.id) > 0
+      `,
+      [creatorId]
+    );
+    if (!prof.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
+
+    const p = prof[0];
+
+    // categories: include slug if present, else derive from name
+    const slugExists = await hasColumn("categories", "slug");
+
+    const { rows: cats } = await db.query(
+      `
+      SELECT ${slugExists ? "c.id, c.name, c.slug" : "c.id, c.name, lower(regexp_replace(c.name,'\\s+','-','g')) AS slug"}
+      FROM creator_categories cc
+      JOIN categories c ON c.id = cc.category_id
+      WHERE cc.creator_id = $1
+      ORDER BY c.name ASC
+      `,
+      [creatorId]
+    );
+
+    const { rows: photoAgg } = await db.query(
+      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
+         FROM creator_profile_photos WHERE user_id=$1`,
+      [creatorId]
+    );
+    const gallery = (photoAgg?.[0]?.gallery || []).slice(0, 4);
+
+    const { rows: prods } = await db.query(
+      `
+      SELECT id, title, product_type, price
+      FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) rn
+        FROM products
+      ) t
+      WHERE user_id = $1 AND active = TRUE AND rn <= 4
+      `,
+      [creatorId]
+    );
+
+    const card = {
+      creator_id: p.creator_id,
+      front: {
+        display_name: p.display_name,
+        bio: p.bio,
+        profile_image: p.profile_image,
+        categories: cats,
+        average_rating: p.average_rating,
+        products_count: p.products_count,
+        featured: !!p.is_featured,
+        products_preview: prods,
+      },
+      back: { gallery },
+      links: { profile: `/creators/${p.creator_id}` },
+    };
+
+    res.json(card);
+  } catch (e) {
+    console.error("creator card error:", e);
+    res.status(500).json({ error: "Failed to fetch creator" });
   }
 });
 

@@ -46,9 +46,12 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), strip
 app.use(cors({
   origin: FRONTEND,
   credentials: true,
-    methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"], // <-- allow Bearer header
 }));
+
+// Ensure Express responds to preflight on all routes (fixes 404 on OPTIONS)
+app.options(/.*/, cors());
 
 app.use(cookieParser());                                    // <-- add
 app.use(express.json({ limit: "25mb" }));
