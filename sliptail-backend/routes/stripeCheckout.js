@@ -91,8 +91,8 @@ router.post(
       mode === "subscription"
         ? "membership"
         : productType === "request"
-        ? "request"
-        : "purchase";
+          ? "request"
+          : "purchase";
 
     // Defensive: prevent obvious mode/type mismatch
     if (mode === "subscription" && productType === "download") {
@@ -230,7 +230,7 @@ router.get("/finalize", requireAuth, async (req, res) => {
     if (session.mode === "payment") {
       // Only create order after successful payment
       const paid = session.payment_status === "paid" || session.status === "complete";
-  let finalOrderId = null;
+      let finalOrderId = null;
 
       if (paid) {
         const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
@@ -256,7 +256,7 @@ router.get("/finalize", requireAuth, async (req, res) => {
       // Ensure we have customer saved
       if (session.customer) {
         await db.query(
-          `UPDATE users SET stripe_customer_id=$1 WHERE id=$2 AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)` ,
+          `UPDATE users SET stripe_customer_id=$1 WHERE id=$2 AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
           [session.customer, req.user.id]
         );
       }
@@ -265,7 +265,7 @@ router.get("/finalize", requireAuth, async (req, res) => {
       const subscription = session.subscription && typeof session.subscription === "object" ? session.subscription : null;
       let subObj = subscription;
       if (!subObj && typeof session.subscription === "string") {
-        try { subObj = await stripe.subscriptions.retrieve(session.subscription); } catch(_) {}
+        try { subObj = await stripe.subscriptions.retrieve(session.subscription); } catch (_) { }
       }
       if (subObj && subObj.metadata) {
         const m = subObj.metadata;

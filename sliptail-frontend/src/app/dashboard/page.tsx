@@ -27,6 +27,28 @@ type GalleryPhoto = { position: number; url: string | null };
 
 type CategoryItem = { id: string; name: string };
 
+type Review = {
+  id: string;
+  rating: number;
+  comment: string;
+  buyer_id: number;
+  created_at: string;
+  product: {
+    description: string | null;
+    view_url: string | null;
+    download_url: string | null;
+    product_type: string;
+    title: string;
+    filename: string;
+  };
+};
+
+// Enhanced review type: include buyer info and product id, defensive optional fields
+type ReviewExtended = Review & {
+  buyer?: { id?: number; username?: string | null; email?: string | null } | null;
+  product_id?: string | null;
+};
+
 // --------- Safe helpers ----------
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -128,6 +150,25 @@ export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth?.() ?? { user: null };
 
+  const token = loadAuth()?.token ?? null;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const review = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"}/api/me`, {
+          credentials: "include",
+          headers: buildAuthHeaders(),
+        });
+
+
+      } catch (error) {
+        console.error("Error checking auth:", error);
+      } finally {
+        // You can add any cleanup or final actions here if needed
+      }
+    })();
+  }, []);
+
   // --- Place apiBase, creatorId, and pending requests state/effect after user is defined ---
   // (MUST be after user is defined)
   const apiBase = useMemo(
@@ -196,6 +237,15 @@ export default function DashboardPage() {
   ];
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  // Derived: whether creator has any membership products
+  const hasMembership = useMemo(() => products.some(p => p.product_type === 'membership'), [products]);
+
+  // Reviews state: map productId -> { items, page, hasMore, loading }
+  const [reviewsMap, setReviewsMap] = useState<Record<
+    string,
+    { items: ReviewExtended[]; page: number; hasMore: boolean; loading: boolean }
+  >>({});
+  const [activeReviewsProduct, setActiveReviewsProduct] = useState<string | null>(null);
 
   // Quick edit state
   const [displayName, setDisplayName] = useState("");
@@ -222,6 +272,68 @@ export default function DashboardPage() {
   const [toastOpen, setToastOpen] = useState(false);
   const [toastText, setToastText] = useState<string>("");
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Active request modal
+  const [activeRequest, setActiveRequest] = useState<any | null>(null);
+  function openRequest(req: any) {
+    setActiveRequest(req);
+  }
+  function closeRequest() {
+    setActiveRequest(null);
+  }
+
+  // Complete-request modal state
+  const [activeCompleteRequest, setActiveCompleteRequest] = useState<any | null>(null);
+  const completeFilesRef = useRef<HTMLInputElement | null>(null);
+  const [completeDesc, setCompleteDesc] = useState<string>("");
+  const [completing, setCompleting] = useState(false);
+  function openComplete(req: any) {
+    setActiveCompleteRequest(req);
+    setCompleteDesc("");
+  }
+  function closeComplete() {
+    setActiveCompleteRequest(null);
+    setCompleteDesc("");
+    if (completeFilesRef.current) completeFilesRef.current.value = "";
+  }
+
+  async function submitComplete() {
+    if (!activeCompleteRequest) return;
+    setCompleting(true);
+    try {
+      const fd = new FormData();
+      fd.append("description", completeDesc || "");
+      const files = completeFilesRef.current?.files;
+      if (files && files.length > 0) {
+        for (let i = 0; i < files.length; i++) {
+          fd.append("media", files[i]);
+        }
+      }
+
+      const res = await fetch(`${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`, {
+        method: "POST",
+        credentials: "include",
+        headers: buildAuthHeaders(),
+        body: fd,
+      });
+
+      const payload: any = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`);
+        throw new Error(err);
+      }
+
+      // Success: remove from pendingRequests if present and close modal
+      setPendingRequests((prev) => prev.filter((r) => String(r.id) !== String(activeCompleteRequest.id)));
+      closeComplete();
+      showToast("Request marked complete");
+    } catch (err) {
+      console.error("complete request error", err);
+      showToast(err instanceof Error ? err.message : "Could not complete request");
+    } finally {
+      setCompleting(false);
+    }
+  }
 
 
 
@@ -504,6 +616,94 @@ export default function DashboardPage() {
     } finally {
       setDeleting(false);
     }
+  }
+
+  // --- Reviews loader ---
+  async function loadReviewsForProduct(productId: string, nextPage = 1, limit = 20) {
+    // Backend exposes creator-level listing: GET /api/reviews/creator/:creatorId?limit=20&offset=0
+    // We fetch reviews for the current creator (creatorId) and then filter client-side for the productId.
+    if (!creatorId) return;
+    setReviewsMap((prev) => ({
+      ...prev,
+      [productId]: { ...(prev[productId] ?? { items: [], page: 0, hasMore: true }), loading: true },
+    }));
+    try {
+      const offset = Math.max((nextPage - 1) * limit, 0);
+      const res = await fetch(`${apiBase}/api/reviews/creator/${encodeURIComponent(Number(creatorId))}?limit=${limit}&offset=${offset}`, {
+        credentials: "include",
+        headers: buildAuthHeaders(),
+      });
+      if (!res.ok) throw new Error(`Failed to load reviews: ${res.status}`);
+      const data: any = await res.json();
+
+      // data.reviews is expected (array), plus optional summary
+      const list: unknown[] = Array.isArray(data?.reviews) ? data.reviews : Array.isArray(data) ? data : [];
+
+      const parsed: ReviewExtended[] = list
+        .filter(isRecord)
+        .map((r) => {
+          const id = String((r as any).id ?? getStringProp(r, "id") ?? "");
+          const ratingRaw = (r as any).rating ?? 0;
+          const rating = typeof ratingRaw === "number" ? ratingRaw : Number(ratingRaw || 0);
+          const comment = getStringProp(r, "comment") ?? "";
+          const buyer = isRecord((r as any).buyer)
+            ? { id: Number((r as any).buyer.id ?? (r as any).buyer_id ?? undefined), username: getStringProp((r as any).buyer, "username") ?? undefined, email: getStringProp((r as any).buyer, "email") ?? undefined }
+            : { id: typeof (r as any).buyer_id === "number" ? (r as any).buyer_id : undefined, username: getStringProp(r, "buyer_username") ?? undefined, email: getStringProp(r, "buyer_email") ?? undefined };
+          const created_at = getStringProp(r, "created_at") ?? getStringProp(r, "createdAt") ?? "";
+          const product_id = (r as any).product_id != null ? String((r as any).product_id) : getStringProp(r, "productId") ?? null;
+          const product = isRecord((r as any).product)
+            ? {
+              description: getStringProp((r as any).product, "description") ?? null,
+              view_url: getStringProp((r as any).product, "view_url") ?? getStringProp((r as any).product, "viewUrl") ?? null,
+              download_url: getStringProp((r as any).product, "download_url") ?? getStringProp((r as any).product, "downloadUrl") ?? null,
+              product_type: getStringProp((r as any).product, "product_type") ?? getStringProp((r as any).product, "productType") ?? "purchase",
+              title: getStringProp((r as any).product, "title") ?? "",
+              filename: getStringProp((r as any).product, "filename") ?? "",
+            }
+            : ({ description: null, view_url: null, download_url: null, product_type: "purchase", title: "", filename: "" } as any);
+
+          return {
+            id,
+            rating,
+            comment,
+            buyer_id: buyer?.id ?? (typeof (r as any).buyer_id === "number" ? (r as any).buyer_id : 0),
+            created_at,
+            product,
+            buyer,
+            product_id,
+          } as ReviewExtended;
+        })
+        // filter to only reviews that reference this product (if product_id is set)
+        .filter((rv) => rv.product_id === null || rv.product_id === undefined ? false : String(rv.product_id) === String(productId));
+
+      setReviewsMap((prev) => {
+        const prevEntry = prev[productId] ?? { items: [], page: 0, hasMore: true, loading: false };
+        const combined = nextPage === 1 ? parsed : [...prevEntry.items, ...parsed];
+        const hasMore = parsed.length >= limit && (data?.summary?.total ? combined.length < Number(data.summary.total) : parsed.length >= limit);
+        return { ...prev, [productId]: { items: combined, page: nextPage, hasMore, loading: false } };
+      });
+    } catch (err) {
+      console.error("loadReviewsForProduct error", err);
+      setReviewsMap((prev) => ({ ...prev, [productId]: { ...(prev[productId] ?? { items: [], page: 0, hasMore: false }), loading: false } }));
+    }
+  }
+
+  function openReviews(productId: string) {
+    setActiveReviewsProduct(productId);
+    const entry = reviewsMap[productId];
+    if (!entry || entry.items.length === 0) {
+      loadReviewsForProduct(productId, 1);
+    }
+  }
+
+  function closeReviews() {
+    setActiveReviewsProduct(null);
+  }
+
+  function loadMoreReviews(productId: string) {
+    const entry = reviewsMap[productId];
+    const next = entry ? entry.page + 1 : 1;
+    loadReviewsForProduct(productId, next);
   }
 
   // ----- NEW: View profile + Copy link actions -----
@@ -934,10 +1134,16 @@ export default function DashboardPage() {
                       </div>
                       <div className="ml-2">
                         <button
-                          onClick={() => router.push(`/dashboard/requests/${req.id}`)}
+                          onClick={() => openRequest(req)}
                           className="text-xs px-2 py-1 rounded-md bg-black text-white hover:bg-black/90"
                         >
                           View
+                        </button>
+                        <button
+                          onClick={() => openComplete(req)}
+                          className="text-xs px-2 py-1 mx-2 rounded-md bg-black text-white hover:bg-black/90"
+                        >
+                          Complete
                         </button>
                       </div>
                     </div>
@@ -951,7 +1157,7 @@ export default function DashboardPage() {
         {/* ROW 2: Stripe (span 2) • Add Product (span 1) */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Stripe: left, span 2 */}
-          <div className="md:col-span-2 rounded-2xl border p-4">
+          <div className="md:col-span-1 rounded-2xl border p-4">
             <div className="font-semibold mb-2">Stripe Connect</div>
 
             <div className="flex items-center gap-2">
@@ -979,6 +1185,41 @@ export default function DashboardPage() {
               {connecting ? "Redirecting…" : stripeConnected ? "Manage in Stripe" : "Connect Stripe"}
             </button>
           </div>
+          {hasMembership ? (
+            <button
+              type="button"
+              onClick={() => router.push("/feed")}
+              className="rounded-2xl border p-4 flex items-center justify-center hover:bg-neutral-50"
+              aria-label="Manage feed posts"
+              title="Manage feed posts"
+            >
+              <div className="flex flex-col items-center gap-2">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed">
+                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <span className="text-sm font-medium">Manage in Feed</span>
+              </div>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => router.push("/feed")}
+              className="rounded-2xl border p-4 flex items-center justify-center hover:bg-neutral-50"
+              aria-label="Manage feed posts"
+              title="Manage feed posts"
+            >
+              <div className="flex flex-col items-center gap-2">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed">
+                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <span className="text-sm font-medium">You do not currently have any memberships to post to.</span>
+              </div>
+            </button>
+          )}
 
           {/* Add Product Icon card: right */}
           <button
@@ -1027,6 +1268,12 @@ export default function DashboardPage() {
                     >
                       Delete
                     </button>
+                    <button
+                      className="rounded-lg border px-3 py-1 text-sm"
+                      onClick={() => openReviews(p.id)}
+                    >
+                      View reviews
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1065,6 +1312,141 @@ export default function DashboardPage() {
                 >
                   {deleting ? "Deleting…" : "Yes, delete"}
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Request details modal */}
+        {activeRequest && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Request Details</h3>
+                <button onClick={closeRequest} className="text-sm text-neutral-500">Close</button>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Request #{activeRequest.id}</div>
+                {activeRequest.details && (
+                  <div className="text-sm text-neutral-700">{activeRequest.details}</div>
+                )}
+                <div className="text-xs text-neutral-500">From: {activeRequest.buyer_email || activeRequest.buyer_username || 'Unknown'}</div>
+                {activeRequest.amount !== undefined && activeRequest.amount !== null && (
+                  <div className="text-sm font-semibold">${((activeRequest.amount || 0) / 100).toFixed(2)}</div>
+                )}
+                <div className="text-xs text-neutral-500">{new Date(activeRequest.created_at).toLocaleDateString()} at {new Date(activeRequest.created_at).toLocaleTimeString()}</div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={closeRequest} className="rounded-xl border px-4 py-2 text-sm">Close</button>
+                <button
+                  onClick={() => {
+                    // Open the inline Complete modal for this request
+                    closeRequest();
+                    openComplete(activeRequest);
+                  }}
+                  className="rounded-xl px-4 py-2 text-sm bg-black text-white"
+                >
+                  Complete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Complete request modal (submit description + optional media) */}
+        {activeCompleteRequest && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Complete Request #{activeCompleteRequest.id}</h3>
+                <button onClick={closeComplete} className="text-sm text-neutral-500">Cancel</button>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-neutral-700">Description (required)</label>
+                <textarea
+                  value={completeDesc}
+                  onChange={(e) => setCompleteDesc(e.target.value)}
+                  rows={4}
+                  placeholder="Describe what you delivered or include buyer notes"
+                  className="w-full rounded-xl border px-3 py-2"
+                />
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 mb-1">Attachments (optional)</label>
+                  <input ref={completeFilesRef} type="file" accept="image/*,video/*" multiple className="" />
+                  <p className="text-xs text-neutral-500 mt-1">You can attach images or a short video.</p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={closeComplete} className="rounded-xl border px-4 py-2 text-sm" disabled={completing}>Cancel</button>
+                <button
+                  onClick={submitComplete}
+                  className={`rounded-xl px-4 py-2 text-sm text-white ${completing ? "bg-neutral-400" : "bg-black"}`}
+                  disabled={completing || !completeDesc.trim()}
+                >
+                  {completing ? "Submitting…" : "Submit & Mark Complete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Reviews modal */}
+        {activeReviewsProduct && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-2xl space-y-4 rounded-2xl bg-white p-5">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Reviews for product</h3>
+                <button onClick={closeReviews} className="text-sm text-neutral-500">Close</button>
+              </div>
+              <div className="max-h-96 overflow-y-auto space-y-3">
+                {(reviewsMap[activeReviewsProduct]?.items ?? []).length === 0 && !reviewsMap[activeReviewsProduct]?.loading ? (
+                  <div className="text-sm text-neutral-600">No reviews yet.</div>
+                ) : (
+                  (reviewsMap[activeReviewsProduct]?.items ?? []).map((r) => (
+                    <div key={r.id} className="rounded-lg border p-3 bg-neutral-50">
+                      <div className="flex items-center justify-between">
+                        <div className="font-medium">{r.buyer?.username ?? r.buyer?.email ?? `Buyer ${r.buyer_id}`}</div>
+                        <div className="text-sm text-neutral-500">{new Date(r.created_at).toLocaleDateString()}</div>
+                      </div>
+                      <div className="text-sm text-neutral-700 mt-1">{r.comment}</div>
+                      <div className="text-xs text-neutral-500 mt-2">
+                        Rating:
+                        <span
+                          className="ml-1 inline-flex"
+                          aria-label={`Rating ${r.rating} out of 5`}
+                          title={`${r.rating} out of 5`}
+                        >
+                          {Array.from({ length: 5 }).map((_, i) => {
+                            const numeric = typeof r.rating === 'number' ? r.rating : Number(r.rating || 0);
+                            const filled = i < Math.round(Math.max(0, Math.min(5, numeric)));
+                            return (
+                              <span key={i} className={filled ? 'text-yellow-500' : 'text-neutral-300'}>
+                                {filled ? '★' : '☆'}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-neutral-500">{(reviewsMap[activeReviewsProduct]?.items ?? []).length} reviews</div>
+                <div>
+                  {reviewsMap[activeReviewsProduct]?.loading ? (
+                    <button className="rounded-xl px-3 py-1 bg-neutral-200 text-sm">Loading…</button>
+                  ) : reviewsMap[activeReviewsProduct]?.hasMore ? (
+                    <button
+                      onClick={() => loadMoreReviews(activeReviewsProduct)}
+                      className="rounded-xl px-3 py-1 bg-black text-white text-sm"
+                    >
+                      Load more
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>

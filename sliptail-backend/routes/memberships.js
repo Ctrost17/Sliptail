@@ -158,10 +158,7 @@ router.get("/mine", requireAuth, async (req, res) => {
     const withLinks = rows.map(r => ({
       ...r,
       product: linkify(r.product),
-    }));
-    // Optional: console.log("Fetched memberships:", withLinks);
-    console.log("Fetched memberships:", withLinks);
-    
+    }));    
     
     res.json({ memberships: withLinks });
   } catch (e) {

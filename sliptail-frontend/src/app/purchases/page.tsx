@@ -437,7 +437,7 @@ export default function PurchasesPage() {
                             <h3 className="font-semibold text-lg text-gray-900">{request.product.title}</h3>
                             <p className="text-sm text-gray-600 mt-1">{request.creator_profile?.display_name}</p>
                           </div>
-                          {request.status === 'paid' ? (
+                          {request.status === 'complete' ? (
                             <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
                               <div className="w-1.5 h-1.5 bg-green-600 rounded-full mr-1.5" />
                               Completed
@@ -451,7 +451,7 @@ export default function PurchasesPage() {
                         </div>
 
                         <div className="mt-4">
-                          {request.status === 'paid' ? (
+                          {request.status === 'complete' ? (
                             <div className="flex items-center space-x-3">
                               <button
                                 onClick={() => setSelectedItem(request)}

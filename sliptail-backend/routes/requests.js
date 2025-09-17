@@ -11,6 +11,16 @@ const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
+// Allow configurable initial status; default to legacy 'open' to satisfy current DB constraint
+const REQUEST_INITIAL_STATUS = process.env.REQUEST_INITIAL_STATUS || 'open';
+
+// Normalize legacy DB status 'open' to 'pending' for API consumers
+function normalizeStatus(row) {
+  if (!row) return row;
+  if (row.status === 'open') return { ...row, status: 'pending' };
+  return row;
+}
+
 /* ---------- Upload setup (must be defined before routes use it) ---------- */
 
 // store attachments in the same uploads folder you already use
@@ -118,17 +128,17 @@ router.post(
 
       // create custom_requests (pending)
       const { rows: reqRows } = await db.query(
-        `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, status, created_at)
-         VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
+        `INSERT INTO custom_requests (order_id, buyer_id, creator_id, "user", creator, attachment_path, status, created_at)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
          RETURNING *`,
-        [order.id, buyerId, creator_id, message || null, attachment_path]
+        [order.id, buyerId, creator_id, message || null, null, attachment_path, REQUEST_INITIAL_STATUS]
       );
       const request = reqRows[0];
 
       await db.query("COMMIT");
 
       // respond to client
-      res.status(201).json({ success: true, order, request });
+      res.status(201).json({ success: true, order, request: normalizeStatus(request) });
 
       // 3) fire-and-forget email notify (correct id reference)
       notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
@@ -183,19 +193,19 @@ router.post(
       if (existing.length) {
         const { rows: upd } = await db.query(
           `UPDATE custom_requests
-              SET details = COALESCE($3, details),
-                  attachment_path = COALESCE($4, attachment_path)
+              SET "user" = COALESCE($2, "user"),
+                  attachment_path = COALESCE($3, attachment_path)
             WHERE id=$1
           RETURNING id` ,
-          [existing[0].id, orderId, details || null, attachment_path]
+          [existing[0].id, details || null, attachment_path]
         );
         requestId = upd[0].id;
       } else {
         const { rows: ins } = await db.query(
-          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, status, created_at)
-           VALUES ($1,$2,$3,$4,$5,'pending',NOW())
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, "user", creator, attachment_path, status, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
            RETURNING id`,
-          [orderId, buyerId, row.creator_id, details || null, attachment_path]
+          [orderId, buyerId, row.creator_id, details || null, null, attachment_path, REQUEST_INITIAL_STATUS]
         );
         requestId = ins[0].id;
       }
@@ -258,7 +268,6 @@ router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
        WHERE cr.creator_id = $1`,
       [creatorId]
     );
-    console.log('All requests for creator', creatorId, ':', allRequests);
 
     // Now run the main query
     const params = [creatorId];
@@ -289,14 +298,9 @@ router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
        ORDER BY cr.created_at DESC`,
       params
     );
-    
-  console.log('Fetching requests for creator:', creatorId, 'with status:', status);
-    console.log('Found requests:', rows.length);
-    if (rows.length > 0) {
-      console.log('Sample request data:', rows[0]);
-    }
+  
 
-    res.json({ requests: rows });
+    res.json({ requests: rows.map(normalizeStatus) });
   } catch (err) {
     console.error("Inbox error:", err);
     res.status(500).json({ error: "Failed to fetch requests" });
@@ -317,7 +321,7 @@ router.get("/mine", requireAuth, async (req, res) => {
         ORDER BY cr.created_at DESC`,
       [buyerId]
     );
-    res.json({ requests: rows });
+    res.json({ requests: rows.map(normalizeStatus) });
   } catch (err) {
     console.error("My requests error:", err);
     res.status(500).json({ error: "Failed to fetch my requests" });
@@ -346,7 +350,8 @@ router.patch(
       );
       const r = rows[0];
       if (!r) return res.status(404).json({ error: "Request not found" });
-      if (r.status !== "pending") return res.status(400).json({ error: "Request is not pending" });
+      // allow legacy 'open' to be treated as pending
+      if (!(r.status === "pending" || r.status === "open")) return res.status(400).json({ error: "Request is not pending" });
 
       const newStatus = action === "accept" ? "accepted" : "declined";
       const { rows: upd } = await db.query(
@@ -354,7 +359,7 @@ router.patch(
         [newStatus, requestId]
       );
 
-      res.json({ success: true, request: upd[0] });
+      res.json({ success: true, request: normalizeStatus(upd[0]) });
     } catch (err) {
       console.error("Decision error:", err);
       res.status(500).json({ error: "Failed to update request" });
@@ -407,13 +412,122 @@ router.post(
         [newPath, requestId]
       );
 
-      res.json({ success: true, request: upd[0] });
+      res.json({ success: true, request: normalizeStatus(upd[0]) });
 
       // notify the buyer that the request was delivered
       notifyRequestDelivered({ requestId }).catch(console.error);
     } catch (err) {
       console.error("Deliver error:", err);
       res.status(500).json({ error: "Failed to deliver file" });
+    }
+  }
+);
+
+/**
+ * CREATOR marks a request as fully complete (finalizes after delivery or acceptance)
+ * Optional file field: "file" (if wanting to attach/replace a final file)
+ * Body (multipart/form-data or JSON): { message | description }
+ * - Sets custom_requests.status='complete'
+ * - Sets custom_requests.creator to provided message (if any)
+ * - Optionally updates attachment_path if a file uploaded
+ * - Sets related orders.status='complete'
+ */
+router.post(
+  "/:id/complete",
+  requireAuth, requireCreator,
+  standardLimiter,
+  upload.single("file"),
+  async (req, res) => {
+    const creatorId = req.user.id;
+    const requestId = parseInt(req.params.id, 10);
+    const creatorMessage = (req.body.message || req.body.description || "").toString().trim() || null;
+
+    console.log('Completing request id:', requestId, 'by creator:', creatorId, 'with message:', creatorMessage, 'and file:', req.file ? req.file.filename : 'no file');
+    
+    try {
+      // Fetch request with its order
+      const { rows } = await db.query(
+        `SELECT cr.id, cr.creator_id, cr.status, cr.order_id, cr.attachment_path, o.status AS order_status
+           FROM custom_requests cr
+           JOIN orders o ON o.id = cr.order_id
+          WHERE cr.id = $1 AND cr.creator_id = $2
+          LIMIT 1`,
+        [requestId, creatorId]
+      );
+      const r = rows[0];
+
+      let orderID = r.order_id;
+      console.log('Fetched request for completion:', r);
+      
+      if (!r) return res.status(404).json({ error: "Request not found" });
+      if (r.status === "complete") return res.status(400).json({ error: "Request already complete" });
+      if (r.status === "declined") return res.status(400).json({ error: "Declined request cannot be completed" });
+
+      // For safety require order to be paid or already complete
+      if (!(r.order_status === "paid")) {
+        return res.status(400).json({ error: "Order is not paid yet" });
+      }
+
+      const newAttachment = req.file ? path.basename(req.file.path) : null;
+
+      // NOTE: DB check constraint is rejecting new status values ('complete').
+      // We no longer attempt to change the stored custom_requests.status nor orders.status here.
+      // Only update creator message + attachment (if provided) and return a virtual status 'complete'.
+
+  let updatedRow;
+      try {
+        await db.query("BEGIN");
+        
+        let updatedRowResult;
+        try {
+          const { rows: upd } = await db.query(
+            `UPDATE custom_requests
+                SET creator = COALESCE($1, creator),
+                    attachment_path = COALESCE($2, attachment_path),
+                    status = 'complete'
+              WHERE id = $3
+              RETURNING *`,
+            [creatorMessage, newAttachment, requestId]
+          );
+          updatedRowResult = upd[0];
+        } catch (crErr) {
+          if (crErr && crErr.code === '23514') {
+            // custom_requests constraint doesn't yet allow 'complete'
+            await db.query('ROLLBACK');
+            return res.status(409).json({
+              error: "Database schema does not allow custom_requests.status='complete' (custom_requests_status_check)",
+              hint: "Run migration to add 'complete' to custom_requests_status_check and retry",
+              migration_example: "ALTER TABLE custom_requests DROP CONSTRAINT custom_requests_status_check; ALTER TABLE custom_requests ADD CONSTRAINT custom_requests_status_check CHECK (status IN ('open','pending','accepted','declined','delivered','complete'));"
+            });
+          }
+          throw crErr;
+        }
+        updatedRow = updatedRowResult;
+
+        
+        // Attempt to mark the related order as complete. If the DB check constraint
+        // rejects the value (23514), we'll rollback and return a helpful 409 with
+        // migration guidance so the caller can add the new status to the enum/check.
+        const { rows: ord } = await db.query(
+          `UPDATE orders
+              SET status = 'complete'
+            WHERE id = $1
+            RETURNING *`,
+          [orderID]
+        );
+        console.log('Updated order to complete:', ord[0]);
+        await db.query("COMMIT");
+      } catch (err) {
+        try { await db.query("ROLLBACK"); } catch { }
+        throw err;
+      }
+
+  const responseRow = { ...normalizeStatus(updatedRow), status: 'complete', _stored_status: updatedRow.status, _order_status: 'complete' };
+      return res.json({ success: true, request: responseRow });
+    } catch (err) {
+      try { await db.query("ROLLBACK"); } catch { }
+      console.error("Complete request error:", err);
+      return res.status(500).json({ error: "Failed to complete request" });
     }
   }
 );
@@ -503,24 +617,27 @@ router.post(
       if (existing.rows.length) {
         const { rows: upd } = await db.query(
           `UPDATE custom_requests
-              SET details = COALESCE($3, details),
-                  attachment_path = COALESCE($4, attachment_path)
+              SET "user" = COALESCE($2, "user"),
+                  attachment_path = COALESCE($3, attachment_path)
             WHERE id = $1
           RETURNING *`,
-          [existing.rows[0].id, row.order_id, message || null, attachment_path]
+          [existing.rows[0].id, message || null, attachment_path]
         );
         request = upd[0];
       } else {
         const { rows: ins } = await db.query(
-          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, details, attachment_path, created_at)
-           VALUES ($1,$2,$3,$4,$5,NOW())
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, "user", creator, attachment_path, status, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
            RETURNING *`,
-          [row.order_id, buyerId, row.creator_id, message || null, attachment_path]
+          [row.order_id, buyerId, row.creator_id, message || null, null, attachment_path, REQUEST_INITIAL_STATUS]
         );
+
+        console.log("Here's the three request from session:", ins[0]);
+
         request = ins[0];
       }
 
-      return res.status(201).json({ success: true, request });
+      return res.status(201).json({ success: true, request: normalizeStatus(request) });
     } catch (e) {
       console.error("create-from-session error:", e);
       return res.status(500).json({ error: "Failed to create request" });

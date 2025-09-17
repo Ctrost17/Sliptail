@@ -168,8 +168,6 @@ router.get("/mine", requireAuth, async (req, res) => {
       ...r,
       product: linkify(r.product)
     }));    
-
-    console.log("Fetched orders:", withLinks);
     
 
     res.json({ orders: withLinks });

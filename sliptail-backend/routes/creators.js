@@ -628,8 +628,6 @@ router.get("/featured", async (req, res) => {
       featured: !!p.is_featured,
       is_featured: !!p.is_featured,
     }));
-
-    console.log("Featured creators output:", out);
     
 
     res.json({ creators: out });
