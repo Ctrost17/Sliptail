@@ -299,8 +299,8 @@ router.post(
     const isMultipart = !!req.files;
 
     try {
-      let display_name = (req.body?.display_name || "").trim();
-      let bio = (req.body?.bio || "").trim();
+      const display_name = (req.body?.display_name || "").trim();
+      const bio = (req.body?.bio || "").trim();
 
       if (!display_name || !bio) {
         return res.status(400).json({ error: "display_name and bio are required" });
@@ -1002,7 +1002,7 @@ router.get("/", async (req, res) => {
     where.push(`(cp.display_name ILIKE $${params.length} OR cp.bio ILIKE $${params.length})`);
   }
 
-  if (!isNaN(categoryId)) {
+  if (!Number.isNaN(categoryId)) {
     params.push(categoryId);
     where.push(`EXISTS (
       SELECT 1 FROM creator_categories cc
