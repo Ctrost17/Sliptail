@@ -46,35 +46,37 @@ interface CategoriesResponse { categories: Category[] }
 
 /* -------------------- Helpers -------------------- */
 async function apiUrl(path: string, qs?: Record<string, string>) {
+  // Always pass a path that includes "/api/..." so rewrites and direct hits work.
+  const normalized = path.startsWith("/") ? path : `/${path}`;
   if (typeof maybeApiUrl === "function") {
-    return maybeApiUrl(path, qs);
+    return maybeApiUrl(normalized, qs);
   }
   const base = process.env.NEXT_PUBLIC_API_BASE || "";
-  const url = new URL(path.replace(/^\//, ""), base.endsWith("/") ? base : base + "/");
+  const url = new URL(
+    normalized.replace(/^\//, ""),
+    base.endsWith("/") ? base : `${base}/`
+  );
   if (qs) Object.entries(qs).forEach(([k, v]) => url.searchParams.set(k, v));
   return url.toString();
 }
-
 type CookiePair = { name: string; value: string };
 
 async function buildAuthHeaders(): Promise<HeadersInit> {
-  const store = await cookies();
+  const store = await cookies(); // <-- await fixes TS error in your setup
   const all = store.getAll() as ReadonlyArray<CookiePair>;
   const token = store.get("token")?.value as string | undefined;
 
-  // Build a plain Cookie header (no encoding)
   const cookieHeader = all.map(({ name, value }) => `${name}=${value}`).join("; ");
 
   const headers: Record<string, string> = {};
-  if (cookieHeader) headers["Cookie"] = cookieHeader;
-  if (token) headers["Authorization"] = `Bearer ${token}`; // extra safety
+  if (cookieHeader) headers.Cookie = cookieHeader;
+  if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 
 /* -------------------- Fetchers (SSR) -------------------- */
 async function fetchUsers(): Promise<AdminUser[]> {
-  // no leading /api — apiUrl will add the correct base
-  const url = await apiUrl("admin/users", { limit: "50", offset: "0" });
+  const url = await apiUrl("/api/admin/users", { limit: "50", offset: "0" });
   const res = await fetch(url, { cache: "no-store", headers: await buildAuthHeaders() });
   if (!res.ok) throw new Error(`Failed to load users (${res.status}) ${await res.text().catch(()=> "")}`);
   const data: UsersResponse = await res.json();
@@ -82,7 +84,7 @@ async function fetchUsers(): Promise<AdminUser[]> {
 }
 
 async function fetchCreators(): Promise<AdminCreator[]> {
-  const url = await apiUrl("admin/creators", { only_active: "true" });
+  const url = await apiUrl("/api/admin/creators", { only_active: "true" });
   const res = await fetch(url, { cache: "no-store", headers: await buildAuthHeaders() });
   if (!res.ok) throw new Error(`Failed to load creators (${res.status}) ${await res.text().catch(()=> "")}`);
   const data: CreatorsResponse = await res.json();
@@ -90,7 +92,7 @@ async function fetchCreators(): Promise<AdminCreator[]> {
 }
 
 async function fetchCategories(): Promise<Category[]> {
-  const url = await apiUrl("admin/categories");
+  const url = await apiUrl("/api/admin/categories");
   const res = await fetch(url, { cache: "no-store", headers: await buildAuthHeaders() });
   if (!res.ok) throw new Error(`Failed to load categories (${res.status}) ${await res.text().catch(()=> "")}`);
   const data: CategoriesResponse = await res.json();
@@ -102,7 +104,7 @@ export async function deactivateUserAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/users/${id}/deactivate`);
+  const url = await apiUrl(`/api/admin/users/${id}/deactivate`);
   await fetch(url, { method: "POST", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -111,7 +113,7 @@ export async function reactivateUserAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/users/${id}/reactivate`);
+  const url = await apiUrl(`/api/admin/users/${id}/reactivate`);
   await fetch(url, { method: "POST", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -120,7 +122,7 @@ export async function hardDeleteUserAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/users/${id}`);
+  const url = await apiUrl(`/api/admin/users/${id}`);
   await fetch(url, { method: "DELETE", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -130,7 +132,7 @@ export async function featureCreatorAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/creators/${id}/feature`);
+  const url = await apiUrl(`/api/admin/creators/${id}/feature`);
   await fetch(url, { method: "PATCH", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -139,7 +141,7 @@ export async function unfeatureCreatorAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/creators/${id}/unfeature`);
+  const url = await apiUrl(`/api/admin/creators/${id}/unfeature`);
   await fetch(url, { method: "POST", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -148,7 +150,7 @@ export async function hardDeleteCreatorAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/creators/${id}`);
+  const url = await apiUrl(`/api/admin/creators/${id}`);
   await fetch(url, { method: "DELETE", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
@@ -159,7 +161,7 @@ export async function createCategoryAction(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const slug = String(formData.get("slug") ?? "").trim() || null;
   if (!name) return;
-  const url = await apiUrl("admin/categories");
+  const url = await apiUrl("/api/admin/categories");
   await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await buildAuthHeaders()) },
@@ -174,7 +176,7 @@ export async function updateCategoryAction(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim() || null;
   const slug = String(formData.get("slug") ?? "").trim() || null;
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/categories/${id}`);
+  const url = await apiUrl(`/api/admin/categories/${id}`);
   await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json", ...(await buildAuthHeaders()) },
@@ -188,8 +190,8 @@ export async function toggleCategoryActiveAction(formData: FormData) {
   const id = Number(formData.get("id"));
   const nextActive = String(formData.get("nextActive") ?? "") === "true";
   if (!Number.isFinite(id)) return;
-  // protected public route
-  const url = await apiUrl(`categories/${id}`);
+  // Toggle using the public categories PATCH but still include /api prefix.
+  const url = await apiUrl(`/api/categories/${id}`);
   await fetch(url, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...(await buildAuthHeaders()) },
@@ -202,14 +204,13 @@ export async function deleteCategoryAction(formData: FormData) {
   "use server";
   const id = Number(formData.get("id"));
   if (!Number.isFinite(id)) return;
-  const url = await apiUrl(`admin/categories/${id}`);
+  const url = await apiUrl(`/api/admin/categories/${id}`);
   await fetch(url, { method: "DELETE", headers: await buildAuthHeaders() }).catch(()=>{});
   revalidatePath("/admin");
 }
 
 /* -------------------- Page -------------------- */
 export default async function AdminDashboardPage() {
-  // load all three in parallel
   const [users, creators, categories] = await Promise.all([
     fetchUsers(),
     fetchCreators(),
@@ -235,7 +236,7 @@ export default async function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
+              {users.map((u) => (
                 <tr key={u.id} className="border-t">
                   <td className="p-2">{u.id}</td>
                   <td className="p-2">{u.email}</td>
@@ -261,7 +262,11 @@ export default async function AdminDashboardPage() {
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td className="p-3 text-center opacity-70" colSpan={5}>No users.</td></tr>
+                <tr>
+                  <td className="p-3 text-center opacity-70" colSpan={5}>
+                    No users.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -284,7 +289,7 @@ export default async function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {creators.map(c => {
+              {creators.map((c) => {
                 const isFeatured = Boolean(c.is_featured || c.featured);
                 return (
                   <tr key={c.id} className="border-t">
@@ -316,7 +321,11 @@ export default async function AdminDashboardPage() {
                 );
               })}
               {creators.length === 0 && (
-                <tr><td className="p-3 text-center opacity-70" colSpan={6}>No creators.</td></tr>
+                <tr>
+                  <td className="p-3 text-center opacity-70" colSpan={6}>
+                    No creators.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -342,8 +351,11 @@ export default async function AdminDashboardPage() {
 
         {/* List/Edit/Toggle/Delete */}
         <div className="space-y-2">
-          {categories.map(cat => (
-            <div key={cat.id} className="flex flex-col sm:flex-row sm:items-center gap-3 border rounded-2xl p-3">
+          {categories.map((cat) => (
+            <div
+              key={cat.id}
+              className="flex flex-col sm:flex-row sm:items-center gap-3 border rounded-2xl p-3"
+            >
               {/* Edit */}
               <form action={updateCategoryAction} className="flex flex-wrap gap-2 items-end">
                 <input type="hidden" name="id" value={cat.id} />
@@ -353,7 +365,11 @@ export default async function AdminDashboardPage() {
                 </div>
                 <div className="flex flex-col">
                   <label className="text-sm opacity-70">Slug</label>
-                  <input name="slug" defaultValue={cat.slug ?? ""} className="border rounded px-3 py-2" />
+                  <input
+                    name="slug"
+                    defaultValue={cat.slug ?? ""}
+                    className="border rounded px-3 py-2"
+                  />
                 </div>
                 <button className="border rounded px-3 py-2">Save</button>
               </form>
@@ -361,7 +377,11 @@ export default async function AdminDashboardPage() {
               {/* Toggle active */}
               <form action={toggleCategoryActiveAction} className="ml-0 sm:ml-auto">
                 <input type="hidden" name="id" value={cat.id} />
-                <input type="hidden" name="nextActive" value={(!cat.active).toString()} />
+                <input
+                  type="hidden"
+                  name="nextActive"
+                  value={(!cat.active).toString()}
+                />
                 <button className="border rounded px-3 py-2">
                   {cat.active ? "Deactivate" : "Activate"}
                 </button>
@@ -376,7 +396,9 @@ export default async function AdminDashboardPage() {
           ))}
 
           {categories.length === 0 && (
-            <div className="p-4 text-center opacity-70 border rounded-2xl">No categories yet.</div>
+            <div className="p-4 text-center opacity-70 border rounded-2xl">
+              No categories yet.
+            </div>
           )}
         </div>
       </section>
