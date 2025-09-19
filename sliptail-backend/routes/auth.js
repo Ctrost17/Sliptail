@@ -65,7 +65,6 @@ async function getPendingSetAtColumn() {
 }
 
 async function sendVerifyEmail(userId, email) {
-  // Invalidate any prior unconsumed verify tokens
   await db.query(
     `UPDATE user_tokens
         SET consumed_at = NOW()
@@ -84,8 +83,6 @@ async function sendVerifyEmail(userId, email) {
 
   const verifyUrl = `${BASE_URL}/api/auth/verify?token=${token}`;
 
-  // If email_queue has a strict CHECK on status and your system isn't fully wired,
-  // this may throw. We let it throw here and catch at call-site so it NEVER rolls back the user update.
   await enqueueAndSend({
     to: email,
     subject: "Verify your email",
@@ -223,7 +220,6 @@ router.get("/verify", async (req, res) => {
 
     await db.query("BEGIN");
 
-    // Swap-in pending email if present; else leave as-is (signup verify)
     const pendingCol = await getPendingSetAtColumn();
     const sets = [
       "email = COALESCE(pending_email, email)",
@@ -259,6 +255,7 @@ router.get("/verify", async (req, res) => {
  * POST /api/auth/login
  * Body: { email, password }
  * Requires verified email.
+ * Also sets httpOnly cookie "token" so SSR/admin can authenticate.
  */
 router.post("/login", strictLimiter, validate(authLogin), async (req, res) => {
   try {
@@ -286,12 +283,28 @@ router.post("/login", strictLimiter, validate(authLogin), async (req, res) => {
     }
 
     const token = issueJwt(user);
+
+    // NEW: set httpOnly cookie for SSR/admin
+    res.cookie("token", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV !== "development",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: "/",
+    });
+
     return res.json({ token, user: toSafeUser(user) });
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("login error:", e);
     return res.status(500).json({ error: "Failed to login" });
   }
+});
+
+/** POST /api/auth/logout — clears the httpOnly token cookie */
+router.post("/logout", (_req, res) => {
+  res.clearCookie("token", { path: "/" });
+  res.json({ success: true });
 });
 
 /**
@@ -418,7 +431,7 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
     const ok = await bcrypt.compare(String(password), me.password_hash || "");
     if (!ok) return res.status(400).json({ error: "Invalid password" });
 
-    // SET pending_email + timestamp (no transaction; we want this to persist even if email fails)
+    // SET pending_email + timestamp
     const pendingCol = await getPendingSetAtColumn();
     const sets = ["pending_email = $1", "updated_at = NOW()"];
     if (pendingCol) sets.push(`${pendingCol} = NOW()`);
