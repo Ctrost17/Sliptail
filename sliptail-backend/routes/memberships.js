@@ -168,6 +168,79 @@ router.get("/mine", requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/memberships/feed
+ * - Same as /mine but only returns memberships with has_access=true
+ * - Optimized for feed page so client doesn’t have to filter
+ */
+router.get("/feed", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  try {
+  // If you want ALL products created by the current user (their own catalog)
+  // you likely don't need memberships join. Provide optional filter for membership type.
+  const baseQuery = `SELECT p.id,
+                            p.user_id AS creator_id,
+                            p.title,
+                            p.description,
+                            p.filename,
+                            p.product_type,
+                            p.price,
+                            p.created_at
+                       FROM products p
+                      WHERE p.user_id = $1
+                        AND p.product_type = 'membership'
+                      ORDER BY p.created_at DESC`;
+  const { rows } = await db.query(baseQuery, [userId]);
+  const products = rows.map(linkify);
+  console.log(products);
+  
+  res.json({ products, count: products.length });
+  } catch (e) {
+    console.error("feed products error:", e);
+    res.status(500).json({ error: "Could not fetch feed products" });
+  }
+});
+
+/**
+ * GET /api/memberships/subscribed-products
+ * - Returns membership products the current user is subscribed to (other creators)
+ * - Filters by active/trialing memberships with current access
+ * - Does NOT include the user's own products (unless they subscribed to them somehow which is prevented elsewhere)
+ */
+router.get("/subscribed-products", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  console.log("Fetching subscribed products for user:", userId);
+  
+  try {
+    const { rows } = await db.query(
+      `SELECT p.id,
+              p.user_id,
+              p.title,
+              p.description,
+              p.filename,
+              p.product_type,
+              p.price,
+              p.created_at,
+              cp.display_name,
+              cp.profile_image
+         FROM memberships m
+         JOIN products p ON p.id = m.product_id
+         JOIN creator_profiles cp ON cp.user_id = p.user_id
+        WHERE m.buyer_id = $1
+          AND m.status IN ('active','trialing')
+          AND NOW() <= m.current_period_end
+          AND m.cancel_at_period_end = FALSE
+        ORDER BY p.created_at DESC`,
+      [userId]
+    );
+    const products = rows.map(linkify);
+    return res.json({ products, count: products.length });
+  } catch (e) {
+    console.error("subscribed-products error:", e);
+    return res.status(500).json({ error: "Could not fetch subscribed products" });
+  }
+});
+
+/**
  * Helper endpoint (optional) to check access to a creator's feed
  * GET /api/memberships/access/:creatorId
  */

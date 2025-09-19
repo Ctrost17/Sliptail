@@ -91,29 +91,8 @@ async function sendVerifyEmail(userId, email) {
   });
 }
 
-/** Allow auth via Bearer OR cookie (for settings with credentials: 'include') */
-function authFromBearer(req, res, next) {
-  try {
-    const h = req.headers.authorization || "";
-    let token = null;
-
-    if (h.startsWith("Bearer ")) {
-      token = h.slice("Bearer ".length);
-    } else if (req.cookies && req.cookies.token) {
-      token = req.cookies.token;
-    }
-
-    if (!token) return res.status(401).json({ error: "Unauthorized" });
-
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload;
-    return next();
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("authFromBearer failed:", err?.message || err);
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-}
+// Use shared middleware for consistency
+const { requireAuth } = require("../middleware/auth");
 
 /* -------------------------------- routes -------------------------------- */
 
@@ -284,14 +263,19 @@ router.post("/login", strictLimiter, validate(authLogin), async (req, res) => {
 
     const token = issueJwt(user);
 
-    // NEW: set httpOnly cookie for SSR/admin
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV !== "development",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: "/",
-    });
+    // Set HttpOnly cookie so SSR/fetch with credentials works; match logout clearing options
+    try {
+      res.cookie("token", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV !== "development",
+        path: "/",
+        maxAge: 1 * 24 * 60 * 60 * 1000, // 1 day
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("Failed to set auth cookie:", e?.message || e);
+    }
 
     return res.json({ token, user: toSafeUser(user) });
   } catch (e) {
@@ -403,7 +387,7 @@ router.post("/reset", strictLimiter, async (req, res) => {
  * Requires auth (Bearer or cookie)
  * Writes pending_email, then *attempts* to enqueue verify email OUTSIDE any transaction.
  */
-router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) => {
+router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
   try {
     const { new_email, password } = req.body || {};
     if (!new_email || !password) {
@@ -465,7 +449,7 @@ router.patch("/change-email", strictLimiter, authFromBearer, async (req, res) =>
  * Body: { current_password, new_password }
  * Requires auth (Bearer or cookie)
  */
-router.patch("/change-password", strictLimiter, authFromBearer, async (req, res) => {
+router.patch("/change-password", strictLimiter, requireAuth, async (req, res) => {
   try {
     const { current_password, new_password } = req.body || {};
     if (!current_password || !new_password) {
@@ -502,7 +486,7 @@ router.patch("/change-password", strictLimiter, authFromBearer, async (req, res)
  * GET /api/auth/me
  * Requires auth (Bearer or cookie)
  */
-router.get("/me", authFromBearer, async (req, res) => {
+router.get("/me", requireAuth, async (req, res) => {
   const { id } = req.user || {};
   if (!id) return res.status(401).json({ error: "Unauthorized" });
 

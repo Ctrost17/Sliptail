@@ -2,6 +2,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
+const crypto = require("crypto");
 const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyCreatorNewRequest, notifyRequestDelivered } = require("../utils/notify");
@@ -27,6 +28,10 @@ function normalizeStatus(row) {
 const uploadDir = path.join(__dirname, "..", "public", "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
+// Dedicated subfolder for creator-delivered/request media
+const uploadDirRequests = path.join(uploadDir, "requests");
+if (!fs.existsSync(uploadDirRequests)) fs.mkdirSync(uploadDirRequests, { recursive: true });
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -45,6 +50,27 @@ const allowed = new Set([
 const upload = multer({
   storage,
   limits: { fileSize: 2500 * 1024 * 1024 }, // 2.5GB max
+  fileFilter: (req, file, cb) => {
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Unsupported file type"));
+    }
+    cb(null, true);
+  }
+});
+
+// Multer instance for creator media: saves to /public/uploads/requests with random filenames
+const creatorStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDirRequests),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "");
+    const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString("hex");
+    cb(null, `${id}${ext}`);
+  },
+});
+
+const uploadCreator = multer({
+  storage: creatorStorage,
+  limits: { fileSize: 2500 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!allowed.has(file.mimetype)) {
       return cb(new Error("Unsupported file type"));
@@ -298,7 +324,7 @@ router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
        ORDER BY cr.created_at DESC`,
       params
     );
-  
+
 
     res.json({ requests: rows.map(normalizeStatus) });
   } catch (err) {
@@ -377,7 +403,7 @@ router.post(
   "/:id/deliver",
   requireAuth, requireCreator,
   standardLimiter,
-  upload.single("file"),
+  uploadCreator.single("file"),
   validate(requestDeliver),
   async (req, res) => {
     const creatorId = req.user.id;
@@ -402,14 +428,15 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-      const newPath = path.basename(req.file.path);
+      const deliveredFile = path.basename(req.file.path);
+      const webPath = `/uploads/requests/${deliveredFile}`;
       const { rows: upd } = await db.query(
         `UPDATE custom_requests
-            SET attachment_path = $1,
+            SET creator_attachment_path = $1,
                 status = 'delivered'
           WHERE id = $2
           RETURNING *`,
-        [newPath, requestId]
+        [webPath, requestId]
       );
 
       res.json({ success: true, request: normalizeStatus(upd[0]) });
@@ -436,14 +463,14 @@ router.post(
   "/:id/complete",
   requireAuth, requireCreator,
   standardLimiter,
-  upload.single("file"),
+  uploadCreator.single("media"),
   async (req, res) => {
     const creatorId = req.user.id;
     const requestId = parseInt(req.params.id, 10);
     const creatorMessage = (req.body.message || req.body.description || "").toString().trim() || null;
 
     console.log('Completing request id:', requestId, 'by creator:', creatorId, 'with message:', creatorMessage, 'and file:', req.file ? req.file.filename : 'no file');
-    
+
     try {
       // Fetch request with its order
       const { rows } = await db.query(
@@ -458,7 +485,7 @@ router.post(
 
       let orderID = r.order_id;
       console.log('Fetched request for completion:', r);
-      
+
       if (!r) return res.status(404).json({ error: "Request not found" });
       if (r.status === "complete") return res.status(400).json({ error: "Request already complete" });
       if (r.status === "declined") return res.status(400).json({ error: "Declined request cannot be completed" });
@@ -468,22 +495,22 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-      const newAttachment = req.file ? path.basename(req.file.path) : null;
+      const newAttachment = req.file ? `/uploads/requests/${path.basename(req.file.path)}` : null;
 
       // NOTE: DB check constraint is rejecting new status values ('complete').
       // We no longer attempt to change the stored custom_requests.status nor orders.status here.
       // Only update creator message + attachment (if provided) and return a virtual status 'complete'.
 
-  let updatedRow;
+      let updatedRow;
       try {
         await db.query("BEGIN");
-        
+
         let updatedRowResult;
         try {
           const { rows: upd } = await db.query(
             `UPDATE custom_requests
                 SET creator = COALESCE($1, creator),
-                    attachment_path = COALESCE($2, attachment_path),
+                    creator_attachment_path = COALESCE($2, creator_attachment_path),
                     status = 'complete'
               WHERE id = $3
               RETURNING *`,
@@ -504,7 +531,7 @@ router.post(
         }
         updatedRow = updatedRowResult;
 
-        
+
         // Attempt to mark the related order as complete. If the DB check constraint
         // rejects the value (23514), we'll rollback and return a helpful 409 with
         // migration guidance so the caller can add the new status to the enum/check.
@@ -522,7 +549,7 @@ router.post(
         throw err;
       }
 
-  const responseRow = { ...normalizeStatus(updatedRow), status: 'complete', _stored_status: updatedRow.status, _order_status: 'complete' };
+      const responseRow = { ...normalizeStatus(updatedRow), status: 'complete', _stored_status: updatedRow.status, _order_status: 'complete' };
       return res.json({ success: true, request: responseRow });
     } catch (err) {
       try { await db.query("ROLLBACK"); } catch { }
@@ -544,7 +571,7 @@ router.get("/:id/download", requireAuth, async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `SELECT attachment_path, status, buyer_id
+      `SELECT attachment_path, creator_attachment_path, status, buyer_id
          FROM custom_requests
         WHERE id = $1`,
       [requestId]
@@ -553,12 +580,21 @@ router.get("/:id/download", requireAuth, async (req, res) => {
     if (!r) return res.status(404).json({ error: "Request not found" });
     if (r.buyer_id !== userId) return res.status(403).json({ error: "Not your request" });
     if (r.status !== "delivered") return res.status(403).json({ error: "Not delivered yet" });
-    if (!r.attachment_path) return res.status(404).json({ error: "No delivery file" });
+    const mediaPath = r.creator_attachment_path || r.attachment_path;
+    if (!mediaPath) return res.status(404).json({ error: "No delivery file" });
 
-    const fullPath = path.join(uploadDir, r.attachment_path);
+    // Resolve absolute filesystem path
+    let fullPath;
+    if (mediaPath.startsWith("/uploads/")) {
+      const relative = mediaPath.replace(/^\/+/, ""); // strip leading slash
+      fullPath = path.join(__dirname, "..", "public", relative);
+    } else {
+      // legacy: stored as basename under uploads root
+      fullPath = path.join(uploadDir, mediaPath);
+    }
     if (!fs.existsSync(fullPath)) return res.status(404).json({ error: "File missing on disk" });
 
-    return res.download(fullPath, path.basename(r.attachment_path));
+    return res.download(fullPath, path.basename(mediaPath));
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Download failed" });
