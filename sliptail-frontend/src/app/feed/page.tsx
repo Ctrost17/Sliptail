@@ -49,6 +49,27 @@ export default function MembershipFeedPage() {
     []
   );
 
+  // Resolve media URL: keep blob: URLs as-is; otherwise resolve against API base
+  const resolveMediaUrl = useCallback(
+    (src: string | null | undefined): string | null => {
+      if (!src) return null;
+      const s = src.trim();
+      if (s.startsWith("blob:")) return s; // local object URL
+      return resolveImageUrl(s, apiBase);
+    },
+    [apiBase]
+  );
+
+  // Determine if media should be rendered as a video
+  const isVideoMedia = useCallback(
+    (file: File | null, src: string | null | undefined): boolean => {
+      if (file?.type) return file.type.startsWith("video/");
+      const s = (src || "").toLowerCase().split("?")[0].split("#")[0];
+      return /\.(mp4|webm|ogg|m4v|mov)$/i.test(s);
+    },
+    []
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -137,6 +158,7 @@ export default function MembershipFeedPage() {
 
   const resetDraftMedia = () => {
     if (draftMediaPreview && draftMediaPreview.startsWith("blob:")) URL.revokeObjectURL(draftMediaPreview);
+    
     setDraftFile(null);
     setDraftMediaPreview(null);
     if (editingPost) setMediaRemoved(true); // only matters in edit context
@@ -281,8 +303,12 @@ export default function MembershipFeedPage() {
                           {post.body && <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">Description: {post.body}</p>}
                           {post.media_path && (
                             <div className="relative aspect-video rounded-xl overflow-hidden bg-neutral-100 mt-3 ring-1 ring-neutral-200">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={resolveImageUrl(post.media_path, apiBase) || post.media_path} alt="post" className="h-full w-full object-cover" />
+                              {isVideoMedia(null, post.media_path) ? (
+                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls className="h-full w-full object-cover" />
+                              ) : (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={resolveMediaUrl(post.media_path) || post.media_path} alt="post" className="h-full w-full object-cover" />
+                              )}
                             </div>
                           )}
 
@@ -342,8 +368,12 @@ export default function MembershipFeedPage() {
                           </div>
                           {post.media_path && (
                             <div className="relative aspect-video rounded-xl overflow-hidden bg-neutral-100 mt-3 ring-1 ring-neutral-200">
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={resolveImageUrl(post.media_path, apiBase) || post.media_path} alt="post" className="h-full w-full object-cover" />
+                              {isVideoMedia(null, post.media_path) ? (
+                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls className="h-full w-full object-cover" />
+                              ) : (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={resolveMediaUrl(post.media_path) || post.media_path} alt="post" className="h-full w-full object-cover" />
+                              )}
                             </div>
                           )}
                           {post.body && <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">{post.body}</p>}
@@ -387,11 +417,11 @@ export default function MembershipFeedPage() {
                 )}
                 {draftMediaPreview && (
                   <div className="relative group">
-                    {draftMediaPreview.match(/\.mp4$|video/i) ? (
-                      <video src={draftMediaPreview} controls className="w-full rounded-xl border" />
+                    {isVideoMedia(draftFile, draftMediaPreview) ? (
+                      <video src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
                     ) : (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={draftMediaPreview} alt="preview" className="w-full rounded-xl border object-cover" />
+                      <img src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} alt="preview" className="w-full rounded-xl border object-cover" />
                     )}
                     <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
                       <button onClick={resetDraftMedia} className="px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
@@ -427,7 +457,7 @@ export default function MembershipFeedPage() {
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Body</label>
                 <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write something..." rows={5} className="w-full rounded-md border px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              <div>
+                 <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-2">Media</label>
                 {!draftMediaPreview && (
                   <label className="flex flex-col items-center justify-center gap-2 w-full h-36 border border-dashed rounded-xl cursor-pointer text-xs text-neutral-500 hover:bg-neutral-50 transition">
@@ -438,11 +468,11 @@ export default function MembershipFeedPage() {
                 )}
                 {draftMediaPreview && (
                   <div className="relative group">
-                    {draftMediaPreview.match(/\.mp4$|video/i) ? (
-                      <video src={draftMediaPreview} controls className="w-full rounded-xl border" />
+                    {isVideoMedia(draftFile, draftMediaPreview) ? (
+                      <video src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
                     ) : (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={resolveImageUrl(draftMediaPreview, apiBase) || draftMediaPreview} alt="preview" className="w-full rounded-xl border object-cover" />
+                      <img src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview}  alt="preview" className="w-full rounded-xl border object-cover" />
                     )}
                     <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
                       <button onClick={resetDraftMedia} className="px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
