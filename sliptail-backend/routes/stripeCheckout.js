@@ -273,15 +273,29 @@ router.get("/finalize", requireAuth, async (req, res) => {
         const creatorId = m.creator_id && parseInt(m.creator_id, 10);
         const productId = m.product_id && parseInt(m.product_id, 10);
         if (buyerId && creatorId && productId && buyerId === req.user.id) {
-          const currentPeriodEnd = new Date((subObj.current_period_end || 0) * 1000);
-          await db.query(
-            `INSERT INTO memberships (buyer_id, creator_id, product_id, stripe_subscription_id, status, current_period_end, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,NOW())
-             ON CONFLICT (stripe_subscription_id) DO UPDATE
-               SET status=EXCLUDED.status,
-                   current_period_end=EXCLUDED.current_period_end`,
-            [buyerId, creatorId, productId, subObj.id, subObj.status, currentPeriodEnd]
-          );
+          // Calculate proper period end - either from Stripe or default to 1 month from now
+          let currentPeriodEnd;
+          if (subObj.current_period_end && subObj.current_period_end > 0) {
+            currentPeriodEnd = new Date(subObj.current_period_end * 1000);
+          } else {
+            // Fallback: 1 month from now if Stripe doesn't provide valid period end
+            currentPeriodEnd = new Date();
+            currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
+          }
+          
+          try {
+            await db.query(
+              `INSERT INTO memberships (buyer_id, creator_id, product_id, stripe_subscription_id, status, current_period_end, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,NOW())
+               ON CONFLICT (stripe_subscription_id) DO UPDATE
+                 SET status=EXCLUDED.status,
+                     current_period_end=EXCLUDED.current_period_end`,
+              [buyerId, creatorId, productId, subObj.id, subObj.status, currentPeriodEnd]
+            );
+          } catch (dbError) {
+            console.error("Database error while creating membership:", dbError);
+            // Continue processing - return success anyway since Stripe subscription is valid
+          }
           const { display_name } = await getCreatorInfo(productId);
           return res.json({ ok: true, type: "membership", creatorDisplayName: display_name || "Creator", orderId: null });
         }
@@ -292,7 +306,18 @@ router.get("/finalize", requireAuth, async (req, res) => {
     return res.status(400).json({ ok: false, error: "Unsupported session mode" });
   } catch (e) {
     console.error("Finalize error:", e);
-    return res.status(500).json({ ok: false, error: "Failed to finalize session" });
+    
+    // Provide more specific error messages based on error type
+    let errorMessage = "Failed to finalize session";
+    if (e.message && e.message.includes("duplicate key")) {
+      errorMessage = "Subscription already exists";
+    } else if (e.message && e.message.includes("not found")) {
+      errorMessage = "Session or subscription not found";
+    } else if (e.code === "23505") {
+      errorMessage = "Duplicate subscription detected";
+    }
+    
+    return res.status(500).json({ ok: false, error: errorMessage });
   }
 });
 

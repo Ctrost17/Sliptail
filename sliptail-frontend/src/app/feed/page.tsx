@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
 
@@ -19,6 +20,7 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
 
 export default function MembershipFeedPage() {
   const [{ token }] = useState(() => loadAuth());
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -38,6 +40,10 @@ export default function MembershipFeedPage() {
   const [draftFile, setDraftFile] = useState<File | null>(null);
   const [draftMediaPreview, setDraftMediaPreview] = useState<string | null>(null);
   const [mediaRemoved, setMediaRemoved] = useState(false); // track explicit removal in edit
+
+  // Get product ID from URL parameters (for direct linking to specific membership)
+  const productIdParam = searchParams.get('product_id');
+  const highlightProductId = productIdParam ? parseInt(productIdParam, 10) : null;
 
   // cleanup object URL when component unmounts or preview changes
   useEffect(() => {
@@ -120,6 +126,24 @@ export default function MembershipFeedPage() {
   }, [token]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Auto-expand and switch to correct tab when product_id is provided in URL
+  useEffect(() => {
+    if (highlightProductId && !loading) {
+      // Check if product is in current user's products (mine tab)
+      const isMyProduct = products.some(p => p.id === highlightProductId);
+      // Check if product is in subscribed products (others tab)
+      const isOtherProduct = otherProducts.some(p => p.id === highlightProductId);
+      
+      if (isMyProduct) {
+        setTab("mine");
+        setExpandedProductId(highlightProductId);
+      } else if (isOtherProduct) {
+        setTab("others");
+        setExpandedProductId(highlightProductId);
+      }
+    }
+  }, [highlightProductId, loading, products, otherProducts]);
 
   // Posts grouped by product id directly
   const postsByProd = useMemo(() => {
@@ -253,7 +277,7 @@ export default function MembershipFeedPage() {
         </div>)}
 
       {loading && <div className="text-sm text-neutral-600">Loading...</div>}
-      {!loading && !token && <div className="text-sm text-neutral-600">Not signed in.</div>}
+      {/* {!loading && !token && <div className="text-sm text-neutral-600">Not signed in.</div>} */}
       {error && <div className="text-sm text-red-600">{error}</div>}
 
       {isCreator && tab === "mine" && (
@@ -261,9 +285,10 @@ export default function MembershipFeedPage() {
           {products.map(prod => {
             const creatorPosts = postsByProd[prod.id] || [];
             const expanded = expandedProductId === prod.id;
+            const isHighlighted = highlightProductId === prod.id;
             return (
-              <div key={prod.id} className="border rounded-2xl overflow-hidden bg-white/50 backdrop-blur-sm">
-                <div className="flex items-center gap-3 px-4 py-3 bg-neutral-50/70 border-b">
+              <div key={prod.id} className={`border rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50/80 border-green-200 shadow-lg' : 'bg-white/50'} backdrop-blur-sm transition-all duration-300`}>
+                <div className={`flex items-center gap-3 px-4 py-3 ${isHighlighted ? 'bg-green-100/70' : 'bg-neutral-50/70'} border-b`}>
                   <button
                     aria-expanded={expanded}
                     onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
@@ -330,9 +355,10 @@ export default function MembershipFeedPage() {
           {otherProducts.map(prod => {
             const postsForProd = postsByProd[prod.id] || [];
             const expanded = expandedProductId === prod.id;
+            const isHighlighted = highlightProductId === prod.id;
             return (
-              <div key={prod.id} className="border rounded-2xl overflow-hidden bg-white/60 backdrop-blur-sm">
-                <div className="flex items-center gap-3 px-4 py-3 bg-neutral-50/70 border-b">
+              <div key={prod.id} className={`border rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50/80 border-green-200 shadow-lg' : 'bg-white/60'} backdrop-blur-sm transition-all duration-300`}>
+                <div className={`flex items-center gap-3 px-4 py-3 ${isHighlighted ? 'bg-green-100/70' : 'bg-neutral-50/70'} border-b`}>
                   <button
                     aria-expanded={expanded}
                     onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
@@ -342,7 +368,7 @@ export default function MembershipFeedPage() {
                     <h2 className="font-semibold text-sm leading-tight truncate">Title: {prod.title || `Product #${prod.id}`}</h2>
                     <p className="text-xs text-neutral-500">Date: {prod.created_at && new Date(prod.created_at).toLocaleDateString()}</p>
                   </button>
-                  <span className="text-[10px] px-2 py-1 rounded-full bg-neutral-200 text-neutral-600">Subscribed</span>
+                  <span className={`text-[10px] px-2 py-1 rounded-full ${isHighlighted ? 'bg-green-200 text-green-800' : 'bg-neutral-200 text-neutral-600'}`}>Subscribed</span>
                 </div>
                 {expanded && (
                   <div>

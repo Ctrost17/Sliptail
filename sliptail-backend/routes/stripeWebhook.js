@@ -379,7 +379,16 @@ module.exports = async function stripeWebhook(req, res) {
       case "customer.subscription.deleted": {
         const sub = event.data.object;
         const status = sub.status; // trialing, active, past_due, canceled, etc.
-        const currentPeriodEnd = new Date(sub.current_period_end * 1000);
+        
+        // Calculate proper period end - handle invalid or missing timestamps
+        let currentPeriodEnd;
+        if (sub.current_period_end && sub.current_period_end > 0) {
+          currentPeriodEnd = new Date(sub.current_period_end * 1000);
+        } else {
+          // Fallback: 1 month from now if Stripe doesn't provide valid period end
+          currentPeriodEnd = new Date();
+          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
+        }
 
         const meta = sub.metadata || {};
         const buyerId   = meta.buyer_id && parseInt(meta.buyer_id, 10);
@@ -416,7 +425,17 @@ module.exports = async function stripeWebhook(req, res) {
         if (subId) {
           const sub = await stripe.subscriptions.retrieve(subId);
           const status = sub.status;
-          const currentPeriodEnd = new Date(sub.current_period_end * 1000);
+          
+          // Calculate proper period end - handle invalid or missing timestamps
+          let currentPeriodEnd;
+          if (sub.current_period_end && sub.current_period_end > 0) {
+            currentPeriodEnd = new Date(sub.current_period_end * 1000);
+          } else {
+            // Fallback: 1 month from now if Stripe doesn't provide valid period end
+            currentPeriodEnd = new Date();
+            currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
+          }
+          
           await db.query(
             `UPDATE memberships
                 SET status=$1,

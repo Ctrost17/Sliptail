@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
 import { Download, Eye, X, AlertCircle, Star, ChevronRight, Loader2, Calendar, CreditCard, Shield, ArrowRight } from "lucide-react";
@@ -62,6 +62,7 @@ export default function PurchasesPage() {
 
   const { showSuccess, showError } = useToast();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const toast = searchParams.get("toast");
   const apiBase = useMemo(() => toApiBase(), []);
 
@@ -380,7 +381,7 @@ export default function PurchasesPage() {
 
                       <div className="space-y-3">
                         <button
-                          onClick={() => window.location.href = `/feed/${membership.product_id}`}
+                          onClick={() => router.push(`/feed?product_id=${membership.product_id}`)}
                           className="w-full bg-green-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 flex items-center justify-center group"
                         >
                           View Feed

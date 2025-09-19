@@ -58,10 +58,9 @@ router.post("/subscribe", requireAuth, async (req, res) => {
     const { rows } = await db.query(
       `INSERT INTO memberships (buyer_id, creator_id, product_id, status, cancel_at_period_end, current_period_end, started_at)
        VALUES ($1,$2,$3,'active',FALSE, NOW() + INTERVAL '1 month', NOW())
-       ON CONFLICT (buyer_id, creator_id)
+       ON CONFLICT (buyer_id, creator_id, product_id)
        DO UPDATE SET status='active',
                      cancel_at_period_end=FALSE,
-                     product_id=EXCLUDED.product_id,
                      current_period_end = GREATEST(memberships.current_period_end, NOW()) + INTERVAL '1 month'
        RETURNING *`,
       [buyerId, creator_id, product_id]
@@ -85,7 +84,16 @@ router.post("/subscribe", requireAuth, async (req, res) => {
   
   catch (e) {
     console.error("subscribe error:", e);
-    res.status(500).json({ error: "Could not start membership" });
+    
+    // Provide more specific error messages
+    let errorMessage = "Could not start membership";
+    if (e.code === "23505") {
+      errorMessage = "You already have this membership";
+    } else if (e.message && e.message.includes("duplicate key")) {
+      errorMessage = "Membership already exists";
+    }
+    
+    res.status(500).json({ error: errorMessage });
   }
 });
 
