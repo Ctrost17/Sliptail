@@ -309,7 +309,9 @@ export default function DashboardPage() {
           fd.append("media", files[i]);
         }
       }
-
+      
+      console.log(fd.getAll("media")); // Debug log
+      
       const res = await fetch(`${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`, {
         method: "POST",
         credentials: "include",
@@ -317,6 +319,8 @@ export default function DashboardPage() {
         body: fd,
       });
 
+      console.log("Complete request response status:", res.status); // Debug log
+      
       const payload: any = await res.json().catch(() => ({}));
       if (!res.ok) {
         const err = extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`);
@@ -726,6 +730,39 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // Build full URL for an attachment that may be stored as a basename or web path
+  const buildAttachmentUrl = useCallback((p: string) => {
+    const clean = String(p || "");
+    const webPath = clean.startsWith("/uploads/")
+      ? clean
+      : `/uploads/${clean.replace(/^\/+/, "")}`;
+    return `${apiBase}${webPath}`;
+  }, [apiBase]);
+
+  // Auto-download the buyer's attachment in the active request modal
+  const handleDownloadAttachment = useCallback(async () => {
+    try {
+      const p = (activeRequest as any)?.attachment_path as string | undefined;
+      if (!p) return;
+      const url = buildAttachmentUrl(p);
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const filename = String(p).split(/[\\\/]/).pop() || "attachment";
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      console.error("download attachment error", e);
+      showToast("Download failed");
+    }
+  }, [activeRequest, buildAttachmentUrl]);
+
   const onCopyLink = async () => {
     try {
       const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -960,7 +997,8 @@ export default function DashboardPage() {
                       />
                     ) : (
                       <span>Upload</span>
-                    )}
+                    )
+                  }
                   </button>
                   <div className="text-xs text-neutral-600 max-w-xs">
                     Click the image to upload / replace. JPG, PNG, WEBP, GIF up to 15MB.
@@ -1117,9 +1155,7 @@ export default function DashboardPage() {
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
                         <div className="text-sm font-medium">Request #{req.id}</div>
-                        {req.details && (
-                          <div className="text-sm text-neutral-700 mt-1 line-clamp-2">{req.details}</div>
-                        )}
+    
                         <div className="text-xs text-neutral-500 mt-1">
                           From: {req.buyer_email || req.buyer_username || "Unknown"}
                         </div>
@@ -1322,19 +1358,35 @@ export default function DashboardPage() {
             <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Request Details</h3>
-                <button onClick={closeRequest} className="text-sm text-neutral-500">Close</button>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm font-medium">Request #{activeRequest.id}</div>
-                {activeRequest.details && (
-                  <div className="text-sm text-neutral-700">{activeRequest.details}</div>
+                <div className="text-sm font-medium">From: {activeRequest.buyer_email}</div>
+                {activeRequest.user && (
+                  <div className="text-sm text-neutral-700"> Detail: {activeRequest.user}</div>
                 )}
-                <div className="text-xs text-neutral-500">From: {activeRequest.buyer_email || activeRequest.buyer_username || 'Unknown'}</div>
+                
                 {activeRequest.amount !== undefined && activeRequest.amount !== null && (
-                  <div className="text-sm font-semibold">${((activeRequest.amount || 0) / 100).toFixed(2)}</div>
+                  <div className="text-sm font-semibold">Amount: ${((activeRequest.amount || 0) / 100).toFixed(2)}</div>
                 )}
                 <div className="text-xs text-neutral-500">{new Date(activeRequest.created_at).toLocaleDateString()} at {new Date(activeRequest.created_at).toLocaleTimeString()}</div>
+
+                {/* Download original buyer attachment (if present) */}
+                {activeRequest.attachment_path ? (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadAttachment}
+                      className="rounded-xl border px-4 py-2 text-sm inline-flex items-center gap-2 hover:bg-neutral-50"
+                    >
+                      {/* Download icon */}
+                      <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                      </svg>
+                      Download attachment
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="flex items-center justify-end gap-2">
@@ -1358,8 +1410,7 @@ export default function DashboardPage() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
               <div className="flex justify-between items-center">
-                <h3 className="text-lg font-semibold">Complete Request #{activeCompleteRequest.id}</h3>
-                <button onClick={closeComplete} className="text-sm text-neutral-500">Cancel</button>
+                <h3 className="text-lg font-semibold">Complete Request</h3>
               </div>
 
               <div className="space-y-2">

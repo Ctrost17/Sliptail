@@ -5,6 +5,7 @@ require("dotenv").config();
 const db = require('./db');
 
 const authRoutes = require('./routes/auth');
+const authLogoutRoutes = require('./routes/authLogout');
 const checkoutRoutes = require('./routes/checkout');
 const stripeRoutes = require('./routes/stripe');
 const productRoutes = require('./routes/products');
@@ -59,8 +60,8 @@ app.use(express.json({ limit: "25mb" }));
 // Auth + OAuth
 app.use(passport.initialize());
 app.use('/api/auth', authRoutes);
-app.use("/api/auth", require("./routes/authGoogle")); 
-app.use("/api/auth", require("./routes/auth"));      // ok to share base path
+app.use('/api/auth', require('./routes/authGoogle'));
+app.use('/api/auth', authLogoutRoutes); // explicit logout route
 
 // API routes
 app.use('/api/stripe', stripeRoutes);
