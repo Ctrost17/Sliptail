@@ -33,9 +33,15 @@ type Order = {
     title: string;
     filename: string;
   };
-  // For requests
+  // For requests (creator delivery)
   request_response?: string | null;
   request_media_url?: string | null;
+
+  // Buyer-submitted details / linkage to custom_requests
+  request_id?: number | null;
+  request_status?: string | null;
+  request_user_message?: string | null;
+  request_user_attachment_url?: string | null;
 };
 
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
@@ -72,9 +78,51 @@ export default function PurchasesPage() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // helpers for normalizing the optional /requests/mine API
+    const num = (v: unknown): number | null => {
+      const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+      return Number.isFinite(n) ? n : null;
+    };
+    const firstNonEmpty = (...vals: Array<unknown>): string | null => {
+      for (const v of vals) {
+        if (typeof v === "string" && v.trim().length > 0) return v.trim();
+      }
+      return null;
+    };
+    const firstUrlish = (...vals: Array<unknown>): string | null => {
+      for (const v of vals) {
+        if (typeof v === "string" && v.trim().length > 0) return v.trim();
+      }
+      return null;
+    };
+
     (async () => {
       try {
         const { token } = loadAuth();
+
+        type MyRequestRow = {
+          id: number | string;
+          order_id?: number | string;
+          orderId?: number | string;
+          order?: number | string;
+
+          status?: string;
+          // buyer fields (names can vary)
+          user?: string | null;
+          message?: string | null;
+          request?: string | null;
+          description?: string | null;
+          attachment_path?: string | null;
+          attachment?: string | null;
+          media_url?: string | null;
+
+          // creator fields (names can vary)
+          creator?: string | null;
+          creator_message?: string | null;
+          creator_attachment_path?: string | null;
+          creator_media_url?: string | null;
+        };
 
         const [legacy, memberships] = await Promise.all([
           fetchApi<{ orders: any[] }>("/api/orders/mine", {
@@ -89,35 +137,85 @@ export default function PurchasesPage() {
           })
         ]);
 
-        const mapped: Order[] = (legacy?.orders || []).map((o: any) => ({
-          id: Number(o.id),
-          product_id: o.product_id ?? (o.product?.id ?? null),
-          amount_cents:
-            typeof o.amount_cents === "number"
-              ? o.amount_cents
-              : typeof o.amount === "number"
-                ? Math.round(o.amount * 100)
-                : 0,
-          status: String(o.status ?? "unknown"),
-          created_at: String(o.created_at ?? new Date().toISOString()),
-          creator_profile: o.creator_profile
-            ? {
-              display_name: String(o.creator_profile.display_name ?? ""),
-              bio: o.creator_profile.bio ?? null,
-              profile_image: o.creator_profile.profile_image ?? null,
-            }
-            : null,
-          product: {
-            description: o.product?.description ?? null,
-            view_url: o.product?.view_url ?? null,
-            download_url: o.product?.download_url ?? null,
-            product_type: String(o.product?.product_type ?? "unknown"),
-            title: String(o.product?.title ?? ""),
-            filename: String(o.product?.filename ?? ""),
-          },
-          request_response: o.request_response ?? null,
-          request_media_url: o.request_media_url ?? null,
-        }));
+        // Try loading buyer requests, but don't fail the whole page if it errors
+        let myReqs: { requests: MyRequestRow[] } = { requests: [] };
+        try {
+          myReqs = await fetchApi<{ requests: MyRequestRow[] }>(
+            "/api/requests/mine",
+            { method: "GET", token, cache: "no-store" }
+          );
+        } catch {
+          myReqs = { requests: [] };
+        }
+
+        // Index requests by numeric order_id (accept numeric strings)
+        const reqByOrder: Record<number, MyRequestRow> = {};
+        for (const r of (myReqs?.requests ?? [])) {
+          const key = num(r?.order_id ?? r?.orderId ?? r?.order);
+          if (key !== null) reqByOrder[key] = r;
+        }
+
+        const mapped: Order[] = (legacy?.orders || []).map((o: any) => {
+          const orderId = Number(o.id);
+          const req = reqByOrder[orderId];
+
+          // normalize buyer details
+          const buyerMsg = firstNonEmpty(
+            req?.user, req?.message, req?.request, req?.description
+          );
+          const buyerAttachment = firstUrlish(
+            req?.attachment_path, req?.attachment, req?.media_url
+          );
+
+          // normalize creator delivery
+          const creatorMsg = firstNonEmpty(
+            // prefer orders payload if present
+            o?.request_response,
+            req?.creator, req?.creator_message
+          );
+          const creatorAttachment = firstUrlish(
+            o?.request_media_url,
+            req?.creator_attachment_path, req?.creator_media_url
+          );
+
+          return {
+            id: orderId,
+            product_id: o.product_id ?? (o.product?.id ?? null),
+            amount_cents:
+              typeof o.amount_cents === "number"
+                ? o.amount_cents
+                : typeof o.amount === "number"
+                  ? Math.round(o.amount * 100)
+                  : 0,
+            status: String(o.status ?? "unknown"),
+            created_at: String(o.created_at ?? new Date().toISOString()),
+            creator_profile: o.creator_profile
+              ? {
+                  display_name: String(o.creator_profile.display_name ?? ""),
+                  bio: o.creator_profile.bio ?? null,
+                  profile_image: o.creator_profile.profile_image ?? null,
+                }
+              : null,
+            product: {
+              description: o.product?.description ?? null,
+              view_url: o.product?.view_url ?? null,
+              download_url: o.product?.download_url ?? null,
+              product_type: String(o.product?.product_type ?? "unknown"),
+              title: String(o.product?.title ?? ""),
+              filename: String(o.product?.filename ?? ""),
+            },
+
+            // Creator delivery (normalized)
+            request_response: creatorMsg ?? null,
+            request_media_url: creatorAttachment ?? null,
+
+            // Buyer-submitted details (normalized)
+            request_id: num(req?.id) ?? null,
+            request_status: req?.status ?? null,
+            request_user_message: buyerMsg,
+            request_user_attachment_url: buyerAttachment,
+          };
+        });
 
         const membershipOrders: Order[] = (memberships?.memberships || []).map((m: any) => {
           const price = typeof m.product?.price === 'number' ? m.product.price : 0;
@@ -131,10 +229,10 @@ export default function PurchasesPage() {
             created_at: String(m.started_at ?? m.created_at ?? new Date().toISOString()),
             creator_profile: m.creator_profile
               ? {
-                display_name: String(m.creator_profile.display_name ?? ''),
-                bio: m.creator_profile.bio ?? null,
-                profile_image: m.creator_profile.profile_image ?? null,
-              }
+                  display_name: String(m.creator_profile.display_name ?? ''),
+                  bio: m.creator_profile.bio ?? null,
+                  profile_image: m.creator_profile.profile_image ?? null,
+                }
               : null,
             product: {
               description: m.product?.description ?? null,
@@ -159,6 +257,7 @@ export default function PurchasesPage() {
         if (!cancelled) setLoading(false);
       }
     })();
+
     return () => { cancelled = true; };
   }, []);
 
@@ -470,13 +569,35 @@ export default function PurchasesPage() {
                               </button>
                             </div>
                           ) : (
-                            <div>
-                              <p className="text-sm text-gray-500 mb-3">Waiting for creator to complete your request</p>
-                              <button className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center">
-                                Submit Request Details
-                                <ChevronRight className="w-4 h-4 ml-1" />
-                              </button>
-                            </div>
+                            // Pending — switch wording/button based on whether the buyer submitted details
+                            (() => {
+                              const message = (request.request_user_message ?? "").trim();
+                              const hasUserDetails = (message.length > 0) || Boolean(request.request_user_attachment_url);
+
+                              return hasUserDetails ? (
+                                <div>
+                                  <p className="text-sm text-gray-500 mb-3">Waiting for creator to complete your request</p>
+                                  <button
+                                    onClick={() => setSelectedItem(request)}
+                                    className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                  >
+                                    Request Details
+                                    <ChevronRight className="w-4 h-4 ml-1" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <div>
+                                  <p className="text-sm text-gray-500 mb-3">Please submit your request details</p>
+                                  <button
+                                    onClick={() => router.push(`/requests/new?orderId=${request.id}`)}
+                                    className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                  >
+                                    Submit Request Details
+                                    <ChevronRight className="w-4 h-4 ml-1" />
+                                  </button>
+                                </div>
+                              );
+                            })()
                           )}
                         </div>
                       </div>
@@ -574,7 +695,7 @@ export default function PurchasesPage() {
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-8 max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
               <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-semibold">Request Response</h3>
+                <h3 className="text-2xl font-semibold">Request Details</h3>
                 <button
                   onClick={() => setSelectedItem(null)}
                   className="text-gray-400 hover:text-gray-600 p-2 rounded-lg hover:bg-gray-100 transition-colors"
@@ -584,14 +705,34 @@ export default function PurchasesPage() {
               </div>
 
               <div className="space-y-6">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <h4 className="font-medium text-gray-700 mb-2">Your Request</h4>
-                  <h5 className="font-semibold text-gray-900">{selectedItem.product.title}</h5>
-                  {selectedItem.product.description && (
-                    <p className="text-gray-600 mt-2">{selectedItem.product.description}</p>
-                  )}
-                </div>
+                {/* Buyer’s Submitted Details */}
+                {(selectedItem.request_user_message || selectedItem.request_user_attachment_url) && (
+                  <div>
+                    <h4 className="font-medium text-gray-700 mb-3">Your Submitted Details</h4>
 
+                    {selectedItem.request_user_message && (
+                      <div className="bg-gray-50 rounded-lg p-4 mb-3">
+                        <p className="text-gray-700 whitespace-pre-wrap">{selectedItem.request_user_message}</p>
+                      </div>
+                    )}
+
+                    {selectedItem.request_user_attachment_url && (
+                      <div>
+                        <h5 className="font-medium text-gray-700 mb-2">Your Attachment</h5>
+                        <a
+                          href={resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) || selectedItem.request_user_attachment_url || "#"}
+                          className="inline-flex items-center bg-blue-50 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
+                          download
+                        >
+                          <Download className="w-5 h-5 mr-2" />
+                          Download Attachment
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Creator's Response */}
                 {selectedItem.request_response && (
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Creator's Response</h4>
@@ -601,9 +742,10 @@ export default function PurchasesPage() {
                   </div>
                 )}
 
+                {/* Creator's Attachment */}
                 {selectedItem.request_media_url && (
                   <div>
-                    <h4 className="font-medium text-gray-700 mb-3">Attached Files</h4>
+                    <h4 className="font-medium text-gray-700 mb-3">Creator's Attachment</h4>
                     <a
                       href={selectedItem.request_media_url}
                       className="inline-flex items-center bg-blue-50 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
