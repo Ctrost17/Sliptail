@@ -340,7 +340,7 @@ router.get("/mine", requireAuth, async (req, res) => {
   const buyerId = req.user.id;
   try {
     const { rows } = await db.query(
-      `SELECT cr.*, o.status AS order_status, o.amount
+      `SELECT cr.*, o.status AS order_status, o.amount_cents
          FROM custom_requests cr
          JOIN orders o ON o.id = cr.order_id
         WHERE cr.buyer_id = $1

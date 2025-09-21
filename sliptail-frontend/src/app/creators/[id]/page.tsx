@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { fetchApi } from "@/lib/api"; // <-- added
 
 /* -------------------------- Types -------------------------- */
 
@@ -34,6 +35,7 @@ type Review = {
   rating: number;
   comment: string | null;
   created_at: string; // ISO
+  product_title?: string | null;
 };
 
 /* ------------------------- Helpers ------------------------- */
@@ -226,7 +228,13 @@ function parseReviews(json: unknown): Review[] {
     const created_at =
       getString(r, "created_at") ?? getString(r, "createdAt") ?? new Date().toISOString();
 
-    out.push({ id, author_name, rating, comment, created_at });
+    // NEW: capture product title for display (supports both product_title and title)
+    const product_title =
+      getString(r, "product_title") ??
+      getString(r, "title") ??
+      null;
+
+    out.push({ id, author_name, rating, comment, created_at, product_title });
   }
   return out;
 }
@@ -254,6 +262,9 @@ export default function CreatorProfilePage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [checkingOutId, setCheckingOutId] = useState<string | null>(null);
+
+  // NEW: track membership subscriptions the viewer currently has
+  const [subscribedIds, setSubscribedIds] = useState<Set<number>>(new Set());
 
   const isOwner =
     !!user &&
@@ -361,6 +372,39 @@ export default function CreatorProfilePage() {
     };
   }, [creatorId, apiBase]);
 
+  // NEW: fetch products the viewer is currently subscribed to
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!token) {
+        setSubscribedIds(new Set());
+        return;
+      }
+      try {
+        const res = await fetchApi<{ products: Array<{ id: number | string }> }>(
+          "/api/memberships/subscribed-products",
+          { method: "GET", token, cache: "no-store" }
+        );
+        const set = new Set<number>();
+        for (const p of res?.products ?? []) {
+          const n =
+            typeof p.id === "number"
+              ? p.id
+              : typeof p.id === "string"
+              ? Number(p.id)
+              : NaN;
+          if (Number.isFinite(n)) set.add(n);
+        }
+        if (!cancelled) setSubscribedIds(set);
+      } catch {
+        if (!cancelled) setSubscribedIds(new Set());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
   /**
    * Client-side checkout:
    * - If not signed in: push to login with next=/creators/:id?checkout=:pid
@@ -386,24 +430,16 @@ export default function CreatorProfilePage() {
       return;
     }
 
-    setCheckingOutId(p.id);    
+    setCheckingOutId(p.id);
     try {
-      // Prefer direct backend call with Authorization header to avoid SSR cookie issues
       const mode = p.product_type === "membership" ? "subscription" : "payment";
       const origin = window.location.origin;
-      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
-              p.product_type
-            )}`
-        // p.product_type === "request"
-        //   ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(
-        //       p.product_type
-        //     )}`
-        //   : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-        //       p.id
-        //     )}&action=${encodeURIComponent(p.product_type)}`;
+      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+        p.id
+      )}&action=${encodeURIComponent(p.product_type)}`;
       const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
         p.id
-      )}&action=${encodeURIComponent(p.product_type)}`;  
+      )}&action=${encodeURIComponent(p.product_type)}`;
 
       const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
         method: "POST",
@@ -431,7 +467,6 @@ export default function CreatorProfilePage() {
       }
 
       if (!res.ok) {
-        // Try JSON, else text
         let msg = "Checkout failed";
         try {
           const j = await res.json();
@@ -454,7 +489,6 @@ export default function CreatorProfilePage() {
         return;
       }
 
-      // Fallback to server route if direct call didn't return a URL
       window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(
         p.id
       )}&action=${encodeURIComponent(p.product_type)}`;
@@ -558,8 +592,13 @@ export default function CreatorProfilePage() {
                   const priceLabel =
                     p.product_type === "membership" ? `${basePriceLabel} per month` : basePriceLabel;
 
+                  // NEW: decide if viewer is already subscribed to THIS membership product
+                  const isSubscribed =
+                    p.product_type === "membership" &&
+                    subscribedIds.has(Number(p.id));
+
                   let cta = "Purchase download";
-                  if (p.product_type === "membership") cta = "Subscribe for membership";
+                  if (p.product_type === "membership") cta = isSubscribed ? "Currently Subscribed" : "Subscribe for membership";
                   else if (p.product_type === "request") cta = "Purchase request";
 
                   const ownerCTA = "Edit product";
@@ -587,7 +626,13 @@ export default function CreatorProfilePage() {
                         ) : (
                           <button
                             className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg-black/90 disabled:opacity-60"
-                            onClick={() => void startCheckout(p)}
+                            onClick={() => {
+                              if (isSubscribed && p.product_type === "membership") {
+                                router.push("/purchases");
+                              } else {
+                                void startCheckout(p);
+                              }
+                            }}
                             disabled={checkingOutId === p.id}
                           >
                             {checkingOutId === p.id ? "Redirecting…" : cta}
@@ -639,6 +684,12 @@ export default function CreatorProfilePage() {
                       <span className="font-medium">{r.author_name || "Anonymous"}</span>
                       <span className="text-neutral-500">{(r.created_at || "").slice(0, 10)}</span>
                     </div>
+                    {/* NEW: show product title when available */}
+                    {r.product_title ? (
+                      <div className="mt-0.5 text-xs text-neutral-600">
+                        Product: {r.product_title}
+                      </div>
+                    ) : null}
                     <div className="mt-0.5 text-sm">{Number(r.rating || 0).toFixed(1)} ★</div>
                     {r.comment ? <p className="mt-2 text-neutral-800">{r.comment}</p> : null}
                   </div>
@@ -651,4 +702,3 @@ export default function CreatorProfilePage() {
     </main>
   );
 }
-

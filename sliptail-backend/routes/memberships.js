@@ -20,11 +20,7 @@ function linkify(product) {
 /**
  * POST /api/memberships/subscribe
  * Body: { creator_id, product_id }
- * - Simulates a subscription purchase:
- *   - creates/updates a memberships row with status='active'
- *   - sets current_period_end = now + 1 month (MVP)
- * - Prevent subscribing to yourself
- * - Enforces one active membership per (buyer -> creator)
+ * - Simulates a subscription purchase
  */
 router.post("/subscribe", requireAuth, async (req, res) => {
   const buyerId = req.user.id;
@@ -74,25 +70,20 @@ router.post("/subscribe", requireAuth, async (req, res) => {
       category: "membership_purchase"
     }).catch(console.error);
 
-      // creator: sale notice
+    // creator: sale notice
     sendIfUserPref(creator_id, "notify_product_sale", {
       subject: "New membership subscriber",
       html: `<p>You have a new/renewed subscriber.</p>`,
       category: "creator_sale"
     }).catch(console.error);
-  } 
-  
-  catch (e) {
+  } catch (e) {
     console.error("subscribe error:", e);
-    
-    // Provide more specific error messages
+
     let errorMessage = "Could not start membership";
-    if (e.code === "23505") {
-      errorMessage = "You already have this membership";
-    } else if (e.message && e.message.includes("duplicate key")) {
+    if (e.code === "23505" || (e.message && e.message.includes("duplicate key"))) {
       errorMessage = "Membership already exists";
     }
-    
+
     res.status(500).json({ error: errorMessage });
   }
 });
@@ -131,6 +122,8 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
 /**
  * GET /api/memberships/mine
  * - Lists my memberships with access flags
+ * - 👇 UPDATED to keep showing memberships that are scheduled to cancel,
+ *   until current_period_end passes.
  */
 router.get("/mine", requireAuth, async (req, res) => {
   const userId = req.user.id;
@@ -158,7 +151,10 @@ router.get("/mine", requireAuth, async (req, res) => {
          JOIN products p ON p.id = m.product_id
          JOIN creator_profiles c ON c.user_id = p.user_id
         WHERE m.buyer_id = $1
-          AND m.cancel_at_period_end = FALSE
+          AND (
+                m.status IN ('active','trialing')
+             OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+          )
         ORDER BY m.current_period_end DESC`,
       [userId]
     );
@@ -166,8 +162,8 @@ router.get("/mine", requireAuth, async (req, res) => {
     const withLinks = rows.map(r => ({
       ...r,
       product: linkify(r.product),
-    }));    
-    
+    }));
+
     res.json({ memberships: withLinks });
   } catch (e) {
     console.error("mine error:", e);
@@ -183,25 +179,22 @@ router.get("/mine", requireAuth, async (req, res) => {
 router.get("/feed", requireAuth, async (req, res) => {
   const userId = req.user.id;
   try {
-  // If you want ALL products created by the current user (their own catalog)
-  // you likely don't need memberships join. Provide optional filter for membership type.
-  const baseQuery = `SELECT p.id,
-                            p.user_id AS creator_id,
-                            p.title,
-                            p.description,
-                            p.filename,
-                            p.product_type,
-                            p.price,
-                            p.created_at
-                       FROM products p
-                      WHERE p.user_id = $1
-                        AND p.product_type = 'membership'
-                      ORDER BY p.created_at DESC`;
-  const { rows } = await db.query(baseQuery, [userId]);
-  const products = rows.map(linkify);
-  console.log(products);
-  
-  res.json({ products, count: products.length });
+    const baseQuery = `SELECT p.id,
+                              p.user_id AS creator_id,
+                              p.title,
+                              p.description,
+                              p.filename,
+                              p.product_type,
+                              p.price,
+                              p.created_at
+                         FROM products p
+                        WHERE p.user_id = $1
+                          AND p.product_type = 'membership'
+                        ORDER BY p.created_at DESC`;
+    const { rows } = await db.query(baseQuery, [userId]);
+    const products = rows.map(linkify);
+
+    res.json({ products, count: products.length });
   } catch (e) {
     console.error("feed products error:", e);
     res.status(500).json({ error: "Could not fetch feed products" });
@@ -211,13 +204,11 @@ router.get("/feed", requireAuth, async (req, res) => {
 /**
  * GET /api/memberships/subscribed-products
  * - Returns membership products the current user is subscribed to (other creators)
- * - Filters by active/trialing memberships with current access
- * - Does NOT include the user's own products (unless they subscribed to them somehow which is prevented elsewhere)
+ * - 👇 UPDATED to allow cancel_at_period_end=TRUE but still within access window
  */
 router.get("/subscribed-products", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  console.log("Fetching subscribed products for user:", userId);
-  
+
   try {
     const { rows } = await db.query(
       `SELECT p.id,
@@ -236,7 +227,7 @@ router.get("/subscribed-products", requireAuth, async (req, res) => {
         WHERE m.buyer_id = $1
           AND m.status IN ('active','trialing')
           AND NOW() <= m.current_period_end
-          AND m.cancel_at_period_end = FALSE
+          -- removed the old "AND m.cancel_at_period_end = FALSE" so access continues to period end
         ORDER BY p.created_at DESC`,
       [userId]
     );

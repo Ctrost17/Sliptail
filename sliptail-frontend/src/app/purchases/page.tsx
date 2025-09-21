@@ -4,12 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
-import { Download, Eye, X, AlertCircle, Star, ChevronRight, Loader2, Calendar, CreditCard, Shield, ArrowRight } from "lucide-react";
+import {
+  Download, Eye, X, AlertCircle, Star, ChevronRight, Loader2,
+  Calendar, CreditCard, Shield, ArrowRight
+} from "lucide-react";
 
-// Toast hook
+// Toast hook (console fallback)
 function useToast() {
   return {
-    showError: (m: string) => console.error(m),
+    // use warn so Next.js dev overlay doesn't explode
+    showError: (m: string) => console.warn(m),
     showSuccess: (m: string) => console.log(m),
   };
 }
@@ -21,6 +25,7 @@ type Order = {
   status: string;
   created_at: string;
   creator_profile: {
+    user_id?: number | null;
     display_name: string;
     bio: string | null;
     profile_image: string | null;
@@ -33,15 +38,21 @@ type Order = {
     title: string;
     filename: string;
   };
-  // For requests (creator delivery)
   request_response?: string | null;
   request_media_url?: string | null;
 
-  // Buyer-submitted details / linkage to custom_requests
+  // Buyer-submitted details (from custom_requests)
   request_id?: number | null;
   request_status?: string | null;
   request_user_message?: string | null;
   request_user_attachment_url?: string | null;
+
+  // Membership extras
+  membership_cancel_at_period_end?: boolean;
+  membership_period_end?: string | null;
+
+  // Local UI flag: hide review button after submit
+  user_has_review?: boolean;
 };
 
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
@@ -66,34 +77,35 @@ export default function PurchasesPage() {
   const [reviewText, setReviewText] = useState("");
   const [reviewRating, setReviewRating] = useState(5);
 
-  const { showSuccess, showError } = useToast();
+  // inline visual toast
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
   const searchParams = useSearchParams();
   const router = useRouter();
   const toast = searchParams.get("toast");
   const apiBase = useMemo(() => toApiBase(), []);
 
+  const { showSuccess, showError } = useMemo(() => useToast(), []);
+
   useEffect(() => {
-    if (toast) showSuccess(toast);
+    if (toast) setToastMsg(toast);
   }, [toast]);
+
+  useEffect(() => {
+    if (!toastMsg) return;
+    const t = setTimeout(() => setToastMsg(null), 3000);
+    return () => clearTimeout(t);
+  }, [toastMsg]);
 
   useEffect(() => {
     let cancelled = false;
 
-    // helpers for normalizing the optional /requests/mine API
     const num = (v: unknown): number | null => {
       const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
       return Number.isFinite(n) ? n : null;
     };
-    const firstNonEmpty = (...vals: Array<unknown>): string | null => {
-      for (const v of vals) {
-        if (typeof v === "string" && v.trim().length > 0) return v.trim();
-      }
-      return null;
-    };
-    const firstUrlish = (...vals: Array<unknown>): string | null => {
-      for (const v of vals) {
-        if (typeof v === "string" && v.trim().length > 0) return v.trim();
-      }
+    const firstText = (...vals: unknown[]): string | null => {
+      for (const v of vals) if (typeof v === "string" && v.trim()) return v.trim();
       return null;
     };
 
@@ -101,82 +113,40 @@ export default function PurchasesPage() {
       try {
         const { token } = loadAuth();
 
-        type MyRequestRow = {
-          id: number | string;
-          order_id?: number | string;
-          orderId?: number | string;
-          order?: number | string;
-
-          status?: string;
-          // buyer fields (names can vary)
-          user?: string | null;
-          message?: string | null;
-          request?: string | null;
-          description?: string | null;
-          attachment_path?: string | null;
-          attachment?: string | null;
-          media_url?: string | null;
-
-          // creator fields (names can vary)
-          creator?: string | null;
-          creator_message?: string | null;
-          creator_attachment_path?: string | null;
-          creator_media_url?: string | null;
-        };
-
+        // 1) Orders & Memberships
         const [legacy, memberships] = await Promise.all([
-          fetchApi<{ orders: any[] }>("/api/orders/mine", {
-            method: "GET",
-            token,
-            cache: "no-store",
-          }),
-          fetchApi<{ memberships: any[] }>("/api/memberships/mine", {
-            method: "GET",
-            token,
-            cache: "no-store",
-          })
+          fetchApi<{ orders: any[] }>("/api/orders/mine", { method: "GET", token, cache: "no-store" }),
+          fetchApi<{ memberships: any[] }>("/api/memberships/mine", { method: "GET", token, cache: "no-store" }),
         ]);
 
-        // Try loading buyer requests, but don't fail the whole page if it errors
-        let myReqs: { requests: MyRequestRow[] } = { requests: [] };
+        // 2) Buyer requests (may fail or be empty; don’t block page)
+        type ReqRow = {
+          id: number | string;
+          order_id: number | string;
+          status?: string | null;
+          user?: string | null;
+          attachment_path?: string | null;
+          creator?: string | null;
+          creator_attachment_path?: string | null;
+        };
+        let reqs: ReqRow[] = [];
         try {
-          myReqs = await fetchApi<{ requests: MyRequestRow[] }>(
-            "/api/requests/mine",
-            { method: "GET", token, cache: "no-store" }
-          );
+          const j = await fetchApi<{ requests: ReqRow[] }>("/api/requests/mine", { method: "GET", token, cache: "no-store" });
+          reqs = j?.requests ?? [];
         } catch {
-          myReqs = { requests: [] };
+          reqs = [];
         }
 
-        // Index requests by numeric order_id (accept numeric strings)
-        const reqByOrder: Record<number, MyRequestRow> = {};
-        for (const r of (myReqs?.requests ?? [])) {
-          const key = num(r?.order_id ?? r?.orderId ?? r?.order);
-          if (key !== null) reqByOrder[key] = r;
+        const byOrder: Record<number, ReqRow> = {};
+        for (const r of reqs) {
+          const k = num((r as any).order_id);
+          if (k !== null) byOrder[k] = r;
         }
 
-        const mapped: Order[] = (legacy?.orders || []).map((o: any) => {
+        // Normalize legacy orders shape
+        const mappedOrders: Order[] = (legacy?.orders || []).map((o: any) => {
           const orderId = Number(o.id);
-          const req = reqByOrder[orderId];
-
-          // normalize buyer details
-          const buyerMsg = firstNonEmpty(
-            req?.user, req?.message, req?.request, req?.description
-          );
-          const buyerAttachment = firstUrlish(
-            req?.attachment_path, req?.attachment, req?.media_url
-          );
-
-          // normalize creator delivery
-          const creatorMsg = firstNonEmpty(
-            // prefer orders payload if present
-            o?.request_response,
-            req?.creator, req?.creator_message
-          );
-          const creatorAttachment = firstUrlish(
-            o?.request_media_url,
-            req?.creator_attachment_path, req?.creator_media_url
-          );
+          const r = byOrder[orderId];
 
           return {
             id: orderId,
@@ -185,12 +155,13 @@ export default function PurchasesPage() {
               typeof o.amount_cents === "number"
                 ? o.amount_cents
                 : typeof o.amount === "number"
-                  ? Math.round(o.amount * 100)
-                  : 0,
+                ? Math.round(o.amount * 100)
+                : 0,
             status: String(o.status ?? "unknown"),
             created_at: String(o.created_at ?? new Date().toISOString()),
             creator_profile: o.creator_profile
               ? {
+                  user_id: num(o.creator_profile.user_id),
                   display_name: String(o.creator_profile.display_name ?? ""),
                   bio: o.creator_profile.bio ?? null,
                   profile_image: o.creator_profile.profile_image ?? null,
@@ -205,31 +176,36 @@ export default function PurchasesPage() {
               filename: String(o.product?.filename ?? ""),
             },
 
-            // Creator delivery (normalized)
-            request_response: creatorMsg ?? null,
-            request_media_url: creatorAttachment ?? null,
+            // Creator delivery (prefer joined request fields if present)
+            request_response: firstText(o.request_response, r?.creator) ?? null,
+            request_media_url:
+              resolveImageUrl(firstText(o.request_media_url, r?.creator_attachment_path), apiBase) ?? null,
 
-            // Buyer-submitted details (normalized)
-            request_id: num(req?.id) ?? null,
-            request_status: req?.status ?? null,
-            request_user_message: buyerMsg,
-            request_user_attachment_url: buyerAttachment,
+            // Buyer details from custom_requests
+            request_id: num(r?.id),
+            request_status: r?.status ?? null,
+            request_user_message: firstText(r?.user),
+            request_user_attachment_url: resolveImageUrl(firstText(r?.attachment_path), apiBase) ?? null,
           };
         });
 
+        // Normalize memberships into Order-like (+ include cancel-at-period-end info)
         const membershipOrders: Order[] = (memberships?.memberships || []).map((m: any) => {
-          const price = typeof m.product?.price === 'number' ? m.product.price : 0;
+          const price =
+            typeof m.product?.price === "number" ? m.product.price :
+            typeof m.price === "number" ? m.price : 0;
           const priceCents = Math.round(price * 100);
 
           return {
             id: -Number(m.id || 0),
             product_id: m.product_id ?? (m.product?.id ?? null),
             amount_cents: priceCents,
-            status: String(m.status ?? 'active'),
+            status: String(m.status ?? "active"),
             created_at: String(m.started_at ?? m.created_at ?? new Date().toISOString()),
             creator_profile: m.creator_profile
               ? {
-                  display_name: String(m.creator_profile.display_name ?? ''),
+                  user_id: num(m.creator_profile.user_id),
+                  display_name: String(m.creator_profile.display_name ?? ""),
                   bio: m.creator_profile.bio ?? null,
                   profile_image: m.creator_profile.profile_image ?? null,
                 }
@@ -238,14 +214,16 @@ export default function PurchasesPage() {
               description: m.product?.description ?? null,
               view_url: m.product?.view_url ?? null,
               download_url: m.product?.download_url ?? null,
-              product_type: 'membership',
-              title: String(m.product?.title ?? ''),
-              filename: '',
+              product_type: "membership",
+              title: String(m.product?.title ?? ""),
+              filename: "",
             },
+            membership_cancel_at_period_end: Boolean(m.cancel_at_period_end),
+            membership_period_end: m.current_period_end ? String(m.current_period_end) : null,
           };
         });
 
-        const combined: Order[] = [...mapped, ...membershipOrders].sort(
+        const combined = [...mappedOrders, ...membershipOrders].sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
 
@@ -258,20 +236,23 @@ export default function PurchasesPage() {
       }
     })();
 
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, showError]);
 
-  const memberships = useMemo(() =>
-    orders?.filter(o => o.product.product_type === 'membership') || [],
-    [orders]);
-
-  const requests = useMemo(() =>
-    orders?.filter(o => o.product.product_type === 'request') || [],
-    [orders]);
-
-  const purchases = useMemo(() =>
-    orders?.filter(o => o.product.product_type === 'purchase') || [],
-    [orders]);
+  const memberships = useMemo(
+    () => orders?.filter((o) => o.product.product_type === "membership") || [],
+    [orders]
+  );
+  const requests = useMemo(
+    () => orders?.filter((o) => o.product.product_type === "request") || [],
+    [orders]
+  );
+  const purchases = useMemo(
+    () => orders?.filter((o) => o.product.product_type === "purchase") || [],
+    [orders]
+  );
 
   const handleCancelMembership = async (membershipId: number) => {
     try {
@@ -280,117 +261,180 @@ export default function PurchasesPage() {
         method: "POST",
         token,
       });
-      showSuccess("Membership cancelled successfully");
       setShowCancelConfirm(null);
-      // Refresh data
       window.location.reload();
-    } catch (e) {
+    } catch {
       showError("Failed to cancel membership");
     }
   };
 
+  // Low-level POST helper that returns JSON or throws with status + message
+  async function postJson(path: string, body: any, token?: string | null) {
+    const res = await fetch(`${apiBase}${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let data: any = null;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    if (!res.ok) {
+      const msg = (data?.error || data?.message || text || `HTTP ${res.status}`).trim();
+      const err = new Error(msg);
+      (err as any).status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  // Try a list of endpoints until one works; 404/405/5xx => try next; 409 duplicate => success.
+  async function tryReviewEndpoints(endpoints: string[], payload: any, token?: string | null) {
+    let lastErr: any = null;
+    for (const ep of endpoints) {
+      try {
+        await postJson(ep, payload, token);
+        return; // success
+      } catch (e: any) {
+        const status = e?.status ?? 0;
+        const msg = String(e?.message || "");
+        // Duplicate -> treat as success and stop trying
+        if (status === 409 || /already|duplicate/i.test(msg)) return;
+        // Not found / method not allowed / server error -> try next candidate
+        if (status === 404 || status === 405 || status >= 500) { lastErr = e; continue; }
+        // Other errors -> bubble immediately
+        throw e;
+      }
+    }
+    // If we exhausted all without success, throw the last collected error
+    if (lastErr) throw lastErr;
+  }
+
+  // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
   const handleSubmitReview = async () => {
     if (!showReviewModal || !reviewText.trim()) return;
 
+    const productId = showReviewModal.product_id ?? null;
+    const creatorId = showReviewModal.creator_profile?.user_id || null;
+
+    if (!productId && !creatorId) {
+      showError("Unable to determine what you’re reviewing.");
+      setToastMsg("Unable to determine what you’re reviewing.");
+      return;
+    }
+
     try {
       const { token } = loadAuth();
-      await fetchApi("/api/reviews/create", {
-        method: "POST",
-        token,
-        body: {
-          product_id: showReviewModal.product_id,
-          rating: reviewRating,
-          review_text: reviewText,
-        },
-      });
-      showSuccess("Review submitted successfully");
+
+      // Payload most backends accept (buyer_id inferred from token) + legacy key
+      const payload = {
+        ...(productId ? { product_id: productId } : {}),
+        ...(creatorId ? { creator_id: creatorId } : {}),
+        rating: reviewRating,
+        comment: reviewText,
+        review_text: reviewText, // legacy compat
+      };
+
+      // Candidate endpoints (most specific first)
+      const endpoints: string[] = [];
+      if (productId) endpoints.push(`/api/products/${productId}/reviews`);
+      if (creatorId) endpoints.push(`/api/creators/${creatorId}/reviews`);
+      // generic fallbacks
+      endpoints.push("/api/reviews", "/api/reviews/create");
+
+      await tryReviewEndpoints(endpoints, payload, token);
+
+      // Close & clear
       setShowReviewModal(null);
       setReviewText("");
       setReviewRating(5);
-    } catch (e) {
-      showError("Failed to submit review");
+
+      // Hide Review button for this item
+      setOrders((prev) =>
+        prev ? prev.map((o) => (o.id === showReviewModal.id ? { ...o, user_has_review: true } : o)) : prev
+      );
+
+      setToastMsg("Your review has been submitted");
+      showSuccess("Your review has been submitted");
+    } catch (e: any) {
+      const message = e?.message ? String(e.message) : "Failed to submit review";
+      setToastMsg(message);
+      showError(message);
     }
   };
 
-  // Trigger a reliable download for purchased files (works even cross-origin)
   const handleDownload = async (item: Order) => {
     try {
       const candidate = item.product.filename ? `uploads/${item.product.filename}` : null;
-      if (!candidate) {
-        showError("No file available to download.");
-        return;
-      }
-      const url = resolveImageUrl(candidate, apiBase);
-      if (!url) {
-        showError("Invalid download URL.");
-        return;
-      }
+      if (!candidate) return showError("No file available to download.");
 
-      // Fetch as blob and save with a suggested filename
+      const url = resolveImageUrl(candidate, apiBase);
+      if (!url) return showError("Invalid download URL.");
+
       const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      if (!res.ok) throw new Error(String(res.status));
       const blob = await res.blob();
       const blobUrl = window.URL.createObjectURL(blob);
 
-      const suggestedName = item.product.filename || `${item.product.title || "download"}`;
       const a = document.createElement("a");
       a.href = blobUrl;
-      a.download = suggestedName;
+      a.download = item.product.filename || `${item.product.title || "download"}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(blobUrl);
-    } catch (err) {
-      // Fallback: open in new tab
-      const fallback = item.product.download_url || (item.product.filename ? resolveImageUrl(`uploads/${item.product.filename}`, apiBase) : null);
+    } catch {
+      const fallback =
+        item.product.download_url ||
+        (item.product.filename ? resolveImageUrl(`uploads/${item.product.filename}`, apiBase) : null);
       if (fallback) window.open(fallback, "_blank", "noopener");
     }
   };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    });
-  };
+  const formatDate = (dateString: string) =>
+    new Date(dateString).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
-  const TabButton = ({ tab, label, count, icon }: {
-    tab: typeof activeTab,
-    label: string,
-    count: number,
-    icon: React.ReactNode
+  const TabButton = ({
+    tab,
+    label,
+    count,
+    icon,
+  }: {
+    tab: typeof activeTab;
+    label: string;
+    count: number;
+    icon: React.ReactNode;
   }) => (
     <button
       onClick={() => setActiveTab(tab)}
-      className={`relative flex-1 py-4 px-6 text-sm font-medium transition-all duration-300 ${activeTab === tab
-        ? 'text-gray-900'
-        : 'text-gray-500 hover:text-gray-700'
-        }`}
+      className={`relative flex-1 py-4 px-6 text-sm font-medium transition-all duration-300 ${
+        activeTab === tab ? "text-gray-900" : "text-gray-500 hover:text-gray-700"
+      }`}
     >
       <div className="flex items-center justify-center space-x-2">
         {icon}
         <span>{label}</span>
         {count > 0 && (
-          <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${activeTab === tab
-            ? 'bg-green-100 text-green-700'
-            : 'bg-gray-100 text-gray-600'
-            }`}>
+          <span
+            className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
+              activeTab === tab ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
+            }`}
+          >
             {count}
           </span>
         )}
       </div>
-      {activeTab === tab && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600" />
-      )}
+      {activeTab === tab && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600" />}
     </button>
   );
 
-  const EmptyState = ({ message, icon }: { message: string, icon: React.ReactNode }) => (
+  const EmptyState = ({ message, icon }: { message: string; icon: React.ReactNode }) => (
     <div className="flex flex-col items-center justify-center py-24">
-      <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-6">
-        {icon}
-      </div>
+      <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-6">{icon}</div>
       <p className="text-gray-500 text-lg font-medium">{message}</p>
       <p className="text-gray-400 text-sm mt-2">Your purchases will appear here</p>
     </div>
@@ -416,71 +460,59 @@ export default function PurchasesPage() {
           <p className="text-gray-600 mt-2">Manage your memberships, requests, and purchases</p>
         </div>
 
-        {/* Tab Navigation */}
+        {/* Tabs */}
         <div className="bg-white rounded-xl shadow-sm mb-8">
           <div className="grid grid-cols-3 divide-x divide-gray-100">
-            <TabButton
-              tab="memberships"
-              label="Memberships"
-              count={memberships.length}
-              icon={<CreditCard className="w-4 h-4" />}
-            />
-            <TabButton
-              tab="requests"
-              label="Requests"
-              count={requests.length}
-              icon={<Shield className="w-4 h-4" />}
-            />
-            <TabButton
-              tab="purchases"
-              label="Purchases"
-              count={purchases.length}
-              icon={<Download className="w-4 h-4" />}
-            />
+            <TabButton tab="memberships" label="Memberships" count={memberships.length} icon={<CreditCard className="w-4 h-4" />} />
+            <TabButton tab="requests" label="Requests" count={requests.length} icon={<Shield className="w-4 h-4" />} />
+            <TabButton tab="purchases" label="Purchases" count={purchases.length} icon={<Download className="w-4 h-4" />} />
           </div>
         </div>
 
-        {/* Memberships Section */}
-        {activeTab === 'memberships' && (
+        {/* Memberships */}
+        {activeTab === "memberships" && (
           <div className="space-y-6">
             {memberships.length === 0 ? (
               <div className="bg-white rounded-xl shadow-sm p-8">
-                <EmptyState
-                  message="No active memberships"
-                  icon={<CreditCard className="w-10 h-10 text-gray-300" />}
-                />
+                <EmptyState message="No active memberships" icon={<CreditCard className="w-10 h-10 text-gray-300" />} />
               </div>
             ) : (
               <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {memberships.map((membership) => (
-                  <div key={membership.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group">
+                {memberships.map((m) => (
+                  <div key={m.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group">
                     <div className="aspect-w-16 aspect-h-9 bg-gradient-to-br from-green-50 to-green-100 p-6">
                       <div className="flex items-center space-x-4">
                         <img
-                          src={resolveImageUrl(membership.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                          alt={membership.creator_profile?.display_name || "Creator"}
+                          src={resolveImageUrl(m.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
+                          alt={m.creator_profile?.display_name || "Creator"}
                           className="w-16 h-16 rounded-full object-cover ring-4 ring-white shadow-lg"
                         />
                         <div>
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            Active
-                          </span>
+                          {m.membership_cancel_at_period_end && m.membership_period_end ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                              Active until {formatDate(m.membership_period_end)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                              Active
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
                     <div className="p-6">
-                      <h3 className="font-semibold text-lg text-gray-900 mb-1">{membership.product.title}</h3>
-                      <p className="text-sm text-gray-600 mb-4">{membership.creator_profile?.display_name}</p>
+                      <h3 className="font-semibold text-lg text-gray-900 mb-1">{m.product.title}</h3>
+                      <p className="text-sm text-gray-600 mb-4">{m.creator_profile?.display_name}</p>
 
                       <div className="flex items-center text-xs text-gray-500 mb-4">
                         <Calendar className="w-3 h-3 mr-1" />
-                        <span>Since {formatDate(membership.created_at)}</span>
+                        <span>Since {formatDate(m.created_at)}</span>
                       </div>
 
                       <div className="space-y-3">
                         <button
-                          onClick={() => router.push(`/feed?product_id=${membership.product_id}`)}
+                          onClick={() => router.push(`/feed?product_id=${m.product_id}`)}
                           className="w-full bg-green-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 flex items-center justify-center group"
                         >
                           View Feed
@@ -488,19 +520,23 @@ export default function PurchasesPage() {
                         </button>
 
                         <div className="flex space-x-2">
-                          <button
-                            onClick={() => setShowReviewModal(membership)}
-                            className="flex-1 text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center"
-                          >
-                            <Star className="w-4 h-4 mr-1" />
-                            Review
-                          </button>
-                          <button
-                            onClick={() => setShowCancelConfirm(membership.id)}
-                            className="flex-1 text-red-600 hover:text-red-700 text-sm font-medium py-2 px-3 rounded-lg hover:bg-red-50 transition-colors duration-200"
-                          >
-                            Cancel
-                          </button>
+                          {!m.user_has_review && (
+                            <button
+                              onClick={() => setShowReviewModal(m)}
+                              className="flex-1 text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center"
+                            >
+                              <Star className="w-4 h-4 mr-1" />
+                              Review
+                            </button>
+                          )}
+                          {!m.membership_cancel_at_period_end && (
+                            <button
+                              onClick={() => setShowCancelConfirm(m.id)}
+                              className="flex-1 text-red-600 hover:text-red-700 text-sm font-medium py-2 px-3 rounded-lg hover:bg-red-50 transition-colors duration-200"
+                            >
+                              Cancel
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -511,148 +547,155 @@ export default function PurchasesPage() {
           </div>
         )}
 
-        {/* Requests Section */}
-        {activeTab === 'requests' && (
+        {/* Requests */}
+        {activeTab === "requests" && (
           <div className="space-y-6">
             {requests.length === 0 ? (
               <div className="bg-white rounded-xl shadow-sm p-8">
-                <EmptyState
-                  message="No requests yet"
-                  icon={<Shield className="w-10 h-10 text-gray-300" />}
-                />
+                <EmptyState message="No requests yet" icon={<Shield className="w-10 h-10 text-gray-300" />} />
               </div>
             ) : (
               <div className="space-y-4">
-                {requests.map((request) => (
-                  <div key={request.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
-                    <div className="flex items-start space-x-4">
-                      <img
-                        src={resolveImageUrl (request.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                        alt={request.creator_profile?.display_name || "Creator"}
-                        className="w-14 h-14 rounded-full object-cover ring-2 ring-gray-100"
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-start justify-between">
-                          <div>
-                            <h3 className="font-semibold text-lg text-gray-900">{request.product.title}</h3>
-                            <p className="text-sm text-gray-600 mt-1">{request.creator_profile?.display_name}</p>
-                          </div>
-                          {request.status === 'complete' ? (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                              <div className="w-1.5 h-1.5 bg-green-600 rounded-full mr-1.5" />
-                              Completed
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                              <div className="w-1.5 h-1.5 bg-amber-600 rounded-full mr-1.5 animate-pulse" />
-                              Pending
-                            </span>
-                          )}
-                        </div>
+                {requests.map((r) => {
+                  const buyerSubmitted =
+                    Boolean(r.request_id) ||
+                    Boolean((r.request_user_message || "").trim()) ||
+                    Boolean(r.request_user_attachment_url);
 
-                        <div className="mt-4">
-                          {request.status === 'complete' ? (
-                            <div className="flex items-center space-x-3">
-                              <button
-                                onClick={() => setSelectedItem(request)}
-                                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors duration-200 inline-flex items-center"
-                              >
-                                <Eye className="w-4 h-4 mr-2" />
-                                View Response
-                              </button>
-                              <button
-                                onClick={() => setShowReviewModal(request)}
-                                className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
-                              >
-                                <Star className="w-4 h-4 mr-1" />
-                                Review
-                              </button>
+                  const isComplete = r.status === "complete";
+
+                  return (
+                    <div key={r.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
+                      <div className="flex items-start space-x-4">
+                        <img
+                          src={resolveImageUrl(r.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
+                          alt={r.creator_profile?.display_name || "Creator"}
+                          className="w-14 h-14 rounded-full object-cover ring-2 ring-gray-100"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h3 className="font-semibold text-lg text-gray-900">{r.product.title}</h3>
+                              <p className="text-sm text-gray-600 mt-1">{r.creator_profile?.display_name}</p>
                             </div>
-                          ) : (
-                            // Pending — switch wording/button based on whether the buyer submitted details
-                            (() => {
-                              const message = (request.request_user_message ?? "").trim();
-                              const hasUserDetails = (message.length > 0) || Boolean(request.request_user_attachment_url);
 
-                              return hasUserDetails ? (
-                                <div>
-                                  <p className="text-sm text-gray-500 mb-3">Waiting for creator to complete your request</p>
+                            {isComplete ? (
+                              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                <div className="w-1.5 h-1.5 bg-green-600 rounded-full mr-1.5" />
+                                Completed
+                              </span>
+                            ) : buyerSubmitted ? (
+                              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                                <div className="w-1.5 h-1.5 bg-amber-600 rounded-full mr-1.5 animate-pulse" />
+                                Pending
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                                <div className="w-1.5 h-1.5 bg-gray-500 rounded-full mr-1.5" />
+                                Action Needed
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="mt-4">
+                            {isComplete ? (
+                              <div className="flex items-center space-x-3">
+                                <button
+                                  onClick={() => setSelectedItem(r)}
+                                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors duration-200 inline-flex items-center"
+                                >
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  View Response
+                                </button>
+                                {!r.user_has_review && (
                                   <button
-                                    onClick={() => setSelectedItem(request)}
-                                    className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                    onClick={() => setShowReviewModal(r)}
+                                    className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
                                   >
-                                    Request Details
-                                    <ChevronRight className="w-4 h-4 ml-1" />
+                                    <Star className="w-4 h-4 mr-1" />
+                                    Review
                                   </button>
-                                </div>
-                              ) : (
-                                <div>
-                                  <p className="text-sm text-gray-500 mb-3">Please submit your request details</p>
-                                  <button
-                                    onClick={() => router.push(`/requests/new?orderId=${request.id}`)}
-                                    className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
-                                  >
-                                    Submit Request Details
-                                    <ChevronRight className="w-4 h-4 ml-1" />
-                                  </button>
-                                </div>
-                              );
-                            })()
-                          )}
+                                )}
+                              </div>
+                            ) : buyerSubmitted ? (
+                              <div>
+                                <p className="text-sm text-gray-500 mb-3">
+                                  Waiting for creator to complete your request
+                                </p>
+                                <button
+                                  onClick={() => setSelectedItem(r)}
+                                  className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                >
+                                  View Request Details
+                                  <ChevronRight className="w-4 h-4 ml-1" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div>
+                                <p className="text-sm text-gray-500 mb-3">Please submit your request details</p>
+                                <button
+                                  onClick={() => router.push(`/requests/new?orderId=${r.id}`)}
+                                  className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                >
+                                  Submit Request Details
+                                  <ChevronRight className="w-4 h-4 ml-1" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
-        {/* Purchases Section */}
-        {activeTab === 'purchases' && (
+        {/* Purchases */}
+        {activeTab === "purchases" && (
           <div className="space-y-6">
             {purchases.length === 0 ? (
               <div className="bg-white rounded-xl shadow-sm p-8">
-                <EmptyState
-                  message="No purchases yet"
-                  icon={<Download className="w-10 h-10 text-gray-300" />}
-                />
+                <EmptyState message="No purchases yet" icon={<Download className="w-10 h-10 text-gray-300" />} />
               </div>
             ) : (
               <div className="grid gap-6 md:grid-cols-2">
-                {purchases.map((purchase) => (
-                  <div key={purchase.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
+                {purchases.map((p) => (
+                  <div key={p.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
                     <div className="flex items-start space-x-4">
                       <img
-                        src={resolveImageUrl(purchase.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                        alt={purchase.creator_profile?.display_name || "Creator"}
+                        src={resolveImageUrl(p.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
+                        alt={p.creator_profile?.display_name || "Creator"}
                         className="w-14 h-14 rounded-full object-cover ring-2 ring-gray-100"
                       />
                       <div className="flex-1">
-                        <h3 className="font-semibold text-lg text-gray-900">{purchase.product.title}</h3>
-                        <p className="text-sm text-gray-600 mt-1">{purchase.creator_profile?.display_name}</p>
+                        <h3 className="font-semibold text-lg text-gray-900">{p.product.title}</h3>
+                        <p className="text-sm text-gray-600 mt-1">{p.creator_profile?.display_name}</p>
 
                         <div className="flex items-center text-xs text-gray-500 mt-3 mb-4">
                           <Calendar className="w-3 h-3 mr-1" />
-                          <span>Purchased {formatDate(purchase.created_at)}</span>
+                          <span>Purchased {formatDate(p.created_at)}</span>
                         </div>
 
                         <div className="flex items-center space-x-3">
                           <button
-                            onClick={() => handleDownload(purchase)}
+                            onClick={() => handleDownload(p)}
                             className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 inline-flex items-center"
                           >
                             <Download className="w-4 h-4 mr-2" />
                             Download
                           </button>
-                          <button
-                            onClick={() => setShowReviewModal(purchase)}
-                            className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
-                          >
-                            <Star className="w-4 h-4 mr-1" />
-                            Review
-                          </button>
+                          {!p.user_has_review && (
+                            <button
+                              onClick={() => setShowReviewModal(p)}
+                              className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
+                            >
+                              <Star className="w-4 h-4 mr-1" />
+                              Review
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -663,7 +706,7 @@ export default function PurchasesPage() {
           </div>
         )}
 
-        {/* Cancel Confirmation Modal */}
+        {/* Cancel Confirmation */}
         {showCancelConfirm !== null && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-2xl">
@@ -671,7 +714,9 @@ export default function PurchasesPage() {
                 <AlertCircle className="w-6 h-6 text-red-600" />
               </div>
               <h3 className="text-xl font-semibold text-center mb-2">Cancel Membership?</h3>
-              <p className="text-gray-600 text-center mb-6">This action cannot be undone. You'll lose access to this membership when membership expires.</p>
+              <p className="text-gray-600 text-center mb-6">
+                This action cannot be undone. You'll lose access to this membership when membership expires.
+              </p>
               <div className="flex space-x-3">
                 <button
                   onClick={() => setShowCancelConfirm(null)}
@@ -691,7 +736,7 @@ export default function PurchasesPage() {
         )}
 
         {/* Request Detail Modal */}
-        {selectedItem && selectedItem.product.product_type === 'request' && (
+        {selectedItem && selectedItem.product.product_type === "request" && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-white rounded-2xl p-8 max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
               <div className="flex justify-between items-center mb-6">
@@ -705,7 +750,14 @@ export default function PurchasesPage() {
               </div>
 
               <div className="space-y-6">
-                {/* Buyer’s Submitted Details */}
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <h4 className="font-medium text-gray-700 mb-2">Request</h4>
+                  <h5 className="font-semibold text-gray-900">{selectedItem.product.title}</h5>
+                  {selectedItem.product.description && (
+                    <p className="text-gray-600 mt-2">{selectedItem.product.description}</p>
+                  )}
+                </div>
+
                 {(selectedItem.request_user_message || selectedItem.request_user_attachment_url) && (
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Your Submitted Details</h4>
@@ -720,7 +772,11 @@ export default function PurchasesPage() {
                       <div>
                         <h5 className="font-medium text-gray-700 mb-2">Your Attachment</h5>
                         <a
-                          href={resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) || selectedItem.request_user_attachment_url || "#"}
+                          href={
+                            resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
+                            selectedItem.request_user_attachment_url ||
+                            "#"
+                          }
                           className="inline-flex items-center bg-blue-50 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
                           download
                         >
@@ -732,7 +788,6 @@ export default function PurchasesPage() {
                   </div>
                 )}
 
-                {/* Creator's Response */}
                 {selectedItem.request_response && (
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Creator's Response</h4>
@@ -742,7 +797,6 @@ export default function PurchasesPage() {
                   </div>
                 )}
 
-                {/* Creator's Attachment */}
                 {selectedItem.request_media_url && (
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Creator's Attachment</h4>
@@ -774,10 +828,9 @@ export default function PurchasesPage() {
                     <button
                       key={star}
                       onClick={() => setReviewRating(star)}
-                      className={`text-3xl transition-colors duration-200 ${star <= reviewRating
-                        ? 'text-yellow-400 hover:text-yellow-500'
-                        : 'text-gray-300 hover:text-gray-400'
-                        }`}
+                      className={`text-3xl transition-colors duration-200 ${
+                        star <= reviewRating ? "text-yellow-400 hover:text-yellow-500" : "text-gray-300 hover:text-gray-400"
+                      }`}
                     >
                       ★
                     </button>
@@ -786,9 +839,7 @@ export default function PurchasesPage() {
               </div>
 
               <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Share your experience
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Share your experience</label>
                 <textarea
                   value={reviewText}
                   onChange={(e) => setReviewText(e.target.value)}
@@ -821,6 +872,15 @@ export default function PurchasesPage() {
           </div>
         )}
       </div>
+
+      {/* Inline Toast (visual) */}
+      {toastMsg && (
+        <div className="fixed bottom-6 right-6 z-[60]">
+          <div className="bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg">
+            {toastMsg}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

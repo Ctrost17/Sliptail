@@ -1,3 +1,4 @@
+// routes/products.js
 const express = require("express"); 
 const router = express.Router();
 const multer = require("multer");
@@ -100,6 +101,16 @@ async function hasColumn(table, column) {
      WHERE table_schema='public' AND table_name=$1 AND column_name=$2
      LIMIT 1`,
     [table, column]
+  );
+  return rows.length > 0;
+}
+
+async function hasTable(table) {
+  const { rows } = await db.query(
+    `SELECT 1 FROM information_schema.tables
+     WHERE table_schema='public' AND table_name=$1
+     LIMIT 1`,
+    [table]
   );
   return rows.length > 0;
 }
@@ -274,6 +285,12 @@ async function promoteAndRefreshAuth(userId, res) {
   }
 }
 
+function sanitizeRating(r) {
+  const n = parseInt(String(r), 10);
+  if (!Number.isFinite(n)) return null;
+  return n >= 1 && n <= 5 ? n : null;
+}
+
 /* -------------------------------- routes -------------------------------- */
 
 // GET /api/products -> list all products
@@ -441,6 +458,153 @@ router.get("/user/:userId", async (req, res) => {
   } catch (err) {
     console.error("Fetch error:", err.message || err);
     res.status(500).json({ error: "Failed to fetch products" });
+  }
+});
+
+/* ------------------------- REVIEWS (schema-aware) ------------------------- */
+// POST /api/products/:productId/reviews
+// Creates or updates a review for the creator who owns this product.
+// Upserts by (buyer_id, product_id). Accepts { rating(1..5), comment? }.
+router.post("/:productId/reviews", requireAuth, async (req, res) => {
+  const buyerId = req.user.id;
+  const productId = parseInt(req.params.productId, 10);
+  if (Number.isNaN(productId)) return res.status(400).json({ error: "Invalid product id" });
+
+  const rating = sanitizeRating(req.body?.rating);
+  const comment = typeof req.body?.comment === "string" ? req.body.comment.trim() : null;
+  if (!rating) return res.status(400).json({ error: "rating must be an integer 1..5" });
+
+  try {
+    // 1) Product & owning creator
+    const { rows: prodRows } = await db.query(
+      "SELECT id, user_id AS creator_id FROM products WHERE id=$1 LIMIT 1",
+      [productId]
+    );
+    if (!prodRows.length) return res.status(404).json({ error: "Product not found" });
+    const creatorId = prodRows[0].creator_id;
+
+    if (String(creatorId) === String(buyerId)) {
+      return res.status(400).json({ error: "You cannot review yourself" });
+    }
+
+    // 2) Eligibility (schema-aware)
+    let eligible = false;
+
+    // (A) Paid/completed/succeeded purchase for this product
+    if (await hasTable("orders")) {
+      // pick buyer column
+      const buyerCols = ["buyer_id", "user_id", "customer_id"];
+      let buyerCol = null;
+      for (const c of buyerCols) {
+        if (await hasColumn("orders", c)) { buyerCol = c; break; }
+      }
+      if (buyerCol) {
+        const statuses = ["paid", "completed", "succeeded", "success"];
+        const paid = await db.query(
+          `
+          SELECT 1
+            FROM orders o
+           WHERE o.${buyerCol} = $1
+             AND o.product_id  = $2
+             AND o.status      = ANY($3::text[])
+           LIMIT 1
+          `,
+          [buyerId, productId, statuses]
+        );
+        eligible = paid.rows.length > 0;
+      }
+    }
+
+    // (B) Delivered request with this creator
+    if (!eligible && await hasTable("custom_requests")) {
+      const crBuyerCol = (await hasColumn("custom_requests", "buyer_id")) ? "buyer_id" : "user_id";
+      const deliveredStatuses = ["delivered", "complete", "completed"];
+      const delivered = await db.query(
+        `
+        SELECT 1
+          FROM custom_requests cr
+         WHERE cr.${crBuyerCol} = $1
+           AND cr.creator_id    = $2
+           AND cr.status        = ANY($3::text[])
+         LIMIT 1
+        `,
+        [buyerId, creatorId, deliveredStatuses]
+      );
+      eligible = delivered.rows.length > 0;
+    }
+
+    // (C) Active/trialing membership with this creator (direct or via products)
+    if (!eligible && await hasTable("memberships")) {
+      const memBuyerCol = (await hasColumn("memberships", "buyer_id")) ? "m.buyer_id" : "m.user_id";
+      const hasMemCreator = await hasColumn("memberships", "creator_id");
+      const hasMemProduct = await hasColumn("memberships", "product_id");
+      const memStatuses = ["active", "trialing"];
+
+      if (hasMemCreator) {
+        const q = await db.query(
+          `
+          SELECT 1
+            FROM memberships m
+           WHERE ${memBuyerCol} = $1
+             AND m.creator_id   = $2
+             AND m.status       = ANY($3::text[])
+           LIMIT 1
+          `,
+          [buyerId, creatorId, memStatuses]
+        );
+        eligible = q.rows.length > 0;
+      } else if (hasMemProduct) {
+        const q = await db.query(
+          `
+          SELECT 1
+            FROM memberships m
+            JOIN products p ON p.id = m.product_id
+           WHERE ${memBuyerCol} = $1
+             AND p.user_id      = $2
+             AND m.status       = ANY($3::text[])
+           LIMIT 1
+          `,
+          [buyerId, creatorId, memStatuses]
+        );
+        eligible = q.rows.length > 0;
+      }
+    }
+
+    if (!eligible) {
+      return res.status(403).json({ error: "Not eligible to review this creator" });
+    }
+
+    // 3) Upsert review by (buyer_id, product_id)
+    const { rows: existing } = await db.query(
+      "SELECT id FROM reviews WHERE buyer_id=$1 AND product_id=$2 LIMIT 1",
+      [buyerId, productId]
+    );
+
+    if (existing.length) {
+      // only include updated_at if the column exists
+      const haveUpdatedAt = await hasColumn("reviews", "updated_at");
+      const sets = ["rating=$1", "comment=$2"];
+      if (haveUpdatedAt) sets.push("updated_at=NOW()");
+      const { rows } = await db.query(
+        `UPDATE reviews
+            SET ${sets.join(", ")}
+          WHERE id=$3
+          RETURNING id, creator_id, buyer_id, rating, comment, product_id, created_at${haveUpdatedAt ? ", updated_at" : ""}`,
+        [rating, comment, existing[0].id]
+      );
+      return res.json({ review: rows[0], updated: true });
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO reviews (product_id, creator_id, buyer_id, rating, comment, created_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       RETURNING id, creator_id, buyer_id, rating, comment, product_id, created_at`,
+      [productId, creatorId, buyerId, rating, comment]
+    );
+    return res.status(201).json({ review: rows[0], created: true });
+  } catch (e) {
+    console.error("products/:productId/reviews error:", e?.message || e, e?.detail || "");
+    return res.status(500).json({ error: "Failed to submit review" });
   }
 });
 
