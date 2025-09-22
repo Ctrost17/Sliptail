@@ -12,6 +12,19 @@ type Notification = {
   created_at: string;
 };
 
+// Response shape from API: identical to Notification except metadata may be unknown (string/object/null)
+type ApiNotification = Omit<Notification, "metadata"> & { metadata?: unknown };
+
+// Safe JSON parser that never uses `any`
+function safeParse<T = unknown>(v: unknown): T | null {
+  if (typeof v !== "string") return (v as T) ?? null;
+  try {
+    return JSON.parse(v) as T;
+  } catch {
+    return null;
+  }
+}
+
 export default function NotificationsPage() {
   const [items, setItems] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,16 +40,39 @@ export default function NotificationsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${apiBase}/api/notifications?limit=50&offset=0&unread_only=${unreadOnly}`,
-        { credentials: "include" }
-      );
+      // IMPORTANT: many backends expect 1/0, not true/false
+      const qs = new URLSearchParams({
+        limit: "50",
+        offset: "0",
+        unread_only: unreadOnly ? "1" : "0",
+      });
+      const res = await fetch(`${apiBase}/api/notifications?${qs.toString()}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       if (!res.ok) {
         setError(`Failed to load (${res.status})`);
         setItems([]);
       } else {
-        const data: { notifications?: Notification[] } = await res.json();
-        setItems(data?.notifications ?? []);
+        const data: { notifications?: ApiNotification[] } = await res.json();
+
+        // Normalize metadata in case the API returns it as JSON text or unknown
+        const normalized: Notification[] = (data?.notifications ?? []).map((n) => {
+          // If metadata is a string, try to parse; if it's already an object, keep it; otherwise null
+          const parsed =
+            typeof n.metadata === "string"
+              ? safeParse<Record<string, unknown>>(n.metadata)
+              : typeof n.metadata === "object" && n.metadata !== null
+              ? (n.metadata as Record<string, unknown>)
+              : null;
+
+          return {
+            ...n,
+            metadata: parsed,
+          };
+        });
+
+        setItems(normalized);
       }
     } catch {
       setError("Network error");
@@ -105,36 +141,33 @@ export default function NotificationsPage() {
         });
         if (!res.ok) {
           // revert on failure
-          setItems((prev) =>
-            prev.map((n) => (n.id === id ? { ...n, read_at: null } : n))
-          );
+          setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read_at: null } : n)));
         }
       } catch {
         // revert on failure
-        setItems((prev) =>
-          prev.map((n) => (n.id === id ? { ...n, read_at: null } : n))
-        );
+        setItems((prev) => prev.map((n) => (n.id === id ? { ...n, read_at: null } : n)));
       }
     },
     [apiBase]
   );
 
-  const markAll = useCallback(async () => {
-    // optimistic
-    const now = new Date().toISOString();
-    setItems((prev) => prev.map((n) => ({ ...n, read_at: n.read_at ?? now })));
-    try {
-      const res = await fetch(`${apiBase}/api/notifications/read-all`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        await load();
-      }
-    } catch {
-      await load();
+const markAll = useCallback(async () => {
+  // optimistic: keep items as an array
+  const now = new Date().toISOString();
+  setItems((prev) => prev.map((n) => ({ ...n, read_at: n.read_at ?? now })));
+
+  try {
+    const res = await fetch(`${apiBase}/api/notifications/read-all`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      await load(); // server rejected; reload authoritative state
     }
-  }, [apiBase, load]);
+  } catch {
+    await load(); // network error; reload
+  }
+}, [apiBase, load]);
 
   const resolveHref = (n: Notification): string | null => {
     const t = (n.type || "").toLowerCase();

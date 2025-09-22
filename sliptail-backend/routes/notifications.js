@@ -1,22 +1,23 @@
 const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
+
 const router = express.Router();
 
 /**
- * Lightweight unread count (perfect for navbar/burger menu badge)
+ * Lightweight unread count (for navbar/burger menu badge)
  * GET /api/notifications/unread-count
- * -> { count: number }
+ * -> { unread: number }
  */
 router.get("/unread-count", requireAuth, async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT COUNT(*)::int AS count
+      `SELECT COUNT(*)::int AS unread
          FROM notifications
         WHERE user_id = $1 AND read_at IS NULL`,
       [req.user.id]
     );
-    res.json({ count: rows[0].count });
+    res.json({ unread: rows[0]?.unread ?? 0 });
   } catch (e) {
     console.error("notifications unread-count error:", e?.message || e);
     res.status(500).json({ error: "Failed to fetch unread count" });
@@ -29,13 +30,11 @@ router.get("/unread-count", requireAuth, async (req, res) => {
  * -> { notifications: [...], unread: number }
  */
 router.get("/", requireAuth, async (req, res) => {
-  // parse and clamp
   const rawLimit = parseInt(req.query.limit || "20", 10);
   const rawOffset = parseInt(req.query.offset || "0", 10);
   const limit = Math.min(Number.isFinite(rawLimit) ? rawLimit : 20, 100);
   const offset = Math.max(Number.isFinite(rawOffset) ? rawOffset : 0, 0);
 
-  // support "true"/"1"/"yes"
   const uo = String(req.query.unread_only || "").toLowerCase();
   const unreadOnly = uo === "true" || uo === "1" || uo === "yes";
 
@@ -43,9 +42,7 @@ router.get("/", requireAuth, async (req, res) => {
     const where = [`user_id = $1`];
     const params = [req.user.id, limit, offset];
 
-    if (unreadOnly) {
-      where.push(`read_at IS NULL`);
-    }
+    if (unreadOnly) where.push(`read_at IS NULL`);
 
     const { rows } = await db.query(
       `SELECT id, type, title, body, metadata, read_at, created_at
@@ -56,7 +53,6 @@ router.get("/", requireAuth, async (req, res) => {
       params
     );
 
-    // Count unread for badge (kept as a separate query like your version)
     const { rows: countRows } = await db.query(
       `SELECT COUNT(*)::int AS unread
          FROM notifications
@@ -64,7 +60,7 @@ router.get("/", requireAuth, async (req, res) => {
       [req.user.id]
     );
 
-    res.json({ notifications: rows, unread: countRows[0].unread });
+    res.json({ notifications: rows, unread: countRows[0]?.unread ?? 0 });
   } catch (e) {
     console.error("notifications list error:", e?.message || e);
     res.status(500).json({ error: "Failed to fetch notifications" });

@@ -6,6 +6,7 @@ const multer = require("multer");
 const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
+// const { notifyMany } = require("../services/notifications"); // no longer needed; centralized in notifyPostToMembers
 
 const router = express.Router();
 
@@ -79,7 +80,8 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     // Respond to client first
     res.status(201).json({ post });
 
-    // Notify only members of THIS membership product (no duplicates)
+    // NOTIFICATIONS (email + in-app) for members of THIS membership product:
+    // Centralize fan-out logic so we don't drift from the permissive membership filter.
     if (product.product_type === "membership") {
       notifyPostToMembers({
         creatorId,
@@ -148,7 +150,7 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     if (!sets.length) return res.status(400).json({ error: "No fields to update" });
     vals.push(postId);
 
-    const { rows } = await db.query(
+    const updated = await db.query(
       `UPDATE posts SET ${sets.join(", ")}, updated_at = NOW() WHERE id=$${i} RETURNING *`,
       vals
     );
@@ -158,7 +160,7 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       fs.existsSync(oldPath) && fs.unlink(oldPath, () => {});
     }
 
-    return res.json({ post: rows[0] });
+    return res.json({ post: updated.rows[0] });
   } catch (e) {
     console.error("update post error:", e);
     return res.status(500).json({ error: "Could not update post" });

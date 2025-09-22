@@ -49,11 +49,27 @@ export default function Navbar() {
   const { isCreator } = useCreatorStatus();
 
   // Unread notifications (SSE + polling fallback)
-  const { unread, hasUnread } = useUnreadNotifications({ loadList: false });
+  const { unread, hasUnread, refresh } = useUnreadNotifications({ loadList: false });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // 🚀 NEW: fetch unread on mount (so dot is visible without opening menu)
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // 🚀 NEW: also re-fetch when user session becomes available (e.g., right after sign-in)
+  useEffect(() => {
+    if (user) void refresh();
+  }, [user, refresh]);
+
+  // 🚀 NEW: tiny polling fallback (covers cases where SSE is blocked)
+  useEffect(() => {
+    const id = setInterval(() => void refresh(), 30000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -78,6 +94,11 @@ export default function Navbar() {
       /* no-op */
     }
   }, [meErr]);
+
+  // Keep badge fresh when opening the menu
+  useEffect(() => {
+    if (menuOpen) void refresh();
+  }, [menuOpen, refresh]);
 
   function go(path: string) {
     setMenuOpen(false);
@@ -160,7 +181,7 @@ export default function Navbar() {
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              {/* Red dot for unread notifications */}
+              {/* Red dot for unread notifications (now visible immediately after sign-in) */}
               {showUnreadDot && (
                 <span
                   aria-hidden="true"
@@ -175,10 +196,7 @@ export default function Navbar() {
                   <>
                     <MenuItem onClick={() => go("/dashboard")}>Creator Dashboard</MenuItem>
                     <MenuItem onClick={() => go("/purchases")}>My Purchases</MenuItem>
-                    <MenuItem
-                      onClick={() => go("/notifications")}
-                      trailing={<UnreadBadge count={unreadForBadge} />}
-                    >
+                    <MenuItem onClick={() => go("/notifications")} trailing={<UnreadBadge count={unreadForBadge} />}>
                       Notifications
                     </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
@@ -187,10 +205,7 @@ export default function Navbar() {
                 ) : (
                   <>
                     <MenuItem onClick={() => go("/purchases")}>My Purchases</MenuItem>
-                    <MenuItem
-                      onClick={() => go("/notifications")}
-                      trailing={<UnreadBadge count={unreadForBadge} />}
-                    >
+                    <MenuItem onClick={() => go("/notifications")} trailing={<UnreadBadge count={unreadForBadge} />}>
                       Notifications
                     </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
@@ -213,10 +228,7 @@ export default function Navbar() {
               We’ll guide you through profile, Stripe, and your first product.
             </p>
             <div className="flex items-center justify-end gap-2">
-              <button
-                onClick={() => setConfirmOpen(false)}
-                className="rounded-xl border px-4 py-2 text-sm"
-              >
+              <button onClick={() => setConfirmOpen(false)} className="rounded-xl border px-4 py-2 text-sm">
                 No
               </button>
               <button
@@ -248,10 +260,7 @@ function MenuItem({
   trailing?: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-neutral-100"
-    >
+    <button onClick={onClick} className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-neutral-100">
       <span className="flex w-full items-center justify-between">
         <span>{children}</span>
         {trailing}

@@ -4,7 +4,7 @@ const { enqueueAndSend } = require("./emailQueue");
 /**
  * Create an in-app notification row (for the website bell).
  * Safe no-op on error (logs only).
- * type examples: 'purchase','product_sale','new_request','request_delivered','membership_post','membership_expiring'
+ * type examples: 'purchase','product_sale','new_request','request_delivered','member_post','membership_expiring'
  */
 async function notifyInApp(userId, { type, title, body, metadata }) {
   try {
@@ -58,10 +58,10 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
     );
     const productTitle = prodRows?.[0]?.title || "your membership";
 
-    // Only notify members who are active/trialing for THIS product specifically
+    // IMPORTANT: your memberships table does NOT have m.user_id; use buyer_id only
     const { rows: members } = await db.query(
       `
-      SELECT DISTINCT COALESCE(m.buyer_id, m.user_id) AS user_id
+      SELECT DISTINCT m.buyer_id AS user_id
         FROM memberships m
        WHERE m.product_id = $1
          AND m.status IN ('active','trialing')
@@ -71,21 +71,16 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
       [productId]
     );
 
+    // Debug fan-out size (helps verify inserts after posting)
+    console.log("[notifyPostToMembers] productId=%s eligible=%d", productId, members.length);
+
     if (!members.length) return;
 
     const tasks = members.map(({ user_id }) =>
       Promise.allSettled([
-        // Email (respect user setting)
-        sendIfUserPref(user_id, "notify_post", {
-          subject: `New content in ${productTitle}`,
-          html: `<p>New content from <strong>${productTitle}</strong> has just been posted.</p>
-                 <p>Check it out on your <a href="${process.env.FRONTEND_URL || ""}/purchases">My Purchases</a> page.</p>`,
-          category: "membership_post",
-        }),
-
-        // In-app (always stored)
+        // In-app (always stored) — IMPORTANT: type must be "member_post" to match frontend routing
         notifyInApp(user_id, {
-          type: "membership_post",
+          type: "member_post",
           title: "New content posted",
           body: `New content from ${productTitle} has just been posted. Check it out on My Purchases page!`,
           metadata: {
@@ -93,6 +88,14 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
             product_id: productId,
             post_id: postId,
           },
+        }),
+
+        // Email (respect user setting)
+        sendIfUserPref(user_id, "notify_post", {
+          subject: `New content in ${productTitle}`,
+          html: `<p>New content from <strong>${productTitle}</strong> has just been posted.</p>
+                 <p>Check it out on your <a href="${process.env.FRONTEND_URL || ""}/purchases">My Purchases</a> page.</p>`,
+          category: "membership_post",
         }),
       ])
     );
