@@ -2,6 +2,7 @@ const Stripe = require("stripe");
 const db = require("../db");
 const { notifyPurchase } = require("../utils/notify");
 const { recomputeCreatorActive } = require("../services/creatorStatus");
+const { notify } = require("../services/notifications"); // NEW: in-app notifications for creators
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -241,6 +242,39 @@ async function upsertPaidOrderFromSession(session) {
   return inserted[0].id;
 }
 
+/** NEW: dedupe helper so we don't notify a creator twice for the same sale */
+async function alreadyNotifiedCreatorSaleByOrder(orderId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT 1
+         FROM notifications
+        WHERE type = 'creator_sale'
+          AND COALESCE(metadata->>'order_id','') = $1
+        LIMIT 1`,
+      [String(orderId)]
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function alreadyNotifiedCreatorSaleBySubscription(subId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT 1
+         FROM notifications
+        WHERE type = 'creator_sale'
+          AND COALESCE(metadata->>'stripe_subscription_id','') = $1
+        LIMIT 1`,
+      [String(subId)]
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /* ----------------------------- handler ----------------------------- */
 /**
  * Export a single handler function.
@@ -333,9 +367,39 @@ module.exports = async function stripeWebhook(req, res) {
           } catch (e) {
             console.warn("notifyPurchase failed (non-fatal):", e);
           }
+
+          // NEW: In-app notification to creator ("creator_sale"), dedup by order_id
+          try {
+            if (!(await alreadyNotifiedCreatorSaleByOrder(orderId))) {
+              const { rows: info } = await db.query(
+                `SELECT o.id AS order_id,
+                        p.id AS product_id,
+                        p.title AS product_title,
+                        p.user_id AS creator_id
+                   FROM orders o
+                   JOIN products p ON p.id = o.product_id
+                  WHERE o.id = $1
+                  LIMIT 1`,
+                [orderId]
+              );
+              if (info.length) {
+                const row = info[0];
+                notify(
+                  Number(row.creator_id),
+                  "creator_sale",
+                  "Great news!",
+                  `Someone just purchased your ${row.product_title}!`,
+                  { product_id: row.product_id, order_id: row.order_id }
+                ).catch(console.error);
+              }
+            }
+          } catch (e) {
+            console.error("creator_sale notify (session.payment) error:", e);
+          }
         }
 
         if (session.mode === "subscription") {
+          // keep existing behavior: ensure we store customer id; initial sale notification is handled below
           const customer = session.customer;
           const buyerId = session.metadata?.buyer_id && parseInt(session.metadata.buyer_id, 10);
           if (customer && buyerId) {
@@ -368,6 +432,35 @@ module.exports = async function stripeWebhook(req, res) {
             await notifyPurchase({ orderId });
           } catch (e) {
             console.warn("notifyPurchase failed (non-fatal):", e);
+          }
+
+          // NEW: notify creator ONLY if we didn't already send for this order
+          try {
+            if (!(await alreadyNotifiedCreatorSaleByOrder(orderId))) {
+              const { rows: info } = await db.query(
+                `SELECT o.id AS order_id,
+                        p.id AS product_id,
+                        p.title AS product_title,
+                        p.user_id AS creator_id
+                   FROM orders o
+                   JOIN products p ON p.id = o.product_id
+                  WHERE o.id = $1
+                  LIMIT 1`,
+                [orderId]
+              );
+              if (info.length) {
+                const row = info[0];
+                notify(
+                  Number(row.creator_id),
+                  "creator_sale",
+                  "Great news!",
+                  `Someone just purchased your ${row.product_title}!`,
+                  { product_id: row.product_id, order_id: row.order_id }
+                ).catch(console.error);
+              }
+            }
+          } catch (e) {
+            console.error("creator_sale notify (pi.succeeded) error:", e);
           }
         }
         break;
@@ -414,6 +507,28 @@ module.exports = async function stripeWebhook(req, res) {
                      current_period_end=EXCLUDED.current_period_end`,
               [buyerId, creatorId, productId, sub.id, status, currentPeriodEnd]
             );
+
+            // NEW: Only on initial purchase (created), ping creator with "creator_sale"
+            if (event.type === "customer.subscription.created") {
+              try {
+                if (!(await alreadyNotifiedCreatorSaleBySubscription(sub.id))) {
+                  const { rows: prod } = await db.query(
+                    `SELECT title FROM products WHERE id=$1 LIMIT 1`,
+                    [productId]
+                  );
+                  const title = prod[0]?.title || "membership";
+                  notify(
+                    Number(creatorId),
+                    "creator_sale",
+                    "Great news!",
+                    `Someone just purchased your ${title}!`,
+                    { product_id: productId, stripe_subscription_id: sub.id }
+                  ).catch(console.error);
+                }
+              } catch (e) {
+                console.error("creator_sale notify (subscription.created) error:", e);
+              }
+            }
           }
         }
         break;
@@ -443,6 +558,7 @@ module.exports = async function stripeWebhook(req, res) {
               WHERE stripe_subscription_id=$3`,
             [status, currentPeriodEnd, subId]
           );
+          // No creator notification here — renewals would be too noisy
         }
         break;
       }

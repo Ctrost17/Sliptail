@@ -32,7 +32,8 @@ const path = require("path");               // <-- creator-status etc.
 
 const passport = require("passport");
 const cron = require("node-cron");
-const { notifyMembershipsExpiring } = require("./utils/notify");
+// const { notifyMembershipsExpiring } = require("./utils/notify"); // (replaced by job)
+const runMembershipRenewalReminder = require("./jobs/membershipRenewalReminder");
 const { notFound, errorHandler } = require("./middleware/error");
 const { requireAuth } = require("./middleware/auth"); // <-- correct path
 const app = express();
@@ -108,16 +109,35 @@ app.get("/api/me", requireAuth, (req, res) => {
 app.use(notFound);
 app.use(errorHandler);
 
-// Cron (optional)
-if (process.env.CRON_ENABLED === "true") {
-  cron.schedule("0 9 * * *", async () => {
-    try {
-      await notifyMembershipsExpiring({ days: 3 });
-      console.log("Membership-expiring emails sent.");
-    } catch (e) {
-      console.error("Cron job failed:", e);
-    }
-  }, { timezone: process.env.CRON_TZ || "America/Chicago" });
+/* ------------------------ Cron (Option A: node-cron) ------------------------ */
+/**
+ * Schedules the membership renewal reminder job to run every day at 09:00.
+ * Enable it by setting either:
+ *   ENABLE_CRON=1
+ * or
+ *   CRON_ENABLED=true
+ * Optional timezone via CRON_TZ (defaults to UTC if not provided).
+ */
+const CRON_ENABLED =
+  process.env.ENABLE_CRON === "1" || process.env.CRON_ENABLED === "true";
+
+if (CRON_ENABLED) {
+  const tz = process.env.CRON_TZ || "UTC";
+  console.log(`[cron] Scheduling membership renewal reminder at 09:00 (${tz})`);
+  cron.schedule(
+    "0 9 * * *",
+    async () => {
+      try {
+        const { processed, notified } = await runMembershipRenewalReminder();
+        console.log(
+          `[cron] membershipRenewalReminder done — processed=${processed} notified=${notified}`
+        );
+      } catch (e) {
+        console.error("[cron] membershipRenewalReminder failed:", e);
+      }
+    },
+    { timezone: tz }
+  );
 }
 
 const PORT = process.env.PORT || 5000;

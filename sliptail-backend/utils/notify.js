@@ -40,34 +40,60 @@ async function sendIfUserPref(userId, prefKey, { subject, html, category, text, 
 }
 
 /**
- * Notify all active members when a creator posts to their membership feed.
- * call with: notifyPostToMembers({ creatorId, postId, title })
+ * Notify *only the members of the specific membership product* that this post belongs to.
+ * Call with:
+ *   notifyPostToMembers({ creatorId, productId, postId, title })
  */
-async function notifyPostToMembers({ creatorId, postId, title }) {
+async function notifyPostToMembers({ creatorId, productId, postId, title }) {
   try {
-    const { rows } = await db.query(
-      `SELECT m.buyer_id AS user_id
-         FROM memberships m
-        WHERE m.creator_id = $1
-          AND m.status IN ('active','trialing')
-          AND NOW() <= m.current_period_end`,
-      [creatorId]
+    if (!productId) {
+      console.warn("notifyPostToMembers: missing productId — fanout skipped");
+      return;
+    }
+
+    // Get membership product title for nice copy (fallbacks if missing)
+    const { rows: prodRows } = await db.query(
+      `SELECT id, title FROM products WHERE id=$1 LIMIT 1`,
+      [productId]
+    );
+    const productTitle = prodRows?.[0]?.title || "your membership";
+
+    // Only notify members who are active/trialing for THIS product specifically
+    const { rows: members } = await db.query(
+      `
+      SELECT DISTINCT COALESCE(m.buyer_id, m.user_id) AS user_id
+        FROM memberships m
+       WHERE m.product_id = $1
+         AND m.status IN ('active','trialing')
+         AND (m.cancel_at_period_end IS FALSE OR m.cancel_at_period_end IS NULL)
+         AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
+      `,
+      [productId]
     );
 
-    const tasks = rows.map(({ user_id }) =>
+    if (!members.length) return;
+
+    const tasks = members.map(({ user_id }) =>
       Promise.allSettled([
+        // Email (respect user setting)
         sendIfUserPref(user_id, "notify_post", {
-          subject: `New post from a creator you follow`,
-          html: `<p>A creator you follow just posted: <strong>${title || "New post"}</strong></p>
-                 <p>Visit your feed to view it.</p>`,
-          category: "membership_post"
+          subject: `New content in ${productTitle}`,
+          html: `<p>New content from <strong>${productTitle}</strong> has just been posted.</p>
+                 <p>Check it out on your <a href="${process.env.FRONTEND_URL || ""}/purchases">My Purchases</a> page.</p>`,
+          category: "membership_post",
         }),
+
+        // In-app (always stored)
         notifyInApp(user_id, {
           type: "membership_post",
-          title: "New post available",
-          body: title || "A creator you follow posted new content.",
-          metadata: { creator_id: creatorId, post_id: postId }
-        })
+          title: "New content posted",
+          body: `New content from ${productTitle} has just been posted. Check it out on My Purchases page!`,
+          metadata: {
+            creator_id: creatorId,
+            product_id: productId,
+            post_id: postId,
+          },
+        }),
       ])
     );
 
@@ -100,14 +126,14 @@ async function notifyPurchase({ orderId }) {
         subject: `Your ${o.product_type} purchase is confirmed`,
         html: `<p>Thanks! Your purchase of <strong>${o.title || "a product"}</strong> is confirmed.</p>
                <p>You can view/download it from your purchases page.</p>`,
-        category: "purchase_receipt"
+        category: "purchase_receipt",
       }),
       notifyInApp(o.buyer_id, {
         type: "purchase",
         title: "Purchase confirmed",
         body: `Your ${o.product_type} "${o.title || "product"}" is confirmed.`,
-        metadata: { order_id: o.order_id, product_id: o.product_id }
-      })
+        metadata: { order_id: o.order_id, product_id: o.product_id },
+      }),
     ]);
 
     // fire both email + in-app for creator
@@ -115,14 +141,14 @@ async function notifyPurchase({ orderId }) {
       sendIfUserPref(o.creator_id, "notify_product_sale", {
         subject: `You made a sale 🎉`,
         html: `<p>Your ${o.product_type} "<strong>${o.title || "product"}</strong>" was just purchased.</p>`,
-        category: "creator_sale"
+        category: "creator_sale",
       }),
       notifyInApp(o.creator_id, {
         type: "product_sale",
         title: "You made a sale 🎉",
         body: `Your ${o.product_type} "${o.title || "product"}" was purchased.`,
-        metadata: { order_id: o.order_id, product_id: o.product_id }
-      })
+        metadata: { order_id: o.order_id, product_id: o.product_id },
+      }),
     ]);
   } catch (e) {
     console.error("notifyPurchase error:", e);
@@ -148,14 +174,14 @@ async function notifyCreatorNewRequest({ requestId }) {
       sendIfUserPref(r.creator_id, "notify_new_request", {
         subject: `New request received`,
         html: `<p>You received a new request. Visit your creator dashboard → requests.</p>`,
-        category: "new_request"
+        category: "new_request",
       }),
       notifyInApp(r.creator_id, {
         type: "new_request",
         title: "New request received",
         body: "A buyer submitted a new request.",
-        metadata: { request_id: r.id }
-      })
+        metadata: { request_id: r.id },
+      }),
     ]);
   } catch (e) {
     console.error("notifyCreatorNewRequest error:", e);
@@ -181,14 +207,14 @@ async function notifyRequestDelivered({ requestId }) {
       sendIfUserPref(r.buyer_id, "notify_request_completed", {
         subject: `Your request has been delivered`,
         html: `<p>Your request has been completed. You can download the delivery from your requests page.</p>`,
-        category: "request_delivered"
+        category: "request_delivered",
       }),
       notifyInApp(r.buyer_id, {
         type: "request_delivered",
         title: "Your request has been delivered",
         body: "Open your requests page to download the file.",
-        metadata: { request_id: r.id }
-      })
+        metadata: { request_id: r.id },
+      }),
     ]);
   } catch (e) {
     console.error("notifyRequestDelivered error:", e);
@@ -211,20 +237,22 @@ async function notifyMembershipsExpiring({ days = 3 } = {}) {
       [String(days)]
     );
 
-    const tasks = rows.map(m =>
+    const tasks = rows.map((m) =>
       Promise.allSettled([
         sendIfUserPref(m.buyer_id, "notify_membership_expiring", {
           subject: `Your membership is ending soon`,
-          html: `<p>Your membership with <strong>${m.display_name || "a creator"}</strong> ends on <strong>${new Date(m.current_period_end).toLocaleString()}</strong>.</p>
+          html: `<p>Your membership with <strong>${m.display_name || "a creator"}</strong> ends on <strong>${new Date(
+            m.current_period_end
+          ).toLocaleString()}</strong>.</p>
                  <p>Renew to keep access.</p>`,
-          category: "membership_expiring"
+          category: "membership_expiring",
         }),
         notifyInApp(m.buyer_id, {
           type: "membership_expiring",
           title: "Membership ending soon",
           body: `Ends on ${new Date(m.current_period_end).toLocaleString()}.`,
-          metadata: { membership_id: m.id, creator_id: m.creator_id }
-        })
+          metadata: { membership_id: m.id, creator_id: m.creator_id },
+        }),
       ])
     );
 

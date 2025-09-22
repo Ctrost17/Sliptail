@@ -1,7 +1,8 @@
 const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
-const { notifyPurchase } = require("../utils/notify");
+const { notifyPurchase } = require("../utils/notify"); // keep existing email flow
+const { notify } = require("../services/notifications"); // new: in-app notifications
 
 const router = express.Router();
 
@@ -11,7 +12,7 @@ function linkify(product) {
   return {
     ...product,
     view_url: `/api/downloads/view/${id}`,
-    download_url: `/api/downloads/file/${id}`
+    download_url: `/api/downloads/file/${id}`,
   };
 }
 
@@ -100,6 +101,9 @@ router.get("/", requireAuth, async (req, res) => {
  * POST /api/orders/:id/mark-paid
  * - TEMP helper to simulate payment success until Stripe is wired.
  * - Only the buyer who owns the order can mark it paid (for testing).
+ * - Triggers:
+ *    - existing email flow (notifyPurchase)
+ *    - new in-app notification to creator ("creator_sale")
  */
 router.post("/:id/mark-paid", requireAuth, async (req, res) => {
   const orderId = parseInt(req.params.id, 10);
@@ -119,11 +123,41 @@ router.post("/:id/mark-paid", requireAuth, async (req, res) => {
         RETURNING *`,
       [orderId]
     );
+
     res.json({ success: true, order: rows[0] });
-    // send buyer receipt + creator sale notice
-notifyPurchase({ orderId }).catch(console.error);
-  } 
-    catch (err) {
+
+    // Fire existing email-based notifications (kept as-is)
+    notifyPurchase({ orderId }).catch(console.error);
+
+    // Fire new in-app notification to the creator (non-blocking)
+    try {
+      const { rows: infoRows } = await db.query(
+        `SELECT o.id                 AS order_id,
+                p.id                 AS product_id,
+                p.title              AS product_title,
+                p.user_id            AS creator_id,
+                p.product_type       AS product_type
+           FROM orders o
+           JOIN products p ON p.id = o.product_id
+          WHERE o.id = $1
+          LIMIT 1`,
+        [orderId]
+      );
+      if (infoRows.length) {
+        const info = infoRows[0];
+        // creators: “Great news! Someone just purchased your [product title]!”
+        notify(
+          Number(info.creator_id),
+          "creator_sale",
+          "Great news!",
+          `Someone just purchased your ${info.product_title}!`,
+          { product_id: info.product_id, order_id: info.order_id }
+        ).catch(console.error);
+      }
+    } catch (e) {
+      console.error("creator_sale notify error:", e);
+    }
+  } catch (err) {
     console.error("Mark paid error:", err);
     res.status(500).json({ error: "Failed to mark order paid" });
   }
@@ -135,7 +169,6 @@ notifyPurchase({ orderId }).catch(console.error);
  */
 router.get("/mine", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  
 
   try {
     const { rows } = await db.query(
@@ -164,11 +197,10 @@ router.get("/mine", requireAuth, async (req, res) => {
       [userId]
     );
 
-    const withLinks = rows.map(r => ({
+    const withLinks = rows.map((r) => ({
       ...r,
-      product: linkify(r.product)
-    }));    
-    
+      product: linkify(r.product),
+    }));
 
     res.json({ orders: withLinks });
   } catch (err) {

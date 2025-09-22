@@ -8,6 +8,7 @@ import useSWR, { mutate } from "swr";
 import { setAuthToken } from "@/lib/api";
 import { saveAuth, loadAuth } from "@/lib/auth";
 import { useCreatorStatus } from "@/hooks/useCreatorStatus";
+import useUnreadNotifications from "@/hooks/useUnreadNotifications";
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -46,6 +47,9 @@ export default function Navbar() {
 
   // Creator status via your hook
   const { isCreator } = useCreatorStatus();
+
+  // Unread notifications (SSE + polling fallback)
+  const { unread, hasUnread } = useUnreadNotifications({ loadList: false });
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -107,14 +111,15 @@ export default function Navbar() {
     setMenuOpen(false);
 
     // Hard navigate home to fully reset (also triggers server components to refetch)
-    // router.replace + refresh covers App Router, location.replace is a final safety.
     router.replace("/");
     router.refresh();
     if (typeof window !== "undefined") {
-      // Safety: ensure no stale caches keep UI around (especially on static home)
       window.location.replace("/");
     }
   }
+
+  const showUnreadDot = Boolean(user) && hasUnread;
+  const unreadForBadge = Boolean(user) ? unread : 0;
 
   return (
     <header className="sticky top-0 z-40 w-full border-b bg-white/70 backdrop-blur">
@@ -150,11 +155,18 @@ export default function Navbar() {
             <button
               aria-label="Open menu"
               onClick={() => setMenuOpen((v) => !v)}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border hover:bg-neutral-50"
+              className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border hover:bg-neutral-50"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
+              {/* Red dot for unread notifications */}
+              {showUnreadDot && (
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-0.5 -top-0.5 inline-block h-2.5 w-2.5 rounded-full bg-red-600 ring-2 ring-white"
+                />
+              )}
             </button>
 
             {menuOpen && (
@@ -163,14 +175,24 @@ export default function Navbar() {
                   <>
                     <MenuItem onClick={() => go("/dashboard")}>Creator Dashboard</MenuItem>
                     <MenuItem onClick={() => go("/purchases")}>My Purchases</MenuItem>
-                    <MenuItem onClick={() => go("/notifications")}>Notifications</MenuItem>
+                    <MenuItem
+                      onClick={() => go("/notifications")}
+                      trailing={<UnreadBadge count={unreadForBadge} />}
+                    >
+                      Notifications
+                    </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
                     <MenuItem onClick={logout}>Log out</MenuItem>
                   </>
                 ) : (
                   <>
                     <MenuItem onClick={() => go("/purchases")}>My Purchases</MenuItem>
-                    <MenuItem onClick={() => go("/notifications")}>Notifications</MenuItem>
+                    <MenuItem
+                      onClick={() => go("/notifications")}
+                      trailing={<UnreadBadge count={unreadForBadge} />}
+                    >
+                      Notifications
+                    </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
                     <MenuItem onClick={() => go("/creator/setup")}>Become a Creator</MenuItem>
                     <MenuItem onClick={logout}>Log out</MenuItem>
@@ -219,16 +241,34 @@ export default function Navbar() {
 function MenuItem({
   children,
   onClick,
+  trailing,
 }: {
   children: React.ReactNode;
   onClick: () => void;
+  trailing?: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
       className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-neutral-100"
     >
-      {children}
+      <span className="flex w-full items-center justify-between">
+        <span>{children}</span>
+        {trailing}
+      </span>
     </button>
+  );
+}
+
+function UnreadBadge({ count }: { count: number }) {
+  if (!count || count <= 0) return null;
+  const label = count > 99 ? "99+" : String(count);
+  return (
+    <span
+      className="ml-2 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1.5 py-0.5 text-xs font-semibold text-white"
+      aria-label={`${label} unread notifications`}
+    >
+      {label}
+    </span>
   );
 }

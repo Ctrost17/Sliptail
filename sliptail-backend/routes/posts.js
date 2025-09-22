@@ -6,6 +6,7 @@ const multer = require("multer");
 const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
+const { notifyMany } = require("../services/notifications"); // NEW: in-app fanout
 
 const router = express.Router();
 
@@ -17,15 +18,16 @@ if (!fs.existsSync(postUploadsDir)) fs.mkdirSync(postUploadsDir, { recursive: tr
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, postUploadsDir),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "").slice(0,10); // prevent very long ext
+    const ext = path.extname(file.originalname || "").slice(0, 10); // prevent very long ext
     const name = crypto.randomBytes(16).toString("hex") + ext;
     cb(null, name);
-  }
+  },
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB cap for posts
 
 function buildPublicUrl(filename) {
-  return `/uploads/posts/${filename}`; // served statically by express static hosting (index.js should expose /public)
+  // served by express.static on /public
+  return `/uploads/posts/${filename}`;
 }
 
 /**
@@ -35,28 +37,78 @@ function buildPublicUrl(filename) {
  */
 router.post("/", requireAuth, requireCreator, upload.single("media"), async (req, res) => {
   const creatorId = req.user.id;
-  const { title, body, product_id } = req.body || {};
+  const { title, body } = req.body || {};
+  const productId = parseInt(String(req.body.product_id || ""), 10);
   let media_path = null;
+
+  if (!Number.isFinite(productId)) {
+    return res.status(400).json({ error: "product_id required" });
+  }
 
   if (req.file) {
     media_path = buildPublicUrl(req.file.filename);
   } else if (req.body.media_path) {
-    // allow direct media_path if already uploaded
+    // allow direct media_path if already uploaded elsewhere
     media_path = req.body.media_path;
   }
 
-  if (!product_id) return res.status(400).json({ error: "product_id required" });
-
   try {
+    // Ensure the product exists and belongs to this creator
+    const { rows: prodRows } = await db.query(
+      `SELECT id, user_id AS creator_id, product_type, title
+         FROM products
+        WHERE id = $1
+        LIMIT 1`,
+      [productId]
+    );
+    if (!prodRows.length) return res.status(404).json({ error: "Product not found" });
+    if (String(prodRows[0].creator_id) !== String(creatorId)) {
+      return res.status(403).json({ error: "Not your product" });
+    }
+
+    const product = prodRows[0];
+
+    // Create post
     const { rows } = await db.query(
       `INSERT INTO posts (product_id, creator_id, title, body, media_path)
        VALUES ($1,$2,$3,$4,$5)
        RETURNING *`,
-      [product_id, creatorId, title || null, body || null, media_path || null]
+      [productId, creatorId, title || null, body || null, media_path || null]
     );
     const post = rows[0];
+
+    // Respond to client first
     res.status(201).json({ post });
+
+    // Existing email/push helper (kept)
     notifyPostToMembers({ creatorId, postId: post.id, title: post.title }).catch(console.error);
+
+    // NEW: In-app notifications to all active/trialing members of this membership product
+    if (product.product_type === "membership") {
+      try {
+        // Find subscribed users (buyer_id or user_id depending on schema)
+        const { rows: members } = await db.query(
+          `SELECT DISTINCT (COALESCE(m.buyer_id, m.user_id)) AS user_id
+             FROM memberships m
+            WHERE m.product_id = $1
+              AND m.status IN ('active','trialing')`,
+          [productId]
+        );
+        const userIds = members.map(r => r.user_id).filter(Boolean);
+
+        if (userIds.length) {
+          await notifyMany(
+            userIds,
+            "member_post",
+            "New content posted",
+            `New content from ${product.title} has just been posted. Check it out on My Purchases page!`,
+            { product_id: productId, post_id: post.id }
+          );
+        }
+      } catch (e) {
+        console.warn("member_post notifyMany failed:", e?.message || e);
+      }
+    }
   } catch (e) {
     console.error("create post error:", e);
     res.status(500).json({ error: "Could not create post" });
@@ -74,20 +126,24 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
   const { title, body, media_remove } = req.body || {};
 
   try {
-    const { rows: existingRows } = await db.query(`SELECT id, creator_id, media_path FROM posts WHERE id=$1 LIMIT 1`, [postId]);
+    const { rows: existingRows } = await db.query(
+      `SELECT id, creator_id, media_path FROM posts WHERE id=$1 LIMIT 1`,
+      [postId]
+    );
     if (!existingRows.length) return res.status(404).json({ error: "Post not found" });
-    if (String(existingRows[0].creator_id) !== String(creatorId)) return res.status(403).json({ error: "Not your post" });
+    if (String(existingRows[0].creator_id) !== String(creatorId)) {
+      return res.status(403).json({ error: "Not your post" });
+    }
 
     let media_path = existingRows[0].media_path;
     let oldFilenameToDelete = null;
+
     if (req.file) {
-      // schedule deletion of old file if existed
       if (media_path && media_path.startsWith("/uploads/posts/")) {
         oldFilenameToDelete = media_path.replace("/uploads/posts/", "");
       }
       media_path = buildPublicUrl(req.file.filename);
-    } else if (media_remove === '1' || media_remove === 'true') {
-      // clear media
+    } else if (media_remove === "1" || media_remove === "true") {
       if (media_path && media_path.startsWith("/uploads/posts/")) {
         oldFilenameToDelete = media_path.replace("/uploads/posts/", "");
       }
@@ -97,9 +153,19 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     const sets = [];
     const vals = [];
     let i = 1;
-    if (title !== undefined) { sets.push(`title = $${i++}`); vals.push(title || null); }
-    if (body !== undefined) { sets.push(`body = $${i++}`); vals.push(body || null); }
-  if (req.file || media_remove === '1' || media_remove === 'true') { sets.push(`media_path = $${i++}`); vals.push(media_path); }
+    if (title !== undefined) {
+      sets.push(`title = $${i++}`);
+      vals.push(title || null);
+    }
+    if (body !== undefined) {
+      sets.push(`body = $${i++}`);
+      vals.push(body || null);
+    }
+    if (req.file || media_remove === "1" || media_remove === "true") {
+      sets.push(`media_path = $${i++}`);
+      vals.push(media_path);
+    }
+
     if (!sets.length) return res.status(400).json({ error: "No fields to update" });
     vals.push(postId);
 
@@ -107,10 +173,12 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       `UPDATE posts SET ${sets.join(", ")}, updated_at = NOW() WHERE id=$${i} RETURNING *`,
       vals
     );
+
     if (oldFilenameToDelete) {
       const oldPath = path.join(postUploadsDir, oldFilenameToDelete);
-      fs.existsSync(oldPath) && fs.unlink(oldPath, ()=>{});
+      fs.existsSync(oldPath) && fs.unlink(oldPath, () => {});
     }
+
     return res.json({ post: rows[0] });
   } catch (e) {
     console.error("update post error:", e);
@@ -128,7 +196,10 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
   if (Number.isNaN(productId)) return res.status(400).json({ error: "Invalid product id" });
   try {
     // Ensure product exists & get creator owning it
-    const { rows: prod } = await db.query(`SELECT id, user_id FROM products WHERE id=$1 LIMIT 1`, [productId]);
+    const { rows: prod } = await db.query(
+      `SELECT id, user_id FROM products WHERE id=$1 LIMIT 1`,
+      [productId]
+    );
     if (!prod.length) return res.status(404).json({ error: "Product not found" });
     const creatorId = prod[0].user_id;
     const userId = req.user.id;
@@ -148,7 +219,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
     }
 
     // Fetch posts for this creator that either belong to this product or are legacy (NULL product_id)
-    const { rows: rows } = await db.query(
+    const { rows } = await db.query(
       `SELECT p.*, cp.display_name, cp.profile_image
          FROM posts p
          JOIN creator_profiles cp ON cp.user_id = p.creator_id
@@ -157,9 +228,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
         ORDER BY p.created_at DESC`,
       [productId, creatorId]
     );
-    console.log("Post for others", rows);
-    
-    // Always return array (may be empty)
+
     res.json({ posts: rows });
   } catch (e) {
     console.error("get product posts error:", e);
@@ -198,8 +267,6 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
   }
 });
 
-module.exports = router;
-
 /**
  * DELETE /api/posts/:id
  * Remove a post owned by the creator. Also deletes media file if stored locally under /uploads/posts.
@@ -209,9 +276,14 @@ router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
   const postId = parseInt(req.params.id, 10);
   if (Number.isNaN(postId)) return res.status(400).json({ error: "Invalid id" });
   try {
-    const { rows: existing } = await db.query(`SELECT id, creator_id, media_path FROM posts WHERE id=$1 LIMIT 1`, [postId]);
+    const { rows: existing } = await db.query(
+      `SELECT id, creator_id, media_path FROM posts WHERE id=$1 LIMIT 1`,
+      [postId]
+    );
     if (!existing.length) return res.status(404).json({ error: "Post not found" });
-    if (String(existing[0].creator_id) !== String(creatorId)) return res.status(403).json({ error: "Not your post" });
+    if (String(existing[0].creator_id) !== String(creatorId)) {
+      return res.status(403).json({ error: "Not your post" });
+    }
     const media_path = existing[0].media_path;
     await db.query(`DELETE FROM posts WHERE id=$1`, [postId]);
     if (media_path && media_path.startsWith("/uploads/posts/")) {
@@ -229,3 +301,5 @@ router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
 router.get("/inbox", (req, res) => {
   res.json({ ok: true });
 });
+
+module.exports = router;

@@ -8,6 +8,7 @@ const { enqueueAndSend } = require("../utils/emailQueue");
 const { validate } = require("../middleware/validate");
 const { authSignup, authLogin } = require("../validators/schemas");
 const { strictLimiter } = require("../middleware/rateLimit");
+const { notify } = require("../services/notifications"); // ⬅️ add notifications
 
 const router = express.Router();
 
@@ -126,6 +127,20 @@ router.post("/signup", strictLimiter, validate(authSignup), async (req, res) => 
     );
 
     const user = rows[0];
+
+    // ⬇️ Fire welcome notification (non-blocking)
+    try {
+      await notify(
+        user.id,
+        "welcome",
+        "Welcome aboard!",
+        "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
+        {}
+      );
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("welcome notify failed:", e?.message || e);
+    }
 
     try {
       await sendVerifyEmail(user.id, user.email);
