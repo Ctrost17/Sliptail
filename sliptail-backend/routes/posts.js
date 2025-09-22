@@ -6,7 +6,6 @@ const multer = require("multer");
 const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
-const { notifyMany } = require("../services/notifications"); // NEW: in-app fanout
 
 const router = express.Router();
 
@@ -80,34 +79,14 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     // Respond to client first
     res.status(201).json({ post });
 
-    // Existing email/push helper (kept)
-    notifyPostToMembers({ creatorId, postId: post.id, title: post.title }).catch(console.error);
-
-    // NEW: In-app notifications to all active/trialing members of this membership product
+    // Notify only members of THIS membership product (no duplicates)
     if (product.product_type === "membership") {
-      try {
-        // Find subscribed users (buyer_id or user_id depending on schema)
-        const { rows: members } = await db.query(
-          `SELECT DISTINCT (COALESCE(m.buyer_id, m.user_id)) AS user_id
-             FROM memberships m
-            WHERE m.product_id = $1
-              AND m.status IN ('active','trialing')`,
-          [productId]
-        );
-        const userIds = members.map(r => r.user_id).filter(Boolean);
-
-        if (userIds.length) {
-          await notifyMany(
-            userIds,
-            "member_post",
-            "New content posted",
-            `New content from ${product.title} has just been posted. Check it out on My Purchases page!`,
-            { product_id: productId, post_id: post.id }
-          );
-        }
-      } catch (e) {
-        console.warn("member_post notifyMany failed:", e?.message || e);
-      }
+      notifyPostToMembers({
+        creatorId,
+        productId,
+        postId: post.id,
+        title: post.title,
+      }).catch(console.error);
     }
   } catch (e) {
     console.error("create post error:", e);
