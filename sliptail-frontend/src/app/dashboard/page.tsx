@@ -95,22 +95,25 @@ function toCategoryItem(input: unknown): CategoryItem | null {
   return null;
 }
 function toCategoryItemsFlexible(payload: unknown): CategoryItem[] {
+  // Accept either: ["Art","Sports"]  OR  [{id:"art", name:"Art"}, ...]
   if (Array.isArray(payload)) {
     return payload.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
   }
+
+  // Accept only common wrapped array shapes. Do NOT treat arbitrary object keys as categories.
   if (isRecord(payload)) {
-    const keys = ["categories", "data", "items", "results"];
-    for (const k of keys) {
-      const v = (payload as Record<string, unknown>)[k];
-      if (Array.isArray(v)) {
-        return v.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
-      }
-    }
-    const entries = Object.entries(payload);
-    if (entries.length > 0 && entries.every(([k]) => typeof k === "string")) {
-      return entries.map(([k]) => ({ id: String(k), name: String(k) }));
+    const arr =
+      (Array.isArray((payload as any).categories) && (payload as any).categories) ||
+      (Array.isArray((payload as any).data) && (payload as any).data) ||
+      (Array.isArray((payload as any).items) && (payload as any).items) ||
+      (Array.isArray((payload as any).results) && (payload as any).results) ||
+      null;
+
+    if (arr) {
+      return arr.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
     }
   }
+
   return [];
 }
 function uniqStrings(list: string[]): string[] {
@@ -254,6 +257,8 @@ export default function DashboardPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
+  const [profileCategoryRaw, setProfileCategoryRaw] = useState<string[]>([]);
+
   // Dynamic categories from DB
   const [allCategories, setAllCategories] = useState<CategoryItem[]>([]);
   const [catsLoading, setCatsLoading] = useState(false);
@@ -371,8 +376,30 @@ export default function DashboardPage() {
         });
         setDisplayName(prof?.display_name || "");
         setBio(((prof as any)?.bio as string) || "");
-        const cats = getStringArrayProp(profJson, "categories");
-        if (cats) setSelectedCategories(uniqStrings(cats));
+        // Parse categories from profile (strings or objects) → store IDs if possible
+        const rawCats: unknown =
+          isRecord(profJson) && Array.isArray((profJson as any).categories)
+            ? (profJson as any).categories
+            : [];
+
+        if (Array.isArray(rawCats)) {
+         const initial = rawCats
+            .map((x) => {
+              if (typeof x === "string") return String(x);
+              if (isRecord(x)) {
+                return String(
+                  getStringProp(x, "id") ??
+                  getStringProp(x, "category_id") ??
+                  getStringProp(x, "slug") ??
+                  getStringProp(x, "name") ??
+                  ""
+                );
+              }
+              return ;
+            })
+            .filter((v): v is string => !!v);
+          setSelectedCategories(uniqStrings(initial));
+        }
         const galArr = Array.isArray((prof as any)?.gallery)
           ? ((prof as any)?.gallery as string[])
           : [];
@@ -448,11 +475,7 @@ export default function DashboardPage() {
           }
         }
 
-        if (items.length === 0 && selectedCategories.length > 0) {
-          items = selectedCategories.map((name) => ({ id: name, name }));
-        }
-
-        setAllCategories(items);
+        setAllCategories(items.map((c) => ({ id: String(c.id), name: c.name })));
       } finally {
         setCatsLoading(false);
       }
@@ -460,7 +483,37 @@ export default function DashboardPage() {
 
     loadAllCategories();
     return () => ac.abort();
-  }, [creatorId, apiBase, selectedCategories]);
+  }, [creatorId, apiBase]);
+
+useEffect(() => {
+  if (allCategories.length === 0 || selectedCategories.length === 0) return;
+
+  setSelectedCategories((prev) => {
+    const mapped = prev
+      .map((v) => {
+        const vStr = String(v);
+        // already an id?
+        if (allCategories.some((c) => String(c.id) === vStr)) return vStr;
+        // try name → id (case-insensitive)
+        const byName = allCategories.find(
+          (c) => c.name.toLowerCase() === vStr.toLowerCase()
+        );
+        return byName ? String(byName.id) : null;
+      })
+      .filter((x): x is string => Boolean(x));
+
+    // keep only valid ids and enforce max 3
+    const validIds = Array.from(new Set(mapped)).filter((id) =>
+      allCategories.some((c) => String(c.id) === id)
+    );
+    const next = validIds.slice(0, 3);
+
+    // avoid loops
+    if (next.length === prev.length && next.every((v, i) => v === prev[i])) return prev;
+    return next;
+  });
+}, [allCategories, selectedCategories]); // <-- include selectedCategories too
+
 
   // Load Stripe connect status (requires auth)
   useEffect(() => {
@@ -512,56 +565,66 @@ export default function DashboardPage() {
     return () => ac.abort();
   }, [creatorId, apiBase]);
 
-  function toggleCategoryName(name: string) {
-    setSelectedCategories((prev) =>
-      prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]
-    );
-  }
+function toggleCategoryId(id: string) {
+  setSelectedCategories((prev) => {
+    const isSelected = prev.includes(id);
+    if (isSelected) return prev.filter((x) => x !== id);
+    if (prev.length >= 3) return prev; // enforce max 3
+    return [...prev, id];
+  });
+}
 
-  async function saveQuickProfile() {
-    if (!creatorId) return;
-    setSavingProfile(true);
-    setSaveMsg(null);
-    try {
-      const res = await fetch(`${apiBase}/api/creators/${creatorId}`, {
-        method: "PUT",
-        credentials: "include",
-        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          display_name: displayName.trim(),
-          bio: bio.trim(),
-          categories: selectedCategories,
-        }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        if (res.status === 401) throw new Error("Unauthorized — please sign in again.");
-        if (res.status === 403)
-          throw new Error("Forbidden — you don’t have permission to edit this profile.");
-        throw new Error(text || "Failed to save profile");
-      }
-      const updated: unknown = await res.json().catch(() => ({}));
-      const newDisplay = getStringProp(updated, "display_name") ?? displayName;
-      const newBio = getStringProp(updated, "bio") ?? bio;
+async function saveQuickProfile() {
+  if (!creatorId) return;
+  setSavingProfile(true);
+  setSaveMsg(null);
 
-      setCreator((prev) => ({
-        ...(prev ?? ({} as CreatorProfile)),
-        display_name: newDisplay,
-        bio: newBio,
-        profile_image: prev?.profile_image ?? null,
-        average_rating: prev?.average_rating ?? 0,
-        products_count: prev?.products_count ?? 0,
-        creator_id: prev?.creator_id ?? Number(creatorId),
-      }));
-      setSaveMsg("Saved ✔");
-      setTimeout(() => setSaveMsg(null), 2000);
-    } catch (e) {
-      console.error("profile save error", e);
-      setSaveMsg(e instanceof Error ? e.message : "Could not save profile");
-    } finally {
-      setSavingProfile(false);
+  try {
+    // Convert selected category ids → names before sending
+    const categoryNames = selectedCategories
+      .map((id) => allCategories.find((c) => c.id === id)?.name)
+      .filter((n): n is string => Boolean(n));
+
+    const res = await fetch(`${apiBase}/api/creators/${creatorId}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        display_name: displayName.trim(),
+        bio: bio.trim(),
+        categories: categoryNames, // ✅ backend now gets names, not ids
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      if (res.status === 401) throw new Error("Unauthorized — please sign in again.");
+      if (res.status === 403) throw new Error("Forbidden — you don’t have permission to edit this profile.");
+      throw new Error(text || "Failed to save profile");
     }
+
+    const updated: unknown = await res.json().catch(() => ({}));
+    const newDisplay = getStringProp(updated, "display_name") ?? displayName;
+    const newBio = getStringProp(updated, "bio") ?? bio;
+
+    setCreator((prev) => ({
+      ...(prev ?? ({} as CreatorProfile)),
+      display_name: newDisplay,
+      bio: newBio,
+      profile_image: prev?.profile_image ?? null,
+      average_rating: prev?.average_rating ?? 0,
+      products_count: prev?.products_count ?? 0,
+      creator_id: prev?.creator_id ?? Number(creatorId),
+    }));
+    setSaveMsg("Saved ✔");
+    setTimeout(() => setSaveMsg(null), 2000);
+  } catch (e) {
+    console.error("profile save error", e);
+    setSaveMsg(e instanceof Error ? e.message : "Could not save profile");
+  } finally {
+    setSavingProfile(false);
   }
+}
 
   async function connectStripe() {
     try {
@@ -919,12 +982,12 @@ export default function DashboardPage() {
                     <span className="text-sm text-neutral-500">Loading categories…</span>
                   ) : allCategories.length > 0 ? (
                     allCategories.map((cat) => {
-                      const active = selectedCategories.includes(cat.name);
+                      const active = selectedCategories.includes(cat.id);
                       return (
                         <button
                           key={cat.id || cat.name}
                           type="button"
-                          onClick={() => toggleCategoryName(cat.name)}
+                          onClick={() => toggleCategoryId(cat.id)}
                           className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-black text-white border-black" : "hover:bg-neutral-100"
                             }`}
                           aria-pressed={active}
@@ -939,28 +1002,6 @@ export default function DashboardPage() {
                   )}
                 </div>
 
-                {/* If creator has a category that's not in the master list, show it too */}
-                {selectedCategories.some((n) => !allCategories.find((c) => c.name === n)) && (
-                  <div className="mt-2">
-                    <div className="text-xs text-neutral-500 mb-1">Your categories</div>
-                    <div className="flex flex-wrap gap-2">
-                      {selectedCategories
-                        .filter((n) => !allCategories.find((c) => c.name === n))
-                        .map((name) => (
-                          <button
-                            key={`own-${name}`}
-                            type="button"
-                            onClick={() => toggleCategoryName(name)}
-                            className="rounded-full border px-3 py-1 text-sm bg-black text-white border-black"
-                            aria-pressed
-                            title={name}
-                          >
-                            {name}
-                          </button>
-                        ))}
-                    </div>
-                  </div>
-                )}
 
                 <p className="text-xs text-neutral-500">
                   Pick one or more categories that best describe your work.
@@ -1154,11 +1195,8 @@ export default function DashboardPage() {
                   <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition-colors">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <div className="text-sm font-medium">Request #{req.id}</div>
-    
-                        <div className="text-xs text-neutral-500 mt-1">
-                          From: {req.buyer_email || req.buyer_username || "Unknown"}
-                        </div>
+                        <div className="text-sm font-medium">{req.product_title || `Request #${req.id}`}</div>
+  
                         {req.amount !== undefined && req.amount !== null && (
                           <div className="text-sm font-medium text-neutral-900 mt-1">
                             ${(req.amount / 100).toFixed(2)}
@@ -1361,7 +1399,7 @@ export default function DashboardPage() {
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm font-medium">From: {activeRequest.buyer_email}</div>
+                <div className="text-sm font-semibold">{activeRequest.product_title || `Request #${activeRequest.id}`}</div>
                 {activeRequest.user && (
                   <div className="text-sm text-neutral-700"> Detail: {activeRequest.user}</div>
                 )}

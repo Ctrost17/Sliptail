@@ -264,6 +264,10 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
 /**
  * CREATOR inbox: list requests for me (optionally filter by status)
  * Query: ?status=pending|accepted|declined|delivered
+ *
+ * CHANGES:
+ *  - Removed buyer_email from SELECT (privacy)
+ *  - Added p.title AS product_title so UI can display the product’s title
  */
 router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
   const creatorId = req.user.id;
@@ -290,7 +294,7 @@ router.get("/inbox", requireAuth, requireCreator, async (req, res) => {
       `SELECT cr.*,
               o.status AS order_status,
               p.price AS amount,
-              u.email AS buyer_email,
+              p.title AS product_title,
               u.username AS buyer_username
          FROM custom_requests cr
          JOIN orders   o ON o.id = cr.order_id
@@ -685,4 +689,4 @@ router.post(
   }
 );
 
-module.exports = router;
+module.exports = router
