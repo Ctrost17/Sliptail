@@ -555,7 +555,6 @@ export default function DashboardPage() {
           const catsVal = (payload as Record<string, unknown>).categories;
           const serverCats = Array.isArray(catsVal) ? catsVal.filter((x: unknown) => typeof x === "string") as string[] : null;
           if (serverCats) setSelectedCategories(uniqStrings(serverCats));
-          showToast("Categories saved");
         }
       } catch (e) {
         console.warn("Auto-save categories error:", e);
