@@ -240,7 +240,7 @@ export default function SettingsPage() {
             {emailBusy ? "Saving..." : "Save Email"}
           </button>
           <p className="mt-2 text-xs text-neutral-600">
-            Updating your email will sign you out until you verify the new address.
+            Your email will not update until you verify the new address.
           </p>
         </form>
       </section>
