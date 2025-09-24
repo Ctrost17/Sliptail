@@ -1223,11 +1223,8 @@ export default function DashboardPage() {
                   <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition-colors">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <div className="text-sm font-medium">Request #{req.id}</div>
-    
-                        <div className="text-xs text-neutral-500 mt-1">
-                          From: {req.buyer_email || req.buyer_username || "Unknown"}
-                        </div>
+                        <div className="text-sm font-medium">{req.product_title || `Request #${req.id}`}</div>    
+
                         {req.amount !== undefined && req.amount !== null && (
                           <div className="text-sm font-medium text-neutral-900 mt-1">
                             ${(req.amount / 100).toFixed(2)}
@@ -1426,11 +1423,10 @@ export default function DashboardPage() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
               <div className="flex justify-between items-center">
-                <h3 className="text-lg font-semibold">Request Details</h3>
+                <h3 className="text-lg font-semibold">{activeRequest.product_title || `Request #${activeRequest.id}`}</h3>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm font-medium">From: {activeRequest.buyer_email}</div>
                 {activeRequest.user && (
                   <div className="text-sm text-neutral-700"> Detail: {activeRequest.user}</div>
                 )}
