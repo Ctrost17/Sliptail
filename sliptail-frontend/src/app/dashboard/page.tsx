@@ -95,25 +95,22 @@ function toCategoryItem(input: unknown): CategoryItem | null {
   return null;
 }
 function toCategoryItemsFlexible(payload: unknown): CategoryItem[] {
-  // Accept either: ["Art","Sports"]  OR  [{id:"art", name:"Art"}, ...]
   if (Array.isArray(payload)) {
     return payload.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
   }
-
-  // Accept only common wrapped array shapes. Do NOT treat arbitrary object keys as categories.
   if (isRecord(payload)) {
-    const arr =
-      (Array.isArray((payload as any).categories) && (payload as any).categories) ||
-      (Array.isArray((payload as any).data) && (payload as any).data) ||
-      (Array.isArray((payload as any).items) && (payload as any).items) ||
-      (Array.isArray((payload as any).results) && (payload as any).results) ||
-      null;
-
-    if (arr) {
-      return arr.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
+    const keys = ["categories", "data", "items", "results"];
+    for (const k of keys) {
+      const v = (payload as Record<string, unknown>)[k];
+      if (Array.isArray(v)) {
+        return v.map(toCategoryItem).filter((x): x is CategoryItem => x !== null);
+      }
+    }
+    const entries = Object.entries(payload);
+    if (entries.length > 0 && entries.every(([k]) => typeof k === "string")) {
+      return entries.map(([k]) => ({ id: String(k), name: String(k) }));
     }
   }
-
   return [];
 }
 function uniqStrings(list: string[]): string[] {
@@ -257,11 +254,12 @@ export default function DashboardPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
-  const [profileCategoryRaw, setProfileCategoryRaw] = useState<string[]>([]);
-
   // Dynamic categories from DB
   const [allCategories, setAllCategories] = useState<CategoryItem[]>([]);
   const [catsLoading, setCatsLoading] = useState(false);
+  // Debounced auto-save helpers for categories
+  const catsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const catsInitializedRef = useRef(false);
 
   // Stripe
   const [connecting, setConnecting] = useState(false);
@@ -376,29 +374,9 @@ export default function DashboardPage() {
         });
         setDisplayName(prof?.display_name || "");
         setBio(((prof as any)?.bio as string) || "");
-        // Parse categories from profile (strings or objects) → store IDs if possible
-        const rawCats: unknown =
-          isRecord(profJson) && Array.isArray((profJson as any).categories)
-            ? (profJson as any).categories
-            : [];
-
-        if (Array.isArray(rawCats)) {
-         const initial = rawCats
-            .map((x) => {
-              if (typeof x === "string") return String(x);
-              if (isRecord(x)) {
-                return String(
-                  getStringProp(x, "id") ??
-                  getStringProp(x, "category_id") ??
-                  getStringProp(x, "slug") ??
-                  getStringProp(x, "name") ??
-                  ""
-                );
-              }
-              return ;
-            })
-            .filter((v): v is string => !!v);
-          setSelectedCategories(uniqStrings(initial));
+        const cats = getStringArrayProp(profJson, "categories");
+        if (cats && cats.length) {
+          setSelectedCategories(uniqStrings(cats));
         }
         const galArr = Array.isArray((prof as any)?.gallery)
           ? ((prof as any)?.gallery as string[])
@@ -475,7 +453,14 @@ export default function DashboardPage() {
           }
         }
 
-        setAllCategories(items.map((c) => ({ id: String(c.id), name: c.name })));
+        if (items.length === 0) {
+          // Fallback to current selections to avoid blank UI
+          if (selectedCategories.length > 0) {
+            items = selectedCategories.map((name) => ({ id: name, name }));
+          }
+        }
+
+        setAllCategories(items);
       } finally {
         setCatsLoading(false);
       }
@@ -483,37 +468,7 @@ export default function DashboardPage() {
 
     loadAllCategories();
     return () => ac.abort();
-  }, [creatorId, apiBase]);
-
-useEffect(() => {
-  if (allCategories.length === 0 || selectedCategories.length === 0) return;
-
-  setSelectedCategories((prev) => {
-    const mapped = prev
-      .map((v) => {
-        const vStr = String(v);
-        // already an id?
-        if (allCategories.some((c) => String(c.id) === vStr)) return vStr;
-        // try name → id (case-insensitive)
-        const byName = allCategories.find(
-          (c) => c.name.toLowerCase() === vStr.toLowerCase()
-        );
-        return byName ? String(byName.id) : null;
-      })
-      .filter((x): x is string => Boolean(x));
-
-    // keep only valid ids and enforce max 3
-    const validIds = Array.from(new Set(mapped)).filter((id) =>
-      allCategories.some((c) => String(c.id) === id)
-    );
-    const next = validIds.slice(0, 3);
-
-    // avoid loops
-    if (next.length === prev.length && next.every((v, i) => v === prev[i])) return prev;
-    return next;
-  });
-}, [allCategories, selectedCategories]); // <-- include selectedCategories too
-
+  }, [creatorId, apiBase, selectedCategories]);
 
   // Load Stripe connect status (requires auth)
   useEffect(() => {
@@ -565,66 +520,101 @@ useEffect(() => {
     return () => ac.abort();
   }, [creatorId, apiBase]);
 
-function toggleCategoryId(id: string) {
-  setSelectedCategories((prev) => {
-    const isSelected = prev.includes(id);
-    if (isSelected) return prev.filter((x) => x !== id);
-    if (prev.length >= 3) return prev; // enforce max 3
-    return [...prev, id];
-  });
-}
+  function toggleCategoryName(name: string) {
+    setSelectedCategories((prev) =>
+      prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]
+    );
+  }
 
-async function saveQuickProfile() {
-  if (!creatorId) return;
-  setSavingProfile(true);
-  setSaveMsg(null);
-
-  try {
-    // Convert selected category ids → names before sending
-    const categoryNames = selectedCategories
-      .map((id) => allCategories.find((c) => c.id === id)?.name)
-      .filter((n): n is string => Boolean(n));
-
-    const res = await fetch(`${apiBase}/api/creators/${creatorId}`, {
-      method: "PUT",
-      credentials: "include",
-      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        display_name: displayName.trim(),
-        bio: bio.trim(),
-        categories: categoryNames, // ✅ backend now gets names, not ids
-      }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      if (res.status === 401) throw new Error("Unauthorized — please sign in again.");
-      if (res.status === 403) throw new Error("Forbidden — you don’t have permission to edit this profile.");
-      throw new Error(text || "Failed to save profile");
+  // Auto-save categories when changed (debounced), so highlights persist after leaving the page
+  useEffect(() => {
+    if (!creatorId) return;
+    // Skip the very first run that comes from server-loaded profile
+    if (!catsInitializedRef.current) {
+      catsInitializedRef.current = true;
+      return;
     }
 
-    const updated: unknown = await res.json().catch(() => ({}));
-    const newDisplay = getStringProp(updated, "display_name") ?? displayName;
-    const newBio = getStringProp(updated, "bio") ?? bio;
+    // Debounce to avoid spamming server while toggling multiple chips
+    if (catsSaveTimerRef.current) clearTimeout(catsSaveTimerRef.current);
+    catsSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/creators/${creatorId}`, {
+          method: "PUT",
+          credentials: "include",
+          headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ categories: selectedCategories }),
+        });
+        const payload: unknown = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // If unknown categories, don't block UI; just inform quietly
+          const msg = extractMessage(payload, "Could not save categories");
+          console.warn("Auto-save categories failed:", msg);
+        } else if (isRecord(payload)) {
+          // Normalize from server response if provided
+          const catsVal = (payload as Record<string, unknown>).categories;
+          const serverCats = Array.isArray(catsVal) ? catsVal.filter((x: unknown) => typeof x === "string") as string[] : null;
+          if (serverCats) setSelectedCategories(uniqStrings(serverCats));
+          showToast("Categories saved");
+        }
+      } catch (e) {
+        console.warn("Auto-save categories error:", e);
+      }
+    }, 800);
 
-    setCreator((prev) => ({
-      ...(prev ?? ({} as CreatorProfile)),
-      display_name: newDisplay,
-      bio: newBio,
-      profile_image: prev?.profile_image ?? null,
-      average_rating: prev?.average_rating ?? 0,
-      products_count: prev?.products_count ?? 0,
-      creator_id: prev?.creator_id ?? Number(creatorId),
-    }));
-    setSaveMsg("Saved ✔");
-    setTimeout(() => setSaveMsg(null), 2000);
-  } catch (e) {
-    console.error("profile save error", e);
-    setSaveMsg(e instanceof Error ? e.message : "Could not save profile");
-  } finally {
-    setSavingProfile(false);
+    return () => {
+      if (catsSaveTimerRef.current) clearTimeout(catsSaveTimerRef.current);
+    };
+  }, [selectedCategories, creatorId, apiBase]);
+
+  async function saveQuickProfile() {
+    if (!creatorId) return;
+    setSavingProfile(true);
+    setSaveMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/creators/${creatorId}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          display_name: displayName.trim(),
+          bio: bio.trim(),
+          categories: selectedCategories,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        if (res.status === 401) throw new Error("Unauthorized — please sign in again.");
+        if (res.status === 403)
+          throw new Error("Forbidden — you don’t have permission to edit this profile.");
+        throw new Error(text || "Failed to save profile");
+      }
+      const updated: unknown = await res.json().catch(() => ({}));
+      const newDisplay = getStringProp(updated, "display_name") ?? displayName;
+      const newBio = getStringProp(updated, "bio") ?? bio;
+      const newCats = getStringArrayProp(updated, "categories");
+
+      setCreator((prev) => ({
+        ...(prev ?? ({} as CreatorProfile)),
+        display_name: newDisplay,
+        bio: newBio,
+        profile_image: prev?.profile_image ?? null,
+        average_rating: prev?.average_rating ?? 0,
+        products_count: prev?.products_count ?? 0,
+        creator_id: prev?.creator_id ?? Number(creatorId),
+      }));
+      if (newCats && Array.isArray(newCats) && newCats.length >= 0) {
+        setSelectedCategories(uniqStrings(newCats));
+      }
+      setSaveMsg("Saved ✔");
+      setTimeout(() => setSaveMsg(null), 2000);
+    } catch (e) {
+      console.error("profile save error", e);
+      setSaveMsg(e instanceof Error ? e.message : "Could not save profile");
+    } finally {
+      setSavingProfile(false);
+    }
   }
-}
 
   async function connectStripe() {
     try {
@@ -982,12 +972,12 @@ async function saveQuickProfile() {
                     <span className="text-sm text-neutral-500">Loading categories…</span>
                   ) : allCategories.length > 0 ? (
                     allCategories.map((cat) => {
-                      const active = selectedCategories.includes(cat.id);
+                      const active = selectedCategories.includes(cat.name);
                       return (
                         <button
                           key={cat.id || cat.name}
                           type="button"
-                          onClick={() => toggleCategoryId(cat.id)}
+                          onClick={() => toggleCategoryName(cat.name)}
                           className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-black text-white border-black" : "hover:bg-neutral-100"
                             }`}
                           aria-pressed={active}
@@ -998,10 +988,49 @@ async function saveQuickProfile() {
                       );
                     })
                   ) : (
-                    <span className="text-sm text-neutral-500">No categories configured yet.</span>
+                    <>
+                      {selectedCategories.length > 0 ? (
+                        selectedCategories.map((name) => (
+                          <button
+                            key={`fallback-${name}`}
+                            type="button"
+                            onClick={() => toggleCategoryName(name)}
+                            className="rounded-full border px-3 py-1 text-sm bg-black text-white border-black"
+                            aria-pressed
+                            title={name}
+                          >
+                            {name}
+                          </button>
+                        ))
+                      ) : (
+                        <span className="text-sm text-neutral-500">No categories configured yet.</span>
+                      )}
+                    </>
                   )}
                 </div>
 
+                {/* If creator has a category that's not in the master list, show it too */}
+                {selectedCategories.some((n) => !allCategories.find((c) => c.name === n)) && (
+                  <div className="mt-2">
+                    <div className="text-xs text-neutral-500 mb-1">Your categories</div>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedCategories
+                        .filter((n) => !allCategories.find((c) => c.name === n))
+                        .map((name) => (
+                          <button
+                            key={`own-${name}`}
+                            type="button"
+                            onClick={() => toggleCategoryName(name)}
+                            className="rounded-full border px-3 py-1 text-sm bg-black text-white border-black"
+                            aria-pressed
+                            title={name}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                )}
 
                 <p className="text-xs text-neutral-500">
                   Pick one or more categories that best describe your work.
@@ -1195,8 +1224,11 @@ async function saveQuickProfile() {
                   <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition-colors">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <div className="text-sm font-medium">{req.product_title || `Request #${req.id}`}</div>
-  
+                        <div className="text-sm font-medium">Request #{req.id}</div>
+    
+                        <div className="text-xs text-neutral-500 mt-1">
+                          From: {req.buyer_email || req.buyer_username || "Unknown"}
+                        </div>
                         {req.amount !== undefined && req.amount !== null && (
                           <div className="text-sm font-medium text-neutral-900 mt-1">
                             ${(req.amount / 100).toFixed(2)}
@@ -1399,7 +1431,7 @@ async function saveQuickProfile() {
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm font-semibold">{activeRequest.product_title || `Request #${activeRequest.id}`}</div>
+                <div className="text-sm font-medium">From: {activeRequest.buyer_email}</div>
                 {activeRequest.user && (
                   <div className="text-sm text-neutral-700"> Detail: {activeRequest.user}</div>
                 )}

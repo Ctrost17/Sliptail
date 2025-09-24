@@ -451,6 +451,17 @@ router.get("/me", requireAuth, async (req, res) => {
     );
     const gallery = photos.map((p) => p.url).slice(0, 4);
 
+    // Include current categories so frontend can highlight selections
+    const { rows: catsRows } = await db.query(
+      `SELECT c.name
+         FROM creator_categories cc
+         JOIN categories c ON c.id = cc.category_id
+        WHERE cc.creator_id = $1
+        ORDER BY c.name ASC`,
+      [userId]
+    );
+    const categories = catsRows.map((c) => c.name);
+
     return res.json({
       user_id: userId,
       display_name: profile?.display_name || null,
@@ -462,6 +473,7 @@ router.get("/me", requireAuth, async (req, res) => {
       is_profile_complete: profile?.is_profile_complete || false,
       is_active: profile?.is_active || false,
       gallery,
+      categories,
     });
   } catch (e) {
     // eslint-disable-next-line no-console

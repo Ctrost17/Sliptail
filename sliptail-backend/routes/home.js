@@ -59,7 +59,7 @@ async function queryFeatured(limit) {
     const { rows: cats } = await db.query(
       `
       SELECT cc.creator_id, c.id, c.name, c.slug
-      FROM creator_categories cc
+      FROM creator_ cc
       JOIN categories c ON c.id = cc.category_id
       WHERE cc.creator_id = ANY($1::int[])
       ORDER BY c.name ASC
