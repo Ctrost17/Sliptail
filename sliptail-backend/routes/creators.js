@@ -160,7 +160,7 @@ async function hasEligibility(buyerId, creatorId, productId) {
     `SELECT 1
        FROM memberships m
        JOIN products p ON p.id = m.product_id
-      WHERE m.user_id=$1 AND p.user_id=$2 AND (m.status='active' OR m.status='trialing')
+      WHERE m.buyer_id=$1 AND p.user_id=$2 AND (m.status='active' OR m.status='trialing')
       LIMIT 1`,
     [buyerId, creatorId]
   );
@@ -1068,23 +1068,31 @@ router.get("/:creatorId/card", async (req, res) => {
         cp.bio,
         cp.profile_image,
         ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
+        COALESCE(r.avg_rating, 0)::numeric(3,2) AS average_rating,
+        COALESCE(r.review_count, 0)::int        AS review_count,
+        COALESCE(prod.products_count, 0)::int   AS products_count
       FROM creator_profiles cp
-      JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
+      JOIN users u ON u.id = cp.user_id
+      LEFT JOIN LATERAL (
+        SELECT
+          AVG(r.rating)::numeric(10,4) AS avg_rating,
+          COUNT(*)::int                AS review_count
+        FROM reviews r
+        WHERE r.creator_id = cp.user_id
+          AND (r.hidden IS NOT TRUE)
+      ) r ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS products_count
+        FROM products p
+        WHERE p.user_id = cp.user_id
+          AND p.active  = TRUE
+      ) prod ON TRUE
       WHERE cp.user_id = $1
-        AND ${enabledClause}
+        AND ${await usersEnabledClause()}
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
+        AND COALESCE(prod.products_count, 0) > 0
       `,
       [creatorId]
     );
@@ -1187,30 +1195,39 @@ router.get("/", async (req, res) => {
   try {
     const { rows: profiles } = await db.query(
       `
-      SELECT
-        cp.user_id AS creator_id,
-        cp.display_name,
-        cp.bio,
-        cp.profile_image,
-        ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
-      FROM creator_profiles cp
+    SELECT
+    cp.user_id AS creator_id,
+    cp.display_name,
+    cp.bio,
+    cp.profile_image,
+    ${featuredExpr} AS is_featured,
+    COALESCE(r.avg_rating, 0)::numeric(3,2) AS average_rating,
+    COALESCE(r.review_count, 0)::int        AS review_count,
+    COALESCE(prod.products_count, 0)::int   AS products_count
+     FROM creator_profiles cp
       JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
-      ${whereSql}
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
+      ON u.id = cp.user_id
+      LEFT JOIN LATERAL (
+      SELECT
+      AVG(r.rating)::numeric(10,4) AS avg_rating,
+      COUNT(*)::int                AS review_count
+       FROM reviews r
+      WHERE r.creator_id = cp.user_id
+      AND (r.hidden IS NOT TRUE)
+       ) r ON TRUE
+     LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS products_count
+    FROM products p
+       WHERE p.user_id = cp.user_id
+      AND p.active  = TRUE
+      ) prod ON TRUE
+    ${whereSql}
+     AND COALESCE(prod.products_count, 0) > 0
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `,
+    `,
       [...params, limit, offset]
-    );
+  );
 
     if (!profiles.length) {
       return res.json({ creators: [] });

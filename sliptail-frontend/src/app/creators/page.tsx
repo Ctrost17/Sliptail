@@ -13,8 +13,8 @@ type Creator = {
   bio: string | null;
   profile_image: string | null;
   gallery: string[];
-  average_rating: number;
-  products_count: number;
+  average_rating: number | string;   // ← allow string from PG numeric
+  products_count: number | string;   // ← allow string from PG count
   categories: { id: number; name: string; slug: string }[];
 };
 type CreatorsResponse = { creators: Creator[] };
@@ -35,6 +35,10 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (/^https?:\/\//i.test(s)) return s;
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
+}
+function toNumber(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /* ----------------------------- Component ---------------------------- */
@@ -103,7 +107,8 @@ export default function CreatorsExplorePage() {
           list = (data as CreatorsResponse).creators;
         }
 
-        setCreators(list.filter((cr) => (cr.products_count || 0) > 0));
+        // ensure products_count is numeric for filtering
+        setCreators(list.filter((cr) => toNumber(cr.products_count) > 0));
       } catch (e) {
         if (!(e instanceof DOMException && e.name === "AbortError")) {
           setError("Failed to load creators");
@@ -205,10 +210,10 @@ export default function CreatorsExplorePage() {
               .map((u) => resolveImageUrl(u, apiBase))
               .filter((u): u is string => !!u);
 
-            const rating =
-              typeof creator.average_rating === "number"
-                ? Number(creator.average_rating).toFixed(1)
-                : "0.0";
+            const ratingNum = toNumber(creator.average_rating);     // ← coerce to number
+            const rating = ratingNum.toFixed(1);
+
+            const productsCount = toNumber(creator.products_count); // ← coerce to number
 
             return (
               <div
@@ -254,8 +259,7 @@ export default function CreatorsExplorePage() {
                         <div>
                           <div className="font-semibold">{creator.display_name}</div>
                           <div className="text-xs text-neutral-600">
-                            {rating} ★ · {creator.products_count} product
-                            {creator.products_count === 1 ? "" : "s"}
+                            {rating} ★ · {productsCount} product{productsCount === 1 ? "" : "s"}
                           </div>
                         </div>
                       </div>

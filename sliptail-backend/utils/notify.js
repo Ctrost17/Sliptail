@@ -1,5 +1,6 @@
 const db = require("../db");
-const { enqueueAndSend } = require("./emailQueue");
+const { sendEmail, buildActionUrl } = require("../emails/mailer");
+const T = require("../emails/templates");
 
 /**
  * Create an in-app notification row (for the website bell).
@@ -31,7 +32,13 @@ async function sendIfUserPref(userId, prefKey, { subject, html, category, text, 
     const u = rows[0];
     if (!u) return { skipped: "no_user" };
     if (!u.enabled) return { skipped: "pref_off" };
-    await enqueueAndSend({ to: u.email, subject, html, category, text, replyTo });
+    await sendEmail({
+        to: u.email,
+        subject,
+        html,
+        text,
+        replyTo,
+      });
     return { sent: true };
   } catch (e) {
     console.error("sendIfUserPref error:", e);
@@ -76,6 +83,15 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
 
     if (!members.length) return;
 
+    // Build the URL once; same for all recipients
+    const postUrl = buildActionUrl("post", { postId });
+
+    // Build the branded email once; same for all recipients
+    const msg = T.userMembershipNewPost({
+      productTitle,
+      postUrl,
+    });
+
     const tasks = members.map(({ user_id }) =>
       Promise.allSettled([
         // In-app (always stored) — IMPORTANT: type must be "member_post" to match frontend routing
@@ -92,10 +108,9 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
 
         // Email (respect user setting)
         sendIfUserPref(user_id, "notify_post", {
-          subject: `New content in ${productTitle}`,
-          html: `<p>New content from <strong>${productTitle}</strong> has just been posted.</p>
-                 <p>Check it out on your <a href="${process.env.FRONTEND_URL || ""}/purchases">My Purchases</a> page.</p>`,
-          category: "membership_post",
+          subject: msg.subject,
+          html: msg.html,
+          text: msg.text,
         }),
       ])
     );
@@ -123,28 +138,46 @@ async function notifyPurchase({ orderId }) {
     const o = rows[0];
     if (!o) return;
 
-    // fire both email + in-app for buyer
-    await Promise.allSettled([
-      sendIfUserPref(o.buyer_id, "notify_purchase", {
-        subject: `Your ${o.product_type} purchase is confirmed`,
-        html: `<p>Thanks! Your purchase of <strong>${o.title || "a product"}</strong> is confirmed.</p>
-               <p>You can view/download it from your purchases page.</p>`,
-        category: "purchase_receipt",
-      }),
+    // BUYER emails
+    const buyerTasks = [];
+
+    // For one-time downloads, send the “Your download is ready!” template
+    if (o.product_type === "purchase") {
+      const purchasesUrl = buildActionUrl("purchases");
+      const msg = T.userPurchaseDownloadReady({ purchasesUrl });
+      buyerTasks.push(
+        sendIfUserPref(o.buyer_id, "notify_purchase", {
+          subject: msg.subject,
+          html: msg.html,
+          text: msg.text,
+        })
+      );
+    } else {
+      // Fallback for other product types (unchanged copy)
+      buyerTasks.push(
+        sendIfUserPref(o.buyer_id, "notify_purchase", {
+          subject: `Your ${o.product_type} purchase is confirmed`,
+          html: `<p>Thanks! Your purchase of <strong>${o.title || "a product"}</strong> is confirmed.</p>
+                 <p>You can view/download it from your purchases page.</p>`,
+        })
+      );
+    }
+
+    // In-app for buyer
+    buyerTasks.push(
       notifyInApp(o.buyer_id, {
         type: "purchase",
         title: "Purchase confirmed",
         body: `Your ${o.product_type} "${o.title || "product"}" is confirmed.`,
         metadata: { order_id: o.order_id, product_id: o.product_id },
-      }),
-    ]);
+      })
+    );
 
-    // fire both email + in-app for creator
-    await Promise.allSettled([
+    // CREATOR notifications (leave copy as-is)
+    const creatorTasks = [
       sendIfUserPref(o.creator_id, "notify_product_sale", {
         subject: `You made a sale 🎉`,
         html: `<p>Your ${o.product_type} "<strong>${o.title || "product"}</strong>" was just purchased.</p>`,
-        category: "creator_sale",
       }),
       notifyInApp(o.creator_id, {
         type: "product_sale",
@@ -152,7 +185,9 @@ async function notifyPurchase({ orderId }) {
         body: `Your ${o.product_type} "${o.title || "product"}" was purchased.`,
         metadata: { order_id: o.order_id, product_id: o.product_id },
       }),
-    ]);
+    ];
+
+    await Promise.allSettled([...buyerTasks, ...creatorTasks]);
   } catch (e) {
     console.error("notifyPurchase error:", e);
   }
@@ -173,12 +208,18 @@ async function notifyCreatorNewRequest({ requestId }) {
     const r = rows[0];
     if (!r) return;
 
+    // Deep link to the creator dashboard → requests tab (adjust if your UI path differs)
+    const dashboardUrl = buildActionUrl("dashboard", { tab: "requests" });
+    const msg = T.creatorNewRequest({ dashboardUrl });
+
     await Promise.allSettled([
+      // Email (respects creator's notify_new_request preference)
       sendIfUserPref(r.creator_id, "notify_new_request", {
-        subject: `New request received`,
-        html: `<p>You received a new request. Visit your creator dashboard → requests.</p>`,
-        category: "new_request",
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
       }),
+
       notifyInApp(r.creator_id, {
         type: "new_request",
         title: "New request received",
@@ -198,24 +239,30 @@ async function notifyCreatorNewRequest({ requestId }) {
 async function notifyRequestDelivered({ requestId }) {
   try {
     const { rows } = await db.query(
-      `SELECT cr.id, cr.buyer_id
+      `SELECT cr.id, cr.buyer_id, p.title AS product_title
          FROM custom_requests cr
+         JOIN orders o   ON o.id = cr.order_id
+         JOIN products p ON p.id = o.product_id
         WHERE cr.id=$1`,
       [requestId]
     );
     const r = rows[0];
     if (!r) return;
 
+    const purchasesUrl = buildActionUrl("purchases");
+    const productTitle = r.product_title || "your request";
+    const msg = T.userRequestCompleted({ productTitle, purchasesUrl });
+
     await Promise.allSettled([
       sendIfUserPref(r.buyer_id, "notify_request_completed", {
-        subject: `Your request has been delivered`,
-        html: `<p>Your request has been completed. You can download the delivery from your requests page.</p>`,
-        category: "request_delivered",
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
       }),
       notifyInApp(r.buyer_id, {
-        type: "request_delivered",
-        title: "Your request has been delivered",
-        body: "Open your requests page to download the file.",
+        type: "request_ready",
+        title: "Your request is ready! 🎉",
+        body: "Check it out on your My Purchases page!",
         metadata: { request_id: r.id },
       }),
     ]);

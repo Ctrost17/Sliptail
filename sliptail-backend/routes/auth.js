@@ -4,7 +4,8 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const db = require("../db");
-const { enqueueAndSend } = require("../utils/emailQueue");
+const { sendEmail } = require("../emails/mailer");
+const T = require("../emails/templates");
 const { validate } = require("../middleware/validate");
 const { authSignup, authLogin } = require("../validators/schemas");
 const { strictLimiter } = require("../middleware/rateLimit");
@@ -84,11 +85,50 @@ async function sendVerifyEmail(userId, email) {
 
   const verifyUrl = `${BASE_URL}/api/auth/verify?token=${token}`;
 
-  await enqueueAndSend({
+  // --- REPLACE the queue call with SES send ---
+  const msg = T.emailVerification({
+    actionUrl: verifyUrl,
+    // 24 hours = 1440 minutes; adjust if you change token expiry above
+    expiresInMinutes: 1440,
+  });
+  await sendEmail({
     to: email,
-    subject: "Verify your email",
-    template: "verify_email",
-    payload: { verify_url: verifyUrl },
+    subject: msg.subject,
+    html: msg.html,
+    text: msg.text,
+  });
+}
+
+async function sendVerifyNewEmail(userId, pendingEmail) {
+  // Invalidate any previous verify tokens for this user
+  await db.query(
+    `UPDATE user_tokens
+        SET consumed_at = NOW()
+      WHERE user_id = $1 AND token_type = 'email_verify' AND consumed_at IS NULL`,
+    [userId]
+  );
+
+  // Create a fresh verify token (24h)
+  const token = crypto.randomBytes(32).toString("hex");
+  const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  await db.query(
+    `INSERT INTO user_tokens (user_id, token, token_type, expires_at, created_at)
+     VALUES ($1, $2, 'email_verify', $3, NOW())`,
+    [userId, token, expires]
+  );
+
+  // This hits your existing /api/auth/verify, which already
+  // swaps pending_email -> email when present.
+  const verifyUrl = `${BASE_URL}/api/auth/verify?token=${token}`;
+
+  // ⬅️ Use the distinct template/subject
+  const msg = T.newEmailVerification({ actionUrl: verifyUrl });
+  await sendEmail({
+    to: pendingEmail,
+    subject: msg.subject,
+    html: msg.html,
+    text: msg.text,
   });
 }
 
@@ -338,18 +378,18 @@ router.post("/forgot", strictLimiter, async (req, res) => {
       );
 
       try {
-        await enqueueAndSend({
+        const resetUrl = `${FRONTEND_BASE}/reset-password?token=${token}`;
+        const msg = T.passwordReset({ actionUrl: resetUrl });
+        await sendEmail({
           to: lower,
-          subject: "Reset your password",
-          template: "reset_password",
-          payload: { reset_url: `${FRONTEND_BASE}/reset-password?token=${token}` },
+          subject: msg.subject,
+          html: msg.html,
+          text: msg.text,
         });
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn("password reset email enqueue failed:", e?.message || e);
+        console.warn("password reset email send failed:", e?.message || e);
       }
-    }
-
+      }
     return res.json({ success: true, message: "If this email exists, a reset link was sent." });
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -441,11 +481,10 @@ router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
 
     // Try to send verify email to the pending address; swallow any email-queue errors
     try {
-      await sendVerifyEmail(req.user.id, lower);
+    await sendVerifyNewEmail(req.user.id, lower);
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("change-email: enqueue verify failed:", e?.message || e);
-    }
+    console.warn("change-email: send new-email verify failed:", e?.message || e);
+  }
 
     return res.json({
       success: true,

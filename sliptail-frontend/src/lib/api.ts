@@ -1,10 +1,30 @@
+// src/lib/api.ts
 import axios from "axios";
 
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:5000";
 
+// ---------- Domain types (minimal, from your backend's toSafeUser) ----------
+export interface ApiUser {
+  id: number;
+  email: string;
+  username: string | null;
+  role: string; // keep open; tighten if you have a union
+  email_verified_at: string | null; // ISO string or null
+  created_at: string; // ISO string
+}
+
+export interface MeResponse {
+  user: ApiUser;
+}
+
 // ---------- SSR-friendly fetch helper ----------
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+// small helper to safely probe JSON
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 export async function fetchApi<T>(
   path: string,
@@ -49,14 +69,19 @@ export async function fetchApi<T>(
   });
 
   if (!res.ok) {
-    // Try to extract a meaningful error message
+    // Try to extract a meaningful error message without using `any`
     let msg = `${res.status} ${res.statusText}`;
     try {
       const ct = res.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
-        const j = await res.json();
-        if (j?.error && typeof j.error === "string") msg = j.error;
-        else if (typeof j === "string") msg = j;
+        const j: unknown = await res.json();
+        if (isRecord(j)) {
+          if (typeof j.error === "string") msg = j.error;
+          else if (typeof (j as unknown as string) === "string") {
+            // fallback if API returns a raw string JSON
+            msg = j as unknown as string;
+          }
+        }
       } else {
         const t = await res.text();
         if (t) msg = t;
@@ -117,4 +142,36 @@ export async function apiPatch<T>(url: string, data?: unknown, config?: Paramete
 export async function apiDelete<T>(url: string, config?: Parameters<typeof api.delete>[1]) {
   const res = await api.delete<T>(url, config);
   return res.data;
+}
+
+/* =========================
+   Email/token flow helpers
+   ========================= */
+
+/** Backend verifies both signup and "new email" with the same endpoint. */
+export async function verifyEmailToken(token: string): Promise<void> {
+  // Returns HTML/redirect; we just ensure it 2xx's.
+  await fetchApi<string>(`/api/auth/verify?token=${encodeURIComponent(token)}`, {
+    method: "GET",
+  });
+}
+
+/** Alias for clarity if you call from /verify-new-email page. */
+export const verifyNewEmailToken = verifyEmailToken;
+
+/** Reset password with token. */
+export interface ResetPasswordResponse {
+  success: boolean;
+  message?: string;
+}
+export async function resetPassword(token: string, password: string) {
+  return fetchApi<ResetPasswordResponse>("/api/auth/reset", {
+    method: "POST",
+    body: { token, password },
+  });
+}
+
+/** Current user (useful for guarding /purchases). */
+export async function me() {
+  return fetchApi<MeResponse>("/api/auth/me", { method: "GET" });
 }

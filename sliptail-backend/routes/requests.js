@@ -8,6 +8,7 @@ const { requireAuth, requireCreator } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
 const { requestCreate, requestDecision, requestDeliver } = require("../validators/schemas");
 const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
+const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/notify");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -181,6 +182,9 @@ router.post(
         "Check out the details on your creator dashboard and let your creativity shine",
         { request_id: request.id }
       ).catch(console.error);
+
+      // email notification to the creator (respects their email prefs)
+      notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
     } catch (err) {
       try {
         await db.query("ROLLBACK");
@@ -252,8 +256,11 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
         "Check out the details on your creator dashboard and let your creativity shine",
         { request_id: requestId }
       ).catch(console.error);
+      // email notification to the creator on brand-new request
+     notifyCreatorNewRequest({ requestId }).catch(console.error);
     }
-
+// email notification to the creator on brand-new request
++      notifyCreatorNewRequest({ requestId }).catch(console.error);
     return res.status(201).json({ ok: true, requestId });
   } catch (e) {
     console.error("legacy POST /requests error:", e);
@@ -432,7 +439,11 @@ router.post(
         "Check it out on your My Purchases page!",
         { request_id: requestId }
       ).catch(console.error);
-    } catch (err) {
+      
+      // email notification to buyer
+      notifyRequestDelivered({ requestId }).catch(console.error);
+    
+      } catch (err) {
       console.error("Deliver error:", err);
       res.status(500).json({ error: "Failed to deliver file" });
     }
@@ -549,7 +560,12 @@ router.post(
         "Check it out on your My Purchases page!",
         { request_id: requestId }
       ).catch(console.error);
-    } catch (err) {
+
+      // email notification (only if we jumped straight to 'complete' without a prior 'delivered')
+      if (r.status !== "delivered") {
+      notifyRequestDelivered({ requestId }).catch(console.error);
+      }
+      } catch (err) {
       try {
         await db.query("ROLLBACK");
       } catch {}
@@ -679,6 +695,8 @@ router.post(
           "Check out the details on your creator dashboard and let your creativity shine",
           { request_id: request.id }
         ).catch(console.error);
+        // email notification to the creator
+       notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
       }
 
       return res.status(201).json({ success: true, request: normalizeStatus(request) });
@@ -689,4 +707,4 @@ router.post(
   }
 );
 
-module.exports = router
+module.exports = router;

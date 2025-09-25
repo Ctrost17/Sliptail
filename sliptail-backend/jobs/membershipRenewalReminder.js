@@ -12,6 +12,9 @@
 
 const db = require("../db");
 const { notify } = require("../services/notifications");
+const { sendIfUserPref } = require("../utils/notify");
+const { buildActionUrl } = require("../emails/mailer");
+const T = require("../emails/templates");
 
 /* --------------------- small schema helpers --------------------- */
 async function hasTable(table) {
@@ -103,17 +106,31 @@ async function runMembershipRenewalReminder() {
     if (!userId) continue;
 
     try {
-      await notify(
-        userId,
-        "membership_renewal",
-        "Heads up: Membership renewal soon",
-        `Heads up: Your membership (${m.product_title}) will renew in 3 days! No action needed unless you'd like to make changes.`,
-        {
-          membership_id: String(m.membership_id),
-          product_id: String(m.product_id),
-          period_end: m.current_period_end, // store the exact timestamp (ISO from pg)
-        }
-      );
+        // Build the Purchases link and email content
+        const purchasesUrl = buildActionUrl("purchases");
+        const msg = T.userMembershipRenewsSoon({ purchasesUrl });
+
+        await Promise.allSettled([
+    // Email (respects users.notify_membership_expiring toggle)
+        sendIfUserPref(userId, "notify_membership_expiring", {
+           subject: msg.subject,
+            html: msg.html,
+           text: msg.text,
+          }),
+
+      notify(
+      userId,
+      "membership_renewal",
+      "Heads up: Membership renewal soon",
+      `Heads up: Your membership (${m.product_title}) will renew in 3 days! No action needed unless you'd like to make changes.`,
+      {
+        membership_id: String(m.membership_id),
+        product_id: String(m.product_id),
+        period_end: m.current_period_end,
+      }
+    ),
+   ]);
+   
       notified++;
     } catch (e) {
       console.warn(
