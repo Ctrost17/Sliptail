@@ -132,9 +132,9 @@ router.get("/creator-status", requireAuth, async (req, res) => {
       isActive, // if you prefer a computed status: (profileComplete && stripeConnected && hasPublishedProduct)
     });
   } catch (e) {
-    console.error("creator-status error:", e);
-    return res.status(500).json({ error: "Failed to compute creator status" });
-  }
+  console.error("creator/setup error:", e); // 👈 Will show the real error in console
+  return res.status(500).json({ error: "Failed to save profile", details: e.message });
+}
 });
 
 module.exports = router;

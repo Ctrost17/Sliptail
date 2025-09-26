@@ -119,7 +119,7 @@ export default function Home() {
   const StartSellingCTA = ({ children }: { children: React.ReactNode }) => {
     if (authLoading) {
       return (
-        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
+        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105">
           {children}
         </StartSellingButton>
       );
@@ -127,7 +127,7 @@ export default function Home() {
 
     if (!user) {
       return (
-        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105">
+        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105">
           {children}
         </StartSellingButton>
       );
@@ -139,7 +139,7 @@ export default function Home() {
     return (
       <Link
         href={href}
-        className="rounded-md bg-white px-8 py-3 font-semibold text-green-700 shadow transition hover:scale-105"
+        className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105"
       >
         {children}
       </Link>
@@ -173,7 +173,7 @@ export default function Home() {
   return (
     <div className="font-sans">
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-gradient-to-r from-green-400 to-green-600 text-white">
+      <section className="relative overflow-hidden bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500 text-white">
         <div className="mx-auto max-w-6xl px-6 py-24 text-center">
           <div className="mx-auto mb-6 w-40 animate-fade-in-up">
             <Image src="/sliptail-logo.png" alt="Sliptail" width={160} height={50} />
@@ -201,7 +201,10 @@ export default function Home() {
       {/* Featured Creators */}
       <section className="bg-gray-50 py-16">
         <div className="mx-auto max-w-6xl px-6">
-          <h2 className="mb-8 text-center text-3xl font-bold">Featured Creators</h2>
+          <h2 className="text-4xl font-bold text-sky-700 relative inline-block">
+            Featured Creators
+            <span className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500 rounded-full"></span>
+          </h2>
           {loading ? (
             <div className="grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
               {[...Array(3)].map((_, i) => (
@@ -251,7 +254,7 @@ export default function Home() {
               <a
                 key={cat.id}
                 href={`/creators?categoryId=${encodeURIComponent(cat.id)}`}
-                className="rounded-full border border-green-500 px-5 py-2 capitalize text-green-700 transition hover:bg-green-50"
+                className="rounded-full border border-sky-500 px-5 py-2 capitalize text-sky-700 transition hover:bg-sky-50"
                 title={
                   typeof cat.creators_count === "number"
                     ? `${cat.creators_count} creators`
@@ -269,7 +272,7 @@ export default function Home() {
       </section>
 
       {/* CTA */}
-      <section className="bg-gradient-to-r from-green-500 to-green-700 py-20 text-center text-white">
+      <section className="bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-600 py-20 text-center text-white">
         <h2 className="mb-4 text-4xl font-bold">Join Sliptail today</h2>
         <p className="mx-auto mb-8 max-w-xl text-lg">
           Whether you’re a creator or a fan, Sliptail makes connecting simple,

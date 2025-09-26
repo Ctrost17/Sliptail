@@ -154,7 +154,7 @@ export default function LoginPage() {
               <button onClick={resend} className="rounded-xl border px-3 py-1 text-sm">
                 Resend verification email
               </button>
-              {resent && <span className="text-sm text-green-700">Sent!</span>}
+              {resent && <span className="text-sm text-sky-700">Sent!</span>}
             </div>
             <div className="flex justify-end">
               <button onClick={() => setVerifyOpen(false)} className="rounded-xl border px-3 py-1 text-sm">

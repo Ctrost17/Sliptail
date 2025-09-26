@@ -1,3 +1,4 @@
+// server/routes/creators.js
 const express = require("express");
 const db = require("../db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -8,8 +9,6 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-// === REMOVED: unused import to satisfy eslint
-// const { log } = require("console");
 
 const router = express.Router();
 
@@ -76,7 +75,7 @@ async function getFeaturedColumnName() {
     // eslint-disable-next-line no-await-in-loop
     if (await hasColumn("creator_profiles", c)) return c;
   }
-  // default to 'featured' (keeps prior behavior if neither was found — rare)
+  // default to 'featured' if neither found (rare)
   return "featured";
 }
 
@@ -124,9 +123,8 @@ const uploadSingleImage = multer({
   },
 });
 
-/* =============================== NEW: reviews helpers =============================== */
+/* =============================== reviews helpers =============================== */
 
-// Keep helpers tiny & lint-safe
 function sanitizeRating(r) {
   const n = parseInt(String(r), 10);
   if (!Number.isFinite(n)) return null;
@@ -212,6 +210,80 @@ router.post("/become", requireAuth, async (req, res) => {
 });
 
 /**
+ * Idempotent setup: ensure a creator_profiles row exists and return it (with gallery & categories).
+ */
+router.post("/setup", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const { rows: existing } = await db.query(
+      `SELECT user_id, display_name, bio, profile_image,
+              COALESCE(is_profile_complete,FALSE) AS is_profile_complete,
+              COALESCE(is_active,FALSE)           AS is_active
+         FROM creator_profiles
+        WHERE user_id=$1
+        LIMIT 1`,
+      [userId]
+    );
+
+    if (existing[0]) {
+      const { rows: photos } = await db.query(
+        `SELECT url, position FROM creator_profile_photos WHERE user_id=$1 ORDER BY position ASC`,
+        [userId]
+      );
+      const gallery = photos.map((p) => p.url).slice(0, 4);
+
+      const { rows: catsRows } = await db.query(
+        `SELECT c.name
+           FROM creator_categories cc
+           JOIN categories c ON c.id = cc.category_id
+          WHERE cc.creator_id=$1
+          ORDER BY c.name ASC`,
+        [userId]
+      );
+
+      return res.status(200).json({
+        ok: true,
+        creator: {
+          user_id: userId,
+          display_name: existing[0].display_name || null,
+          bio: existing[0].bio || null,
+          profile_image: existing[0].profile_image || null,
+          is_profile_complete: !!existing[0].is_profile_complete,
+          is_active: !!existing[0].is_active,
+          gallery,
+          categories: catsRows.map((c) => c.name),
+        },
+      });
+    }
+
+    await db.query(
+      `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, is_profile_complete, is_active, created_at, updated_at)
+       VALUES ($1, NULL, NULL, NULL, FALSE, FALSE, NOW(), NOW())`,
+      [userId]
+    );
+
+    return res.status(201).json({
+      ok: true,
+      creator: {
+        user_id: userId,
+        display_name: null,
+        bio: null,
+        profile_image: null,
+        is_profile_complete: false,
+        is_active: false,
+        gallery: [],
+        categories: [],
+      },
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("creator/setup error:", e);
+    return res.status(500).json({ error: "Failed to save profile", details: e.message });
+  }
+});
+
+/**
  * Activate creator role only if truly ready.
  */
 router.post("/activate", requireAuth, async (req, res) => {
@@ -258,7 +330,11 @@ router.post("/activate", requireAuth, async (req, res) => {
 
     return res.json({ success: true, token, user: toSafeUser(user) });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch { /* noop */ }
+    try {
+      await db.query("ROLLBACK");
+    } catch {
+      /* noop */
+    }
     // eslint-disable-next-line no-console
     console.error("activate error:", e);
     return res.status(500).json({ error: "Failed to activate creator" });
@@ -317,7 +393,11 @@ router.post(
 
       res.json({ profile_image: profilePublic, gallery: galleryPublic });
     } catch (e) {
-      try { await db.query("ROLLBACK"); } catch { /* noop */ }
+      try {
+        await db.query("ROLLBACK");
+      } catch {
+        /* noop */
+      }
       // eslint-disable-next-line no-console
       console.error("creator media upload error:", e);
       res.status(500).json({ error: "Failed to upload creator media" });
@@ -395,7 +475,9 @@ router.post(
         await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
 
         if (gallery_urls.length) {
-          const values = gallery_urls.map((_, i) => `($1,$${i + 2},$${i + 2 + gallery_urls.length})`).join(",");
+          const values = gallery_urls
+            .map((_, i) => `($1,$${i + 2},$${i + 2 + gallery_urls.length})`)
+            .join(",");
           const params = [userId, ...gallery_urls, ...gallery_urls.map((_, i) => i + 1)];
           await db.query(
             `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ${values}`,
@@ -424,7 +506,11 @@ router.post(
         creator_status: status,
       });
     } catch (e) {
-      try { await db.query("ROLLBACK"); } catch { /* noop */ }
+      try {
+        await db.query("ROLLBACK");
+      } catch {
+        /* noop */
+      }
       // eslint-disable-next-line no-console
       console.error("creator profile save error:", e);
       return res.status(500).json({ error: "Failed to save profile" });
@@ -495,17 +581,18 @@ router.patch(
       if (!req.file) return res.status(400).json({ error: "profile_image file is required" });
       const url = toPublicUrl(req.file.path);
       if (!url) return res.status(500).json({ error: "Failed to store image" });
+
       // Try UPDATE first (schema-aware update of updated_at if column exists)
       const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at").catch(() => false);
-      const updateSets = ["profile_image=$2"]; // base set
+      const updateSets = ["profile_image=$2"];
       if (hasUpdatedAt) updateSets.push("updated_at=NOW()");
       const updateSql = `UPDATE creator_profiles SET ${updateSets.join(",")} WHERE user_id=$1`;
       const upd = await db.query(updateSql, [userId, url]);
 
       if (upd.rowCount === 0) {
         // Need to INSERT minimal row (schema-aware for optional columns)
-        const cols = ["user_id", "profile_image"]; // mandatory
-        const vals = ["$1", "$2"]; // placeholders
+        const cols = ["user_id", "profile_image"];
+        const vals = ["$1", "$2"];
         const params = [userId, url];
         const optionalCols = [
           { name: "featured", value: "FALSE" },
@@ -552,13 +639,16 @@ router.patch(
       if (!req.file) return res.status(400).json({ error: "photo file is required" });
       const url = toPublicUrl(req.file.path);
       if (!url) return res.status(500).json({ error: "Failed to store image" });
+
       // Ensure profile row exists (schema-aware minimal insert)
       const { rows: existing } = await db.query(
         `SELECT 1 FROM creator_profiles WHERE user_id=$1 LIMIT 1`,
         [userId]
       );
       if (!existing.length) {
-        const cols = ["user_id"]; const vals = ["$1"]; const params = [userId];
+        const cols = ["user_id"];
+        const vals = ["$1"];
+        const params = [userId];
         const optionalCols = [
           { name: "is_active", value: "FALSE" },
           { name: "featured", value: "FALSE" },
@@ -570,13 +660,19 @@ router.patch(
         for (const oc of optionalCols) {
           // eslint-disable-next-line no-await-in-loop
           const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
-          if (exists) { cols.push(oc.name); vals.push(oc.value); }
+          if (exists) {
+            cols.push(oc.name);
+            vals.push(oc.value);
+          }
         }
         const insertSql = `INSERT INTO creator_profiles (${cols.join(",")}) VALUES (${vals.join(",")})`;
         await db.query(insertSql, params);
       }
 
-      await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1 AND position=$2`, [userId, pos]);
+      await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1 AND position=$2`, [
+        userId,
+        pos,
+      ]);
       await db.query(
         `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ($1,$2,$3)`,
         [userId, url, pos]
@@ -599,16 +695,9 @@ router.patch(
 /**
  * PUBLIC: Featured creators (eligible only)
  * NOTE: Keep this BEFORE any dynamic "/:creatorId" routes so "/featured" doesn't match the param route.
- * - users.enabled = TRUE (if column exists)
- * - u.role = 'creator'
- * - cp.is_profile_complete = TRUE
- * - cp.is_active = TRUE
- * - cp.is_featured/featured = TRUE
- * - ≥1 active product
  */
 router.get("/featured", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "12", 10), 24);
-  
 
   try {
     const enabledClause = await usersEnabledClause();
@@ -644,10 +733,9 @@ router.get("/featured", async (req, res) => {
     );
 
     if (profiles.length === 0) return res.json({ creators: [] });
-    
 
     const creatorIds = profiles.map((p) => p.creator_id);
-    
+
     // categories (slug-safe)
     const slugExists = await hasColumn("categories", "slug");
     const catExpr = slugExists ? "c.slug" : "lower(regexp_replace(c.name,'\\s+','-','g'))";
@@ -666,7 +754,9 @@ router.get("/featured", async (req, res) => {
       `,
       [creatorIds]
     );
-    const catsByCreator = Object.fromEntries(categories.map((r) => [r.creator_id, r.categories || []]));
+    const catsByCreator = Object.fromEntries(
+      categories.map((r) => [r.creator_id, r.categories || []])
+    );
 
     // gallery (first 4)
     const { rows: photos } = await db.query(
@@ -678,7 +768,9 @@ router.get("/featured", async (req, res) => {
       `,
       [creatorIds]
     );
-    const photosByCreator = Object.fromEntries(photos.map((r) => [r.creator_id, (r.gallery || []).slice(0, 4)]));
+    const photosByCreator = Object.fromEntries(
+      photos.map((r) => [r.creator_id, (r.gallery || []).slice(0, 4)])
+    );
 
     const out = profiles.map((p) => ({
       creator_id: p.creator_id,
@@ -692,7 +784,6 @@ router.get("/featured", async (req, res) => {
       featured: !!p.is_featured,
       is_featured: !!p.is_featured,
     }));
-    
 
     res.json({ creators: out });
   } catch (e) {
@@ -702,7 +793,7 @@ router.get("/featured", async (req, res) => {
   }
 });
 
-/* =============================== NEW: reviews endpoints =============================== */
+/* =============================== reviews endpoints =============================== */
 /**
  * PUBLIC: List reviews for a creator (with product title & author)
  * Supports ?limit & ?offset. Placed BEFORE "/:creatorId" to avoid route clash.
@@ -802,13 +893,12 @@ router.post("/:creatorId/reviews", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Failed to submit review" });
   }
 });
-/* ============================= END NEW: reviews endpoints ============================= */
 
 /**
- * PUBLIC: Get a creator profile (gated/eligible)
+ * PUBLIC: Get a creator profile (eligible only)
  */
 router.get("/:creatorId", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);  
+  const creatorId = parseInt(req.params.creatorId, 10);
 
   try {
     const enabledClause = await usersEnabledClause();
@@ -887,7 +977,8 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const display_name = typeof req.body.display_name === "string" ? req.body.display_name.trim() : null;
+  const display_name =
+    typeof req.body.display_name === "string" ? req.body.display_name.trim() : null;
   const bio = typeof req.body.bio === "string" ? req.body.bio.trim() : null;
 
   const rawCats = Array.isArray(req.body.categories) ? req.body.categories : null;
@@ -977,12 +1068,22 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
     await db.query("COMMIT");
 
     return res.json({
-      ...(prof[0] || { creator_id: creatorId, display_name, bio, profile_image: null, is_featured: false }),
+      ...(prof[0] || {
+        creator_id: creatorId,
+        display_name,
+        bio,
+        profile_image: null,
+        is_featured: false,
+      }),
       featured: !!(prof[0]?.is_featured || false), // legacy field
       categories: cats.map((c) => c.name),
     });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch { /* noop */ }
+    try {
+      await db.query("ROLLBACK");
+    } catch {
+      /* noop */
+    }
     // eslint-disable-next-line no-console
     console.error("Could not update creator:", e);
     return res.status(500).json({ error: "Could not update creator" });
@@ -995,7 +1096,9 @@ router.put("/:creatorId", requireAuth, async (req, res) => {
 router.post("/me/categories", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const { category_ids } = req.body || {};
-  const ids = Array.isArray(category_ids) ? category_ids.map((n) => parseInt(n, 10)).filter(Boolean) : [];
+  const ids = Array.isArray(category_ids)
+    ? category_ids.map((n) => parseInt(n, 10)).filter((v) => !Number.isNaN(v))
+    : [];
 
   try {
     await db.query("BEGIN");
@@ -1003,7 +1106,10 @@ router.post("/me/categories", requireAuth, async (req, res) => {
 
     if (ids.length) {
       const values = ids.map((_, i) => `($1,$${i + 2})`).join(",");
-      await db.query(`INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`, [userId, ...ids]);
+      await db.query(
+        `INSERT INTO creator_categories (creator_id, category_id) VALUES ${values}`,
+        [userId, ...ids]
+      );
     }
     await db.query("COMMIT");
 
@@ -1039,9 +1145,17 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
       await db.query(
         `INSERT INTO admin_actions (admin_id, action, target_type, target_id, payload_json)
          VALUES ($1,$2,$3,$4,$5)`,
-        [req.user.id, flag ? "feature_creator" : "unfeature_creator", "user", creatorId, JSON.stringify({ featured: flag })]
+        [
+          req.user.id,
+          flag ? "feature_creator" : "unfeature_creator",
+          "user",
+          creatorId,
+          JSON.stringify({ featured: flag }),
+        ]
       );
-    } catch { /* non-blocking audit log */ }
+    } catch {
+      /* non-blocking audit log */
+    }
 
     res.json({ success: true, profile: { ...rows[0], featured: !!rows[0].is_featured } });
   } catch (e) {
@@ -1088,7 +1202,7 @@ router.get("/:creatorId/card", async (req, res) => {
           AND p.active  = TRUE
       ) prod ON TRUE
       WHERE cp.user_id = $1
-        AND ${await usersEnabledClause()}
+        AND ${enabledClause}
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
@@ -1170,12 +1284,7 @@ router.get("/", async (req, res) => {
 
   const params = [];
   const enabledClause = await usersEnabledClause();
-  const where = [
-    enabledClause,                // conditional users.enabled
-    "u.role = 'creator'",
-    "cp.is_profile_complete = TRUE",
-    "cp.is_active = TRUE",
-  ];
+  const where = [enabledClause, "u.role = 'creator'", "cp.is_profile_complete = TRUE", "cp.is_active = TRUE"];
 
   if (q) {
     params.push(`%${q}%`);
@@ -1196,38 +1305,36 @@ router.get("/", async (req, res) => {
     const { rows: profiles } = await db.query(
       `
     SELECT
-    cp.user_id AS creator_id,
-    cp.display_name,
-    cp.bio,
-    cp.profile_image,
-    ${featuredExpr} AS is_featured,
-    COALESCE(r.avg_rating, 0)::numeric(3,2) AS average_rating,
-    COALESCE(r.review_count, 0)::int        AS review_count,
-    COALESCE(prod.products_count, 0)::int   AS products_count
+      cp.user_id AS creator_id,
+      cp.display_name,
+      cp.bio,
+      cp.profile_image,
+      ${featuredExpr} AS is_featured,
+      COALESCE(r.avg_rating, 0)::numeric(3,2) AS average_rating,
+      COALESCE(r.review_count, 0)::int        AS review_count,
+      COALESCE(prod.products_count, 0)::int   AS products_count
      FROM creator_profiles cp
-      JOIN users u
-      ON u.id = cp.user_id
-      LEFT JOIN LATERAL (
-      SELECT
-      AVG(r.rating)::numeric(10,4) AS avg_rating,
-      COUNT(*)::int                AS review_count
-       FROM reviews r
-      WHERE r.creator_id = cp.user_id
-      AND (r.hidden IS NOT TRUE)
-       ) r ON TRUE
+     JOIN users u ON u.id = cp.user_id
      LEFT JOIN LATERAL (
-    SELECT COUNT(*)::int AS products_count
-    FROM products p
+       SELECT AVG(r.rating)::numeric(10,4) AS avg_rating,
+              COUNT(*)::int                AS review_count
+       FROM reviews r
+       WHERE r.creator_id = cp.user_id
+         AND (r.hidden IS NOT TRUE)
+     ) r ON TRUE
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*)::int AS products_count
+       FROM products p
        WHERE p.user_id = cp.user_id
-      AND p.active  = TRUE
-      ) prod ON TRUE
-    ${whereSql}
+         AND p.active  = TRUE
+     ) prod ON TRUE
+     ${whereSql}
      AND COALESCE(prod.products_count, 0) > 0
-      ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+     ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `,
       [...params, limit, offset]
-  );
+    );
 
     if (!profiles.length) {
       return res.json({ creators: [] });
@@ -1259,7 +1366,9 @@ router.get("/", async (req, res) => {
         `,
         [creatorIds]
       );
-      categoriesByCreator = Object.fromEntries(categories.map((c) => [c.creator_id, c.categories || []]));
+      categoriesByCreator = Object.fromEntries(
+        categories.map((c) => [c.creator_id, c.categories || []])
+      );
     }
 
     // Photos per creator
@@ -1286,8 +1395,8 @@ router.get("/", async (req, res) => {
       average_rating: p.average_rating,
       products_count: p.products_count,
       categories: categoriesByCreator[p.creator_id] || [],
-      featured: !!p.is_featured,         // legacy naming
-      is_featured: !!p.is_featured,      // new naming
+      featured: !!p.is_featured, // legacy naming
+      is_featured: !!p.is_featured, // new naming
     }));
 
     res.json({ creators: out });
@@ -1297,7 +1406,5 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch creators" });
   }
 });
-
-// (duplicate /featured handler removed; see earlier definition before :creatorId)
 
 module.exports = router;
