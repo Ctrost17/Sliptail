@@ -199,33 +199,49 @@ async function ensureCreationReadinessSafe(dbConn, userId, recomputeFn) {
 
 /* -------------------- creator activation helpers (auto) -------------------- */
 
-// Ensure a creator_profiles row exists (schema-aware)
-async function ensureCreatorProfileRow(userId) {
-  const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
-  const cols = ["user_id", "is_active"];
-  const vals = ["$1", "FALSE"];
-  const params = [String(userId)];
-  if (hasUpdatedAt) {
-    cols.push("updated_at");
-    vals.push("NOW()");
-  }
-  await db.query(
-    `INSERT INTO creator_profiles (${cols.join(", ")})
-     VALUES (${vals.join(", ")})
-     ON CONFLICT (user_id) DO NOTHING`,
-    params
-  );
-}
+      // Ensure a creator_profiles row exists (schema-aware)
+      async function ensureCreatorProfileRow(userId) {
+        const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
+        const cols = ["user_id", "is_active"];
+        const vals = ["$1", "FALSE"];
+        if (hasUpdatedAt) {
+          cols.push("updated_at");
+          vals.push("NOW()");
+        }
+        await db.query(
+        `INSERT INTO creator_profiles (${cols.join(", ")})
+          SELECT ${vals.join(", ")}
+          WHERE NOT EXISTS (
+            SELECT 1 FROM creator_profiles WHERE user_id::text = $1
+          )`,
+          [String(userId)]
+        );
+      }
 
 // Set creator_profiles.is_active based on “has ≥1 published product” (schema-aware)
 async function setActiveFromPublished(userId) {
-  const { rows } = await db.query(
-    `SELECT EXISTS(
-       SELECT 1 FROM products WHERE user_id::text=$1 AND active=TRUE
-     ) AS any_pub`,
-    [String(userId)]
-  );
-  const anyPub = !!rows?.[0]?.any_pub;
+  const hasActive = await hasColumn("products", "active");
+  let anyPub = false;
+
+  if (hasActive) {
+   const { rows } = await db.query(
+      `SELECT EXISTS(
+         SELECT 1 FROM products
+          WHERE user_id::text=$1 AND active=TRUE
+       ) AS any_pub`,
+      [String(userId)]
+    );
+    anyPub = !!rows?.[0]?.any_pub;
+  } else {
+    // No "active" column -> treat “has any product” as published
+    const { rows } = await db.query(
+      `SELECT EXISTS(
+         SELECT 1 FROM products WHERE user_id::text=$1
+       ) AS any_pub`,
+      [String(userId)]
+    );
+    anyPub = !!rows?.[0]?.any_pub;
+  }
 
   await ensureCreatorProfileRow(userId);
   const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
@@ -233,7 +249,7 @@ async function setActiveFromPublished(userId) {
   if (hasUpdatedAt) sets.push("updated_at = NOW()");
 
   await db.query(
-    `UPDATE creator_profiles
+   `UPDATE creator_profiles
         SET ${sets.join(", ")}
       WHERE user_id::text=$1`,
     [String(userId), anyPub]

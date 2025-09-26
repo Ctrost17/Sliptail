@@ -1,4 +1,4 @@
-// server/routes/creators.js
+// routes/creators.js
 const express = require("express");
 const db = require("../db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -81,6 +81,56 @@ async function getFeaturedColumnName() {
 
 // Reusable SQL expression for reading "is featured?"
 const featuredExpr = "COALESCE(cp.is_featured, cp.featured, FALSE)";
+
+// Ensure a blank creator_profiles row exists for this user (idempotent + schema-aware)
+async function ensureCreatorProfileShell(userId) {
+  async function colInfo(name) {
+    const { rows } = await db.query(
+      `SELECT is_nullable
+         FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='creator_profiles' AND column_name=$1
+        LIMIT 1`,
+      [name]
+    );
+    return rows.length ? { exists: true, nullable: rows[0].is_nullable === "YES" } : { exists: false, nullable: true };
+  }
+
+  const info = {};
+  for (const c of [
+    "display_name",
+    "bio",
+    "profile_image",
+    "is_profile_complete",
+    "is_active",
+    "created_at",
+    "updated_at",
+    "is_featured",
+    "featured",
+  ]) {
+    // eslint-disable-next-line no-await-in-loop
+    info[c] = await colInfo(c);
+  }
+
+  const cols = ["user_id"];
+  const vals = ["$1"];
+
+  if (info.display_name.exists)       { cols.push("display_name");        vals.push(info.display_name.nullable ? "NULL" : "''"); }
+  if (info.bio.exists)                { cols.push("bio");                 vals.push(info.bio.nullable ? "NULL" : "''"); }
+  if (info.profile_image.exists)      { cols.push("profile_image");       vals.push("NULL"); }
+  if (info.is_profile_complete.exists){ cols.push("is_profile_complete"); vals.push("FALSE"); }
+  if (info.is_active.exists)          { cols.push("is_active");           vals.push("FALSE"); }
+  if (info.created_at.exists)         { cols.push("created_at");          vals.push("NOW()"); }
+  if (info.updated_at.exists)         { cols.push("updated_at");          vals.push("NOW()"); }
+  if (info.is_featured.exists)        { cols.push("is_featured");         vals.push("FALSE"); }
+  else if (info.featured.exists)      { cols.push("featured");            vals.push("FALSE"); }
+
+  const sql = `
+    INSERT INTO creator_profiles (${cols.join(",")})
+    SELECT ${vals.join(",")}
+    WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
+  `;
+  await db.query(sql, [userId]);
+}
 
 /* --------------------------- media upload setup --------------------------- */
 
@@ -167,15 +217,13 @@ async function hasEligibility(buyerId, creatorId, productId) {
 
 /* --------------------------------- routes -------------------------------- */
 
-/**
- * LEGACY: immediately set role=creator.
- */
 router.post("/become", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
   try {
     await db.query("BEGIN");
 
+    // Set role (idempotent)
     await db.query(
       `UPDATE users SET role='creator'
          WHERE id=$1 AND (role IS NULL OR role <> 'creator')`,
@@ -188,8 +236,12 @@ router.post("/become", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // ✅ Seed a shell creator profile row (idempotent + schema-safe)
+    await ensureCreatorProfileShell(userId);
+
     const user = rows[0];
     const token = issueJwtFromUserRow(user);
+
     await db.query("COMMIT");
 
     res.cookie("token", token, {
@@ -200,9 +252,15 @@ router.post("/become", requireAuth, async (req, res) => {
       path: "/",
     });
 
-    return res.json({ success: true, creator_id: userId, token, user: toSafeUser(user) });
+    return res.json({
+      success: true,
+      creator_id: userId,
+      token,
+      user: toSafeUser(user),
+      seeded_profile: true,
+    });
   } catch (e) {
-    await db.query("ROLLBACK").catch(() => {});
+    try { await db.query("ROLLBACK"); } catch {}
     // eslint-disable-next-line no-console
     console.error("become creator error:", e);
     return res.status(500).json({ error: "Failed to become a creator" });
@@ -216,6 +274,7 @@ router.post("/setup", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
   try {
+    // If already exists, just return the current state
     const { rows: existing } = await db.query(
       `SELECT user_id, display_name, bio, profile_image,
               COALESCE(is_profile_complete,FALSE) AS is_profile_complete,
@@ -257,29 +316,59 @@ router.post("/setup", requireAuth, async (req, res) => {
       });
     }
 
-    await db.query(
-      `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, is_profile_complete, is_active, created_at, updated_at)
-       VALUES ($1, NULL, NULL, NULL, FALSE, FALSE, NOW(), NOW())`,
-      [userId]
-    );
+          // ------- Schema-aware INSERT: only include columns that exist (NO ON CONFLICT) -------
+          const cols = ["user_id"];
+          const vals = ["$1"];
+          const params = [userId];
 
-    return res.status(201).json({
-      ok: true,
-      creator: {
-        user_id: userId,
-        display_name: null,
-        bio: null,
-        profile_image: null,
-        is_profile_complete: false,
-        is_active: false,
-        gallery: [],
-        categories: [],
-      },
-    });
+          const optionalCols = [
+            { name: "display_name",        value: "NULL"  },
+            { name: "bio",                 value: "NULL"  },
+            { name: "profile_image",       value: "NULL"  },
+            { name: "is_profile_complete", value: "FALSE" },
+            { name: "is_active",           value: "FALSE" },
+            { name: "created_at",          value: "NOW()" },
+            { name: "updated_at",          value: "NOW()" },
+            { name: "is_featured",         value: "FALSE" },
+            { name: "featured",            value: "FALSE" },
+          ];
+
+          for (const oc of optionalCols) {
+            // eslint-disable-next-line no-await-in-loop
+            const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
+            if (exists) {
+              cols.push(oc.name);
+              vals.push(oc.value);
+            }
+          }
+
+          // ⚠️ NO ON CONFLICT — we do a WHERE NOT EXISTS pattern instead
+          const insertSql = `
+            INSERT INTO creator_profiles (${cols.join(",")})
+            SELECT ${vals.join(",")}
+            WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
+          `;
+          await db.query(insertSql, params);
+
+    // Return the freshly created “blank” profile state
+    const safeProfile = {
+      user_id: userId,
+      display_name: null,
+      bio: null,
+      profile_image: null,
+      is_profile_complete: false,
+      is_active: false,
+      gallery: [],
+      categories: [],
+    };
+
+    return res.status(201).json({ ok: true, creator: safeProfile });
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("creator/setup error:", e);
-    return res.status(500).json({ error: "Failed to save profile", details: e.message });
+    return res
+      .status(500)
+      .json({ error: "Failed to save profile", details: e.message });
   }
 });
 
@@ -354,54 +443,77 @@ router.post(
   async (req, res) => {
     const userId = req.user.id;
 
-    try {
-      const prof = req.files?.profile_image?.[0] || null;
-      const gal = Array.isArray(req.files?.gallery) ? req.files.gallery : [];
+          try {
+        const prof = req.files?.profile_image?.[0] || null;
+        const gal = Array.isArray(req.files?.gallery) ? req.files.gallery : [];
 
-      if (!prof) return res.status(400).json({ error: "profile_image is required" });
-      if (gal.length !== 4) return res.status(400).json({ error: "Exactly 4 gallery photos are required" });
+        if (!prof) return res.status(400).json({ error: "profile_image is required" });
+        if (gal.length !== 4) return res.status(400).json({ error: "Exactly 4 gallery photos are required" });
 
-      const profilePublic = toPublicUrl(prof.path);
-      const galleryPublic = gal.map((f) => toPublicUrl(f.path)).filter(Boolean);
+        const profilePublic = toPublicUrl(prof.path);
+        const galleryPublic = gal.map((f) => toPublicUrl(f.path)).filter(Boolean);
 
-      if (!profilePublic || galleryPublic.length !== 4) {
-        return res.status(500).json({ error: "Failed to generate public URLs" });
+        if (!profilePublic || galleryPublic.length !== 4) {
+          return res.status(500).json({ error: "Failed to generate public URLs" });
+        }
+
+        await db.query("BEGIN");
+
+        // 1) UPDATE first (schema-aware updated_at if present)
+        const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at").catch(() => false);
+        const updateSets = ["profile_image=$2"];
+        if (hasUpdatedAt) updateSets.push("updated_at=NOW()");
+        const upd = await db.query(
+          `UPDATE creator_profiles SET ${updateSets.join(",")} WHERE user_id=$1`,
+          [userId, profilePublic]
+        );
+
+        // 2) If no row updated → INSERT a minimal row (schema-aware, no ON CONFLICT)
+        if (upd.rowCount === 0) {
+          const cols = ["user_id", "profile_image"];
+          const vals = ["$1", "$2"];
+          const params = [userId, profilePublic];
+
+          const optCols = [
+            { name: "is_active",           value: "FALSE" },
+            { name: "is_profile_complete", value: "FALSE" },
+            { name: "is_featured",         value: "FALSE" },
+            { name: "featured",            value: "FALSE" },
+            { name: "created_at",          value: "NOW()" },
+            { name: "updated_at",          value: "NOW()" },
+          ];
+          for (const oc of optCols) {
+            // eslint-disable-next-line no-await-in-loop
+            const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
+            if (exists) { cols.push(oc.name); vals.push(oc.value); }
+          }
+
+          const insertSql = `
+            INSERT INTO creator_profiles (${cols.join(",")})
+            SELECT ${vals.join(",")}
+            WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
+          `;
+          await db.query(insertSql, params);
+        }
+
+        // 3) Replace gallery
+        await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
+
+        const values = galleryPublic.map((_, i) => `($1,$${i + 2},$${i + 2 + galleryPublic.length})`).join(",");
+        const params = [userId, ...galleryPublic, ...galleryPublic.map((_, i) => i + 1)];
+        await db.query(
+          `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ${values}`,
+          params
+        );
+
+        await db.query("COMMIT");
+
+        res.json({ profile_image: profilePublic, gallery: galleryPublic });
+      } catch (e) {
+        try { await db.query("ROLLBACK"); } catch {}
+        console.error("creator media upload error:", e);
+        res.status(500).json({ error: "Failed to upload creator media" });
       }
-
-      await db.query("BEGIN");
-
-      // INSERT/UPSERT profile row; set whichever featured column exists to FALSE on first insert
-      const featCol = await getFeaturedColumnName();
-      await db.query(
-        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, created_at, updated_at)
-         VALUES ($1, NULL, NULL, $2, FALSE, NOW(), NOW())
-         ON CONFLICT (user_id) DO UPDATE
-           SET profile_image = EXCLUDED.profile_image,
-               updated_at = NOW()`,
-        [userId, profilePublic]
-      );
-
-      await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
-      const values = galleryPublic.map((_, i) => `($1,$${i + 2},$${i + 6})`).join(",");
-      const params = [userId, ...galleryPublic, ...[1, 2, 3, 4]];
-      await db.query(
-        `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ${values}`,
-        params
-      );
-
-      await db.query("COMMIT");
-
-      res.json({ profile_image: profilePublic, gallery: galleryPublic });
-    } catch (e) {
-      try {
-        await db.query("ROLLBACK");
-      } catch {
-        /* noop */
-      }
-      // eslint-disable-next-line no-console
-      console.error("creator media upload error:", e);
-      res.status(500).json({ error: "Failed to upload creator media" });
-    }
   }
 );
 
@@ -455,55 +567,97 @@ router.post(
         gallery_urls = gallery ? gallery.slice(0, 4).filter(Boolean) : null;
       }
 
-      await db.query("BEGIN");
+              await db.query("BEGIN");
 
-      const featCol = await getFeaturedColumnName();
-      const { rows: profRows } = await db.query(
-        `INSERT INTO creator_profiles (user_id, display_name, bio, profile_image, ${featCol}, is_profile_complete, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,false, TRUE, NOW(), NOW())
-         ON CONFLICT (user_id) DO UPDATE
-           SET display_name        = COALESCE(EXCLUDED.display_name, creator_profiles.display_name),
-               bio                 = COALESCE(EXCLUDED.bio,          creator_profiles.bio),
-               profile_image       = COALESCE(EXCLUDED.profile_image,creator_profiles.profile_image),
-               is_profile_complete = TRUE,
-               updated_at          = NOW()
-         RETURNING user_id, display_name, bio, profile_image, ${featuredExpr} AS is_featured, is_profile_complete`,
-        [userId, display_name || null, bio || null, profile_image_url || null]
-      );
+          // Figure out which featured column (if any) exists
+          const featColName = await getFeaturedColumnName();
+          const featExists = await hasColumn("creator_profiles", featColName).catch(() => false);
+          const hasIsProfileComplete = await hasColumn("creator_profiles", "is_profile_complete").catch(() => false);
+          const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at").catch(() => false);
+          const hasCreatedAt = await hasColumn("creator_profiles", "created_at").catch(() => false);
 
-      if (gallery_urls) {
-        await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
+          // 1) Try UPDATE first (set provided fields; set is_profile_complete=TRUE if column exists)
+          const setParts = [
+            "display_name = $2",
+            "bio = $3",
+            "profile_image = $4",
+          ];
+          const updateParams = [userId, display_name || null, bio || null, profile_image_url || null];
 
-        if (gallery_urls.length) {
-          const values = gallery_urls
-            .map((_, i) => `($1,$${i + 2},$${i + 2 + gallery_urls.length})`)
-            .join(",");
-          const params = [userId, ...gallery_urls, ...gallery_urls.map((_, i) => i + 1)];
-          await db.query(
-            `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ${values}`,
-            params
+          if (hasIsProfileComplete) setParts.push("is_profile_complete = TRUE");
+          if (hasUpdatedAt) setParts.push("updated_at = NOW()");
+
+          const updRes = await db.query(
+            `UPDATE creator_profiles SET ${setParts.join(", ")} WHERE user_id = $1`,
+            updateParams
           );
-        }
-      }
 
-      const { rows: galleryRows } = await db.query(
-        `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
-           FROM creator_profile_photos WHERE user_id=$1`,
-        [userId]
-      );
+          // 2) If no row was updated → INSERT (schema-aware, no ON CONFLICT)
+          if (updRes.rowCount === 0) {
+            const cols = ["user_id", "display_name", "bio", "profile_image"];
+            const vals = ["$1", "$2", "$3", "$4"];
+            const params = [userId, display_name || null, bio || null, profile_image_url || null];
 
-      await db.query("COMMIT");
+            if (featExists) { cols.push(featColName); vals.push("FALSE"); }
+            if (hasIsProfileComplete) { cols.push("is_profile_complete"); vals.push("TRUE"); }
+            if (hasCreatedAt) { cols.push("created_at"); vals.push("NOW()"); }
+            if (hasUpdatedAt) { cols.push("updated_at"); vals.push("NOW()"); }
 
-      const status = await recomputeCreatorActive(db, userId);
+            const insertSql = `
+              INSERT INTO creator_profiles (${cols.join(",")})
+              SELECT ${vals.join(",")}
+              WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
+            `;
+            await db.query(insertSql, params);
+          }
 
-      return res.json({
-        profile: {
-          ...profRows[0],
-          // keep legacy "featured" field in payload for callers that expect it
-          featured: !!profRows[0]?.is_featured,
-          gallery: galleryRows?.[0]?.gallery || [],
-        },
-        creator_status: status,
+          // 3) Gallery write (if provided)
+          if (gallery_urls) {
+            await db.query(`DELETE FROM creator_profile_photos WHERE user_id=$1`, [userId]);
+            if (gallery_urls.length) {
+              const values = gallery_urls.map((_, i) => `($1,$${i + 2},$${i + 2 + gallery_urls.length})`).join(",");
+              const params = [userId, ...gallery_urls, ...gallery_urls.map((_, i) => i + 1)];
+              await db.query(
+                `INSERT INTO creator_profile_photos (user_id, url, position) VALUES ${values}`,
+                params
+              );
+            }
+          }
+
+          // 4) Read back gallery + return
+          const { rows: galleryRows } = await db.query(
+            `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
+              FROM creator_profile_photos WHERE user_id=$1`,
+            [userId]
+          );
+
+          await db.query("COMMIT");
+
+          // Build a schema-agnostic response (don’t rely on RETURNING w/ featuredExpr)
+          const status = await recomputeCreatorActive(db, userId);
+
+          // Read back minimal profile
+          const { rows: profRows } = await db.query(
+            `SELECT user_id, display_name, bio, profile_image,
+                    COALESCE(is_profile_complete, FALSE) AS is_profile_complete,
+                    COALESCE(is_featured, featured, FALSE) AS is_featured
+              FROM creator_profiles
+              WHERE user_id=$1 LIMIT 1`,
+            [userId]
+          );
+
+          return res.json({
+            profile: {
+              user_id: profRows[0]?.user_id ?? userId,
+              display_name: profRows[0]?.display_name ?? display_name ?? null,
+              bio: profRows[0]?.bio ?? bio ?? null,
+              profile_image: profRows[0]?.profile_image ?? profile_image_url ?? null,
+              is_profile_complete: !!(profRows[0]?.is_profile_complete ?? true),
+              is_featured: !!(profRows[0]?.is_featured ?? false),
+              featured: !!(profRows[0]?.is_featured ?? false),
+              gallery: galleryRows?.[0]?.gallery || [],
+            },
+            creator_status: status,
       });
     } catch (e) {
       try {

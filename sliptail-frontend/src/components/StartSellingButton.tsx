@@ -60,6 +60,33 @@ function toApiBase(): string {
 
 /* ------------------------------ API Helpers ----------------------------- */
 
+/** Seed role=creator and insert a shell row in creator_profiles (backend does both). */
+async function postBecome(apiBase: string): Promise<void> {
+  const urls = [`${apiBase}/api/creators/become`, `${apiBase}/api/creator/become`];
+
+  let lastErr = "Become failed";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+
+      // Some backends set cookies and return minimal bodies; treat any 2xx as success.
+      if (res.ok) return;
+
+      // Capture server error text if present
+      const text = await res.text().catch(() => "");
+      lastErr = text || `Become failed (${res.status})`;
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : "Network error during become";
+    }
+  }
+  throw new Error(lastErr);
+}
+
+/** Initialize/ensure a creator profile exists (idempotent). */
 async function postSetup(apiBase: string): Promise<Creator | null> {
   // Try singular first, then plural for compatibility with both routers
   const endpoints = [`${apiBase}/api/creator/setup`, `${apiBase}/api/creators/setup`];
@@ -85,11 +112,10 @@ async function postSetup(apiBase: string): Promise<Creator | null> {
 
       if (res.ok) {
         const found = extractCreator(parsed);
-        if (found) return found;
-        return null;
+        return found ?? null;
       }
 
-      // Some legacy handlers returned 409 with a valid creator body—treat that as success.
+      // Some legacy handlers returned non-2xx with a valid creator body—treat that as success.
       const maybeCreator = extractCreator(parsed);
       if (maybeCreator) return maybeCreator;
 
@@ -126,9 +152,7 @@ async function fetchCreatorStatus(apiBase: string): Promise<CreatorStatus | null
     };
 
     // require 'isActive' at minimum to consider it valid
-    return typeof status.isActive === "boolean"
-      ? (status as CreatorStatus)
-      : null;
+    return typeof status.isActive === "boolean" ? (status as CreatorStatus) : null;
   } catch {
     return null;
   }
@@ -159,14 +183,21 @@ export default function StartSellingButton({
 
     setBusy(true);
     try {
-      // Ensure a creator profile exists (idempotent)
+      // 1) Ensure role + shell row via /become (idempotent)
+      try {
+        await postBecome(apiBase);
+      } catch {
+        // If /become endpoint is not present yet or fails non-critically, continue
+      }
+
+      // 2) Belt & suspenders: ensure setup row exists (idempotent)
       try {
         await postSetup(apiBase);
       } catch {
         // If setup endpoint doesn’t exist yet, continue gracefully to setup UI
       }
 
-      // Check status to decide destination
+      // 3) Check status to decide destination
       const status = await fetchCreatorStatus(apiBase);
       if (status?.isActive) {
         router.push("/dashboard");
@@ -184,6 +215,7 @@ export default function StartSellingButton({
     <button
       type="button"
       onClick={handleClick}
+      disabled={busy}
       className={`${className ?? ""} cursor-pointer disabled:cursor-not-allowed`}
       aria-disabled={busy}
     >
