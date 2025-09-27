@@ -1,69 +1,80 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export default function Footer() {
   return (
-    <footer className="mt-auto bg-gray-100 py-8">
-      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 sm:flex-row">
-        <div className="flex gap-4">
-          <Link href="/support" className="text-sm text-gray-600 hover:text-gray-800">
+    <footer className="mt-auto border-t border-black/10 bg-neutral-800 text-neutral-100">
+      {/* Optional accent bar (uncomment to enable) */}
+      {/* <div className="h-1 bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500" /> */}
+
+      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 sm:flex-row">
+        {/* Links */}
+        <div className="flex gap-8">
+          <Link
+            href="/support"
+            className="text-xl font-medium text-white transition-colors"
+          >
             Support
           </Link>
-          <Link href="/about" className="text-sm text-gray-600 hover:text-gray-800">
+          <Link
+            href="/about"
+            className="text-xl font-medium text-white transition-colors"
+          >
             About
           </Link>
         </div>
-        <div className="flex gap-4">
+
+        {/* Social icons */}
+        <div className="flex items-center gap-6">
           <a
             href="https://www.instagram.com/sliptail_/"
             target="_blank"
             rel="noopener noreferrer"
             aria-label="Instagram"
-            className="text-gray-600 hover:text-gray-800"
+            className="transition transform hover:scale-110"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="h-6 w-6"
-            >
-              <path d="M12.001 2.163c3.204 0 3.584.012 4.85.07 1.366.062 2.633.334 3.608 1.31.975.975 1.248 2.241 1.31 3.608.058 1.266.069 1.651.069 4.851 0 3.2-.012 3.584-.069 4.85-.062 1.367-.334 2.633-1.31 3.608-.975.975-2.241 1.248-3.608 1.31-1.266.058-1.651.069-4.85.069-3.204 0-3.584-.012-4.851-.069-1.366-.062-2.633-.334-3.608-1.31-.975-.975-1.248-2.241-1.31-3.608C2.175 15.784 2.163 15.399 2.163 12c0-3.2.012-3.584.069-4.851.062-1.366.334-2.633 1.31-3.608.975-.975 2.241-1.248 3.608-1.31 1.266-.058 1.651-.069 4.851-.069zm0 1.837c-3.157 0-3.523.012-4.762.069-.997.046-1.538.213-1.897.356-.477.185-.82.406-1.18.766-.36.36-.581.703-.766 1.18-.142.359-.309.9-.356 1.897-.057 1.239-.069 1.605-.069 4.762 0 3.157.012 3.523.069 4.762.046.997.213 1.538.356 1.897.185.477.406.82.766 1.18.36.36.703.581 1.18.766.359.142.9.309 1.897.356 1.239.057 1.605.069 4.762.069 3.157 0 3.523-.012 4.762-.069.997-.046 1.538-.213 1.897-.356.477-.185.82-.406 1.18-.766.36-.36.581-.703.766-1.18.142-.359.309-.9.356-1.897.057-1.239.069-1.605.069-4.762 0-3.157-.012-3.523-.069-4.762-.046-.997-.213-1.538-.356-1.897-.185-.477-.406-.82-.766-1.18-.36-.36-.703-.581-1.18-.766-.359-.142-.9-.309-1.897-.356-1.239-.057-1.605-.069-4.762-.069zm0 3.905a5.944 5.944 0 110 11.887 5.944 5.944 0 010-11.887zm0 9.809a3.865 3.865 0 100-7.73 3.865 3.865 0 000 7.73zm5.844-10.98a1.386 1.386 0 11-2.772 0 1.386 1.386 0 012.772 0z" />
-            </svg>
+            <Image
+              src="/icons/instaicon.png"
+              alt="Instagram"
+              width={36}
+              height={36}
+              className="h-9 w-9 rounded-md"
+            />
           </a>
+
           <a
             href="https://x.com/Sliptail_"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="Twitter"
-            className="text-gray-600 hover:text-gray-800"
+            aria-label="X (Twitter)"
+            className="transition transform hover:scale-110"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="h-6 w-6"
-            >
-              <path d="M23.954 4.569c-.885.392-1.83.656-2.825.775 1.014-.609 1.794-1.574 2.163-2.724-.951.564-2.005.974-3.127 1.195-.897-.959-2.178-1.559-3.594-1.559-2.717 0-4.92 2.203-4.92 4.917 0 .39.045.765.127 1.124-4.09-.205-7.72-2.165-10.148-5.144-.424.729-.666 1.562-.666 2.475 0 1.71.87 3.213 2.188 4.096-.807-.026-1.566-.248-2.229-.616v.06c0 2.385 1.693 4.374 3.946 4.827-.413.111-.849.171-1.296.171-.314 0-.615-.03-.916-.086.631 1.953 2.445 3.377 4.6 3.418-1.68 1.316-3.809 2.101-6.115 2.101-.398 0-.79-.023-1.17-.067 2.179 1.396 4.768 2.209 7.557 2.209 9.054 0 14-7.496 14-13.986 0-.21 0-.42-.015-.63.961-.69 1.8-1.56 2.46-2.548l-.047-.02z" />
-            </svg>
+            <Image
+              src="/icons/xicon.png"
+              alt="X (Twitter)"
+              width={36}
+              height={36}
+              className="h-9 w-9 rounded-md"
+            />
           </a>
+
           <a
             href="https://www.tiktok.com/@sliptail_"
             target="_blank"
             rel="noopener noreferrer"
             aria-label="TikTok"
-            className="text-gray-600 hover:text-gray-800"
+            className="transition transform hover:scale-110"
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="h-6 w-6"
-            >
-              <path d="M12.5 0c.3 2 2 3.6 4 3.8v1.9c-1-.1-2-.4-3-.9v7.4c0 4.3-3.5 7.8-7.8 7.8-1.6 0-3.2-.5-4.4-1.4 1.4 1.4 3.3 2.3 5.4 2.3 4.3 0 7.8-3.4 7.8-7.7V5.3c1.3.7 2.7 1.1 4.3 1.1V4.6c-.7 0-2.1-.3-3.1-.9-.8-.2-1.6-.6-2.3-1.1a8 8 0 012.3 6.2v7.1c0 6.4-5.1 11.5-11.5 11.5C2.9 27.4-2 22.2-2 15.9c0-3.1 1.1-5.99 3.1-8.16C3.1 5.1 4.9 4.28 6.9 4.19v8.04c-1.2-.73-2-2.06-2-3.56V2.1c0-1.1.5-2.1 1.3-2.76A8 8 0 004.68.024v1.9c-.22-.055-.43-.096-.65-.122v1.88c2.1.14 3.8 1.81 4.1 3.94z" />
-            </svg>
+            <Image
+              src="/icons/tiktokicon.png"
+              alt="TikTok"
+              width={36}
+              height={36}
+              className="h-9 w-9 rounded-md"
+            />
           </a>
         </div>
       </div>
     </footer>
   );
 }
-

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import CreatorCard from "@/components/CreatorCard";
@@ -16,6 +15,7 @@ type FeaturedApiCreator = {
   profile_image: string | null;
   average_rating: string | number | null;
   gallery?: string[] | null;
+  categories: { id: number; name: string; slug: string }[];
 };
 type FeaturedApiResponse =
   | { creators: FeaturedApiCreator[] }
@@ -31,39 +31,30 @@ interface CategoryRow {
 
 /* --------------------------- API helpers --------------------------- */
 
-/**
- * Build a browser-safe base. In the client, envs are injected at build time.
- * Supports either NEXT_PUBLIC_API_BASE or NEXT_PUBLIC_API_BASE_URL.
- * Falls back to relative '/api' so Next rewrites proxy to your Express API.
- */
 const API_BASE: string = (() => {
   const a = (process.env.NEXT_PUBLIC_API_BASE || "").replace(/\/$/, "");
   const b = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
-  return a || b || ""; // when empty, we’ll prefix paths with '/api/...'
+  return a || b || "";
 })();
 
 const api = (path: string) =>
   `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
 
-/** Normalize featured creators payload */
 function normalizeFeatured(payload: FeaturedApiResponse): FeaturedApiCreator[] {
   return Array.isArray(payload) ? payload : payload.creators ?? [];
 }
 
 async function fetchFeatured(): Promise<FeaturedApiCreator[]> {
-  // Public endpoint; no auth needed. Keep credentials optional-safe.
   const res = await fetch(api("/api/creators/featured"), {
     credentials: "include",
-    // Cache a bit so home loads snappy; adjust if you want fully fresh
     next: { revalidate: 60 },
   }).catch(() => null);
-  
+
   if (!res || !res.ok) return [];
-  const payload: FeaturedApiResponse = await res.json();  
+  const payload: FeaturedApiResponse = await res.json();
   return normalizeFeatured(payload);
 }
 
-/** Normalize category array safely */
 function normalizeCategoryArray(payload: unknown): CategoryRow[] {
   if (Array.isArray(payload)) {
     return payload.filter(
@@ -80,11 +71,7 @@ function normalizeCategoryArray(payload: unknown): CategoryRow[] {
 }
 
 async function fetchCategories(): Promise<CategoryRow[]> {
-  // Try the richer endpoint first (with counts), then fallback.
-  const urls = [
-    api("/api/categories?count=true"),
-    api("/api/categories"),
-  ];
+  const urls = [api("/api/categories?count=true"), api("/api/categories")];
 
   for (const url of urls) {
     try {
@@ -99,11 +86,201 @@ async function fetchCategories(): Promise<CategoryRow[]> {
       );
       if (rows.length) return rows;
     } catch {
-      // try next URL
+      // fall through
     }
   }
 
   return [];
+}
+
+/* ---------------------- Product Types Section ---------------------- */
+
+function ProductTypesSection() {
+  const items = [
+    {
+      key: "memberships",
+      title: "Memberships",
+      blurb:
+        "Creators build recurring clubs with perks. Fans get ongoing access and community.",
+      creatorPoints: [
+        "Simple post and manage",
+        "Predictable monthly income",
+      ],
+      fanPoints: [
+        "Early access & behind-the-scenes",
+        "Cancel-anytime billing via Stripe",
+      ],
+      icon: (
+        <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#34d399" />
+              <stop offset="50%" stopColor="#22d3ee" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+          </defs>
+          <rect x="6" y="10" width="36" height="28" rx="6" fill="url(#g1)" />
+          <circle cx="24" cy="24" r="6" fill="white" />
+        </svg>
+      ),
+    },
+    {
+      key: "downloads",
+      title: "Digital Downloads",
+      blurb:
+        "Creators upload once and sell forever. Fans get instant delivery.",
+      creatorPoints: [
+        "PDFs, videos, presets —no limits",
+        "Automatic fulfillment after purchase",
+      ],
+      fanPoints: [
+        "Instant access after checkout",
+        "Re-download anytime from your My Purchases page",
+      ],
+      icon: (
+        <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
+          <defs>
+            <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#34d399" />
+              <stop offset="50%" stopColor="#22d3ee" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M14 10h20a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4z"
+            fill="url(#g2)"
+          />
+          <path
+            d="M24 14v12m0 0l-5-5m5 5l5-5M16 34h16"
+            stroke="white"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+          />
+        </svg>
+      ),
+    },
+    {
+      key: "custom",
+      title: "Custom Requests",
+      blurb:
+        "Creators take bespoke commissions. Fans ask for exactly what they want.",
+      creatorPoints: [
+        "Built-in brief & Details",
+        "Different reqeust options",
+      ],
+      fanPoints: [
+        "Attach references & specifics",
+        "Clear timelines and status",
+      ],
+      icon: (
+        <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
+          <defs>
+            <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#34d399" />
+              <stop offset="50%" stopColor="#22d3ee" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+          </defs>
+          <path d="M8 12h24l8 8v16a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V16a4 4 0 0 1 4-4z" fill="url(#g3)" />
+          <path d="M32 12v8h8" fill="none" stroke="white" strokeWidth="2.5" />
+          <path d="M14 30h20M14 24h10" stroke="white" strokeWidth="2.5" strokeLinecap="round" />
+        </svg>
+      ),
+    },
+    {
+      key: "oneoff",
+      title: "One-Time Purchases",
+      blurb:
+        "Creators run quick drops without subscriptions. Fans buy exactly what they want.",
+      creatorPoints: ["Lifetime access", "Digital Downloads"],
+      fanPoints: ["No commitment required", "Keep forever in your My Purcahses Page"],
+      icon: (
+        <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
+          <defs>
+            <linearGradient id="g6" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#34d399" />
+              <stop offset="50%" stopColor="#22d3ee" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+          </defs>
+          <circle cx="16" cy="24" r="10" fill="url(#g6)" />
+          <circle cx="32" cy="24" r="10" fill="url(#g6)" opacity="0.7" />
+        </svg>
+      ),
+    },
+  ];
+
+  const Check = () => (
+    <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+      <path
+        d="M16.7 5.7a1 1 0 0 1 0 1.4l-7.2 7.2a1 1 0 0 1-1.4 0L3.3 9.6a1 1 0 1 1 1.4-1.4l3.6 3.6 6.5-6.5a1 1 0 0 1 1.4 0z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+
+  return (
+    <section className="mx-auto max-w-6xl px-6 py-16">
+      <h2 className="relative mb-4 text-center text-3xl sm:text-4xl font-bold text-black">
+        What You Can Buy & Sell on Sliptail
+        <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
+      </h2>
+      <p className="mx-auto mb-10 max-w-3xl text-center text-sm sm:text-base text-neutral-700">
+        Whether you’re a <strong>creator</strong> launching your next revenue stream or a{" "}
+        <strong>fan</strong> discovering new favorites—you’ll find flexible ways to support and get value.
+      </p>
+
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-2">
+        {items.map((it) => (
+          <div
+            key={it.key}
+            className="group relative rounded-2xl border border-black/10 bg-white p-6 shadow-sm transition hover:shadow-md"
+          >
+            <div className="mb-4 inline-flex items-center gap-3">
+              <div className="grid h-12 w-12 place-items-center rounded-xl ring-1 ring-black/10 shadow bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400">
+                {it.icon}
+              </div>
+              <h3 className="text-lg font-semibold text-black">{it.title}</h3>
+            </div>
+
+            <p className="mb-4 text-sm text-neutral-700">{it.blurb}</p>
+
+            <div className="grid grid-cols-1 gap-3 text-sm">
+              <div>
+                <div className="mb-1 font-semibold">For creators</div>
+                <ul className="space-y-1 text-neutral-700">
+                  {it.creatorPoints.map((p, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className="mt-[2px] text-emerald-500">
+                        <Check />
+                      </span>
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <div className="mb-1 mt-2 font-semibold">For fans</div>
+                <ul className="space-y-1 text-neutral-700">
+                  {it.fanPoints.map((p, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className="mt-[2px] text-sky-500">
+                        <Check />
+                      </span>
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Removed: micro-CTAs (buttons) beneath the grid as requested */}
+    </section>
+  );
 }
 
 /* --------------------------------- Page --------------------------------- */
@@ -115,11 +292,10 @@ export default function Home() {
 
   const { user, loading: authLoading } = useAuth();
 
-  // Helper: render the Start Selling CTA with routing override for signed-in users
   const StartSellingCTA = ({ children }: { children: React.ReactNode }) => {
     if (authLoading) {
       return (
-        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105">
+        <StartSellingButton className="rounded-md bg-black px-8 py-3 font-semibold text-white shadow transition hover:scale-105">
           {children}
         </StartSellingButton>
       );
@@ -127,7 +303,7 @@ export default function Home() {
 
     if (!user) {
       return (
-        <StartSellingButton className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105">
+        <StartSellingButton className="rounded-md bg-black px-8 py-3 font-semibold text-white shadow transition hover:scale-105">
           {children}
         </StartSellingButton>
       );
@@ -139,12 +315,12 @@ export default function Home() {
     return (
       <Link
         href={href}
-        className="rounded-md bg-white px-8 py-3 font-semibold text-sky-500 shadow transition hover:scale-105"
+        className="rounded-md bg-black px-8 py-3 font-semibold text-white shadow transition hover:scale-105"
       >
         {children}
       </Link>
     );
-  };  
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -168,16 +344,14 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, []);  
+  }, []);
 
   return (
     <div className="font-sans">
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500 text-white">
+      <section className="relative overflow-hidden bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black">
         <div className="mx-auto max-w-6xl px-6 py-24 text-center">
-          <div className="mx-auto mb-6 w-40 animate-fade-in-up">
-            <Image src="/sliptail-logo.png" alt="Sliptail" width={160} height={50} />
-          </div>
+          <div className="mx-auto mb-6 w-40 animate-fade-in-up"></div>
           <h1 className="mb-4 text-5xl font-bold animate-fade-in-up [animation-delay:200ms]">
             Support and Create
           </h1>
@@ -185,12 +359,11 @@ export default function Home() {
             Sliptail helps creators provide memberships, digital downloads, and custom requests — all in one place.
           </p>
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
-            {/* Only the routing behavior of this button changes based on auth/role */}
             <StartSellingCTA>For Creators: Start Selling</StartSellingCTA>
 
             <Link
               href="/creators"
-              className="rounded-md border border-white px-8 py-3 font-semibold text-white transition hover:scale-105 hover:bg-white/20"
+              className="rounded-md border border-black px-8 py-3 font-semibold text-black transition hover:scale-105 hover:bg-white/20"
             >
               For Fans: Explore Creators
             </Link>
@@ -201,18 +374,18 @@ export default function Home() {
       {/* Featured Creators */}
       <section className="bg-gray-50 py-16">
         <div className="mx-auto max-w-6xl px-6">
-          <h2 className="text-4xl font-bold text-sky-700 relative inline-block">
+          <h2 className="relative mb-10 text-center text-4xl font-bold text-black">
             Featured Creators
-            <span className="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500 rounded-full"></span>
+            <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
           </h2>
           {loading ? (
-            <div className="grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
+            <div className="mt-6 grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
               {[...Array(3)].map((_, i) => (
                 <div key={i} className="h-64 w-full max-w-sm animate-pulse rounded-2xl bg-white p-4 shadow" />
               ))}
             </div>
           ) : (
-            <div className="grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
+            <div className="mt-6 grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
               {featured.map((c) => (
                 <CreatorCard
                   key={c.creator_id}
@@ -226,6 +399,7 @@ export default function Home() {
                         ? parseFloat(c.average_rating) || 0
                         : Number(c.average_rating || 0),
                     photos: (c.gallery ?? []).slice(0, 4),
+                    categories: c.categories ?? [],
                   }}
                 />
               ))}
@@ -241,7 +415,10 @@ export default function Home() {
 
       {/* Categories */}
       <section className="mx-auto max-w-6xl px-6 py-16">
-        <h2 className="mb-4 text-2xl font-bold">Explore by category</h2>
+        <h2 className="relative mb-10 text-center text-3xl sm:text-4xl font-bold text-black">
+          Explore by Category
+          <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
+        </h2>
         {loading ? (
           <div className="flex flex-wrap gap-3">
             {[...Array(6)].map((_, i) => (
@@ -271,14 +448,16 @@ export default function Home() {
         )}
       </section>
 
+      {/* Product types / both audiences */}
+      <ProductTypesSection />
+
       {/* CTA */}
-      <section className="bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-600 py-20 text-center text-white">
-        <h2 className="mb-4 text-4xl font-bold">Join Sliptail today</h2>
+      <section className="bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 py-20 text-center text-black">
+        <h2 className="mb-4 text-4xl font-bold">Join Sliptail Today</h2>
         <p className="mx-auto mb-8 max-w-xl text-lg">
           Whether you’re a creator or a fan, Sliptail makes connecting simple,
           safe, and fun.
         </p>
-        {/* Bottom button shares the same smart routing */}
         <StartSellingCTA>Get Started</StartSellingCTA>
       </section>
     </div>

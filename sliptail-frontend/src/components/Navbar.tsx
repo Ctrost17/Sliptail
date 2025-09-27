@@ -55,17 +55,17 @@ export default function Navbar() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // 🚀 NEW: fetch unread on mount (so dot is visible without opening menu)
+  // fetch unread on mount
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  // 🚀 NEW: also re-fetch when user session becomes available (e.g., right after sign-in)
+  // re-fetch when user session becomes available
   useEffect(() => {
     if (user) void refresh();
   }, [user, refresh]);
 
-  // 🚀 NEW: tiny polling fallback (covers cases where SSE is blocked)
+  // tiny polling fallback
   useEffect(() => {
     const id = setInterval(() => void refresh(), 30000);
     return () => clearInterval(id);
@@ -81,7 +81,7 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [menuOpen]);
 
-  // If /api/auth/me 401s, clear any local token to avoid “phantom login”
+  // If /api/auth/me 401s, clear any local token
   useEffect(() => {
     if (!meErr) return;
     try {
@@ -109,29 +109,22 @@ export default function Navbar() {
     try {
       await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
     } catch {
-      /* ignore transport errors; we’ll still clear client state */
+      /* ignore transport errors */
     }
 
-    // Clear client auth surfaces
     try {
       saveAuth({ token: null, user: null });
       setAuthToken(null);
       if (typeof window !== "undefined") {
         localStorage.removeItem("creatorSetupDone");
-        // Broadcast to other tabs
         localStorage.setItem("auth:logout", String(Date.now()));
       }
     } catch {
       /* noop */
     }
 
-    // Nuke SWR caches so no page shows stale auth
     await mutate(() => true, undefined, { revalidate: false });
-
-    // Make sure menus close quickly
     setMenuOpen(false);
-
-    // Hard navigate home to fully reset (also triggers server components to refetch)
     router.replace("/");
     router.refresh();
     if (typeof window !== "undefined") {
@@ -174,14 +167,16 @@ export default function Navbar() {
         ) : (
           <div className="relative" ref={menuRef}>
             <button
+              type="button"
               aria-label="Open menu"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               onClick={() => setMenuOpen((v) => !v)}
-              className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border hover:bg-neutral-50"
+              className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border hover:bg-neutral-50 cursor-pointer"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              {/* Red dot for unread notifications (now visible immediately after sign-in) */}
               {showUnreadDot && (
                 <span
                   aria-hidden="true"
@@ -191,7 +186,10 @@ export default function Navbar() {
             </button>
 
             {menuOpen && (
-              <div className="absolute right-0 mt-2 w-60 rounded-2xl border bg-white p-1 shadow-lg">
+              <div
+                role="menu"
+                className="absolute right-0 mt-2 w-60 rounded-2xl border bg-white p-1 shadow-lg"
+              >
                 {isCreator ? (
                   <>
                     <MenuItem onClick={() => go("/dashboard")}>Creator Dashboard</MenuItem>
@@ -260,7 +258,11 @@ function MenuItem({
   trailing?: React.ReactNode;
 }) {
   return (
-    <button onClick={onClick} className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-neutral-100">
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className="w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-neutral-100 cursor-pointer"
+    >
       <span className="flex w-full items-center justify-between">
         <span>{children}</span>
         {trailing}

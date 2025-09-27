@@ -421,7 +421,7 @@ export default function MembershipFeedPage() {
       {isCreator && addingProduct && (
         <div className="fixed inset-0 z-40 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeAdd} />
-          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in">
+          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85vh] overflow-y-auto">
             <h2 className="text-sm font-semibold mb-3">New post for {addingProduct.title || `Product #${addingProduct.id}`}</h2>
             <div className="space-y-4">
               <div>
@@ -472,7 +472,7 @@ export default function MembershipFeedPage() {
       {isCreator && editingPost && (
         <div className="fixed inset-0 z-40 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeEdit} />
-          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in">
+          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85vh] overflow-y-auto">
             <h2 className="text-sm font-semibold mb-3">Edit Post</h2>
             <div className="space-y-4">
               <div>

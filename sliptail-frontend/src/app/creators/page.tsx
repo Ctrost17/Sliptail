@@ -300,7 +300,7 @@ export default function CreatorsExplorePage() {
                     }}
                   >
                     {/* inset white panel; cross-fade in on hover */}
-                    <div className="panel-back absolute inset-[1px] rounded-2xl bg-white p-3 transition-opacity duration-200 opacity-0 group-hover:opacity-100">
+                    <div className="panel-back absolute inset-[1px] rounded-2xl p-3 ">
                       <div className="grid h-full grid-rows-[1fr_auto] gap-3">
                         <div className="grid grid-cols-2 grid-rows-2 gap-2">
                           {[0, 1, 2, 3].map((idx) => {
