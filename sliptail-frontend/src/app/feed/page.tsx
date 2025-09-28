@@ -449,8 +449,8 @@ export default function MembershipFeedPage() {
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} alt="preview" className="w-full rounded-xl border object-cover" />
                     )}
-                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
-                      <button onClick={resetDraftMedia} className="px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition">
+                      <button onClick={resetDraftMedia} className="cursor-pointer px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
                       <label className="px-2 py-1 text-[10px] rounded-md bg-white/80 backdrop-blur text-neutral-700 border cursor-pointer hover:bg-white">
                         <input type="file" accept="image/*,video/*" className="hidden" onChange={onFileInputChange} />
                         Replace
@@ -500,8 +500,8 @@ export default function MembershipFeedPage() {
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview}  alt="preview" className="w-full rounded-xl border object-cover" />
                     )}
-                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition">
-                      <button onClick={resetDraftMedia} className="px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition">
+                      <button onClick={resetDraftMedia} className="cursor-pointer px-2 py-1 text-[10px] rounded-md bg-black/60 text-white hover:bg-black/80">Remove</button>
                       <label className="px-2 py-1 text-[10px] rounded-md bg-white/80 backdrop-blur text-neutral-700 border cursor-pointer hover:bg-white">
                         <input type="file" accept="image/*,video/*" className="hidden" onChange={onFileInputChange} />
                         Replace
