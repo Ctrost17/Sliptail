@@ -48,7 +48,7 @@ const PasswordField = forwardRef<HTMLInputElement, Props>(
           <button
             type="button"
             onClick={() => setVisible((v) => !v)}
-            className="absolute inset-y-0 right-0 px-3 flex items-center text-neutral-500 hover:text-neutral-800"
+            className="cursor-pointer absolute inset-y-0 right-0 px-3 flex items-center text-neutral-500 hover:text-neutral-800"
             aria-label={visible ? "Hide password" : "Show password"}
             title={visible ? "Hide password" : "Show password"}
           >

@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface Creator {
   id: number | string;
@@ -45,12 +45,60 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
     .slice(0, 4)
     .map((src) => resolveImageUrl(src || null, apiBase) || "/placeholder-image.png");
 
+  // --- Mobile tap-to-flip support ---
+  const [isCoarse, setIsCoarse] = useState(false);  // true on touch / coarse pointers
+  const [isFlipped, setIsFlipped] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    const apply = () => setIsCoarse(!!mq.matches);
+    apply();
+    try {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } catch {
+      // Safari <14 fallback
+      mq.addListener?.(apply);
+      return () => mq.removeListener?.(apply);
+    }
+  }, []);
+
+  function toggleFlip() {
+    if (isCoarse) setIsFlipped((f) => !f);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    // Allow keyboard toggle for accessibility
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setIsFlipped((f) => !f);
+    }
+  }
+
   return (
-    <div className="group relative h-80 w-64 [perspective:1000px]">
-      <div className="relative h-full w-full rounded-2xl  shadow-2xl shadow-black/25 transition-transform duration-500 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)]">
+    <div
+      className={`group relative h-80 w-64 [perspective:1000px] ${isCoarse ? "cursor-pointer" : ""}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={isFlipped}
+      onClick={toggleFlip}
+      onKeyDown={onKeyDown}
+    >
+      <div
+        className={
+          "relative h-full w-full rounded-2xl shadow-2xl shadow-black/25 transition-transform duration-500 " +
+          "[transform-style:preserve-3d] " +
+          // Flip on hover (desktop) and when state says so (mobile/keyboard)
+          (isFlipped ? "[transform:rotateY(180deg)] " : "") +
+          "group-hover:[transform:rotateY(180deg)]"
+        }
+      >
         {/* front */}
-        <div className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
-          bg-white/10 border-2 border-black backdrop-blur-xl text-black">
+        <div
+          className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
+            bg-white/10 border-2 border-black backdrop-blur-xl text-black"
+        >
           <Image
             src={avatarSrc}
             alt={creator.displayName}
@@ -58,7 +106,9 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
             height={80}
             className="mb-2 rounded-full object-cover"
           />
-          <h3 className="font-semibold text-black tracking-tight truncate max-w-full">{creator.displayName}</h3>
+          <h3 className="font-semibold text-black tracking-tight truncate max-w-full">
+            {creator.displayName}
+          </h3>
 
           {categoryNames.length > 0 && (
             <div className="mt-1 mb-0 h-6 overflow-hidden flex flex-nowrap items-center justify-center gap-1">
@@ -91,8 +141,10 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
         </div>
 
         {/* back */}
-        <div className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
-          bg-white/10 border-2 border-black backdrop-blur-xl">
+        <div
+          className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
+            bg-white/10 border-2 border-black backdrop-blur-xl"
+        >
           {/* photos area fills */}
           <div className="grid grid-cols-2 gap-2 h-full min-h-0">
             {photoSrcs.map((src, i) => (
@@ -101,10 +153,11 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
               </div>
             ))}
           </div>
-          {/* button row is fixed, never overflows */}
+          {/* button row; stop flip toggle when link is tapped/clicked */}
           <Link
             href={`/creators/${creator.id}`}
             className="rounded-xl border-2 border-black bg-black/10 py-2 text-center text-black hover:bg-white/15 transition"
+            onClick={(e) => e.stopPropagation()}
           >
             View Profile
           </Link>

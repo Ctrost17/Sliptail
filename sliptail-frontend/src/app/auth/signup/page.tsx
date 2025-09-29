@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import PasswordField from "@/components/forms/PasswordField";
+import NextImage from "next/image";
 
 export default function SignupPage() {
   const { signup, loading } = useAuth();
@@ -110,7 +111,7 @@ export default function SignupPage() {
 
         <button
           disabled={loading}
-          className="w-full px-4 py-2 rounded bg-black text-white disabled:opacity-50"
+          className="cursor-pointer w-full px-4 py-2 rounded bg-black text-white disabled:opacity-50"
         >
           {loading ? "…" : "Create account"}
         </button>
@@ -124,17 +125,26 @@ export default function SignupPage() {
 
       <button
         onClick={googleAuth}
-        className="w-full rounded border py-2 text-sm"
+        className="cursor-pointer w-full rounded-xl border py-2 text-sm flex items-center justify-center gap-3"
         aria-label="Continue with Google"
         type="button"
       >
-        Continue with Google
-      </button>
+        <NextImage
+        src="/icons/googleicon.png"
+        alt=""
+        width={18}
+        height={18}
+        className="inline-block"
+        priority
+        />
+        <span>
+        Continue with Google</span>
+         </button>
 
       <p className="mt-3 text-sm">
         Already have an account?{" "}
         <Link
-          className="underline"
+          className="cursor-pointer underline"
           href={`/auth/login${next ? `?next=${encodeURIComponent(next)}` : ""}`}
         >
           Log in

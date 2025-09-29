@@ -10,12 +10,17 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Force light look for native UI (inputs/scrollbars) */
+  color-scheme: light; /* <-- added */
 }
 
+/* Lock light mode even if the OS is in dark mode */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #ffffff;  /* <-- keep light */
+    --foreground: #171717;  /* <-- keep light */
+    color-scheme: light;    /* <-- keep light UI widgets */
   }
 }
 

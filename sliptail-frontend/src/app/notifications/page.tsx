@@ -181,10 +181,11 @@ const markAll = useCallback(async () => {
   };
 
   return (
+     <div className="relative overflow-hidden bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 min-h-screen">
     <main className="mx-auto max-w-4xl space-y-4 p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Notifications</h1>
-        <div className="flex items-center gap-2">
+        <div className="cursor-pointer flex items-center gap-2">
           <label className="flex items-center gap-1 text-sm">
             <input
               type="checkbox"
@@ -195,13 +196,13 @@ const markAll = useCallback(async () => {
           </label>
           <button
             onClick={markAll}
-            className="rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
+            className="cursor-pointer rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
           >
             Mark all read
           </button>
           <button
             onClick={load}
-            className="rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
+            className="cursor-pointer rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
           >
             Refresh
           </button>
@@ -211,11 +212,11 @@ const markAll = useCallback(async () => {
       {loading && <div className="text-sm text-neutral-600">Loading…</div>}
       {error && <div className="text-sm text-red-600">{error}</div>}
 
-      {!loading && items.length === 0 && (
-        <div className="rounded-2xl border p-6 text-sm text-neutral-600">
-          No notifications yet.
-        </div>
-      )}
+          {!loading && items.length === 0 && (
+          <div className="rounded-2xl border bg-white p-6 text-sm text-neutral-600">
+            No notifications yet.
+          </div>
+        )}
 
       <ul className="space-y-2">
         {items.map((n) => {
@@ -224,7 +225,7 @@ const markAll = useCallback(async () => {
           return (
             <li
               key={n.id}
-              className={`rounded-2xl border p-3 ${unread ? "bg-red-50/40" : "bg-white"}`}
+              className={`rounded-2xl border p-3 ${unread ? "bg-red-100" : "bg-white"}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -252,7 +253,7 @@ const markAll = useCallback(async () => {
                   {!n.read_at && (
                     <button
                       onClick={() => markRead(n.id)}
-                      className="text-xs underline"
+                      className="cursor-pointer text-xs underline"
                     >
                       Mark read
                     </button>
@@ -264,5 +265,6 @@ const markAll = useCallback(async () => {
         })}
       </ul>
     </main>
+    </div>
   );
 }

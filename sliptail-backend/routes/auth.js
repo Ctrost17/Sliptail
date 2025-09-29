@@ -489,7 +489,7 @@ router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
     return res.json({
       success: true,
       requires_email_verify: true,
-      message: "Email updated. Please verify your new email to continue.",
+      message: "Verification email has been sent. Please verify your new email to update.",
     });
   } catch (e) {
     // eslint-disable-next-line no-console

@@ -104,6 +104,11 @@ export default function SettingsPage() {
   const [pwMsg, setPwMsg] = useState<string | null>(null);
   const [pwErr, setPwErr] = useState<string | null>(null);
 
+  // password visibility toggles
+  const [showEmailPw, setShowEmailPw] = useState(false);
+  const [showCurrentPw, setShowCurrentPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+
   async function submitEmail(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setEmailBusy(true);
@@ -195,103 +200,179 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-12">
-      <h1 className="mb-8 text-3xl font-bold">Settings</h1>
+    <div className="relative overflow-hidden bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 min-h-screen">
+      <div className="mx-auto max-w-3xl px-6 py-12">
+        <h1 className="mb-8 text-3xl font-bold">Settings</h1>
 
-      {/* Change Email */}
-      <section className="mb-10 rounded-2xl bg-white p-6 shadow">
-        <h2 className="mb-4 text-xl font-semibold">Change Email</h2>
-        <form onSubmit={submitEmail} className="space-y-4">
-          <div>
-            <label htmlFor="newEmail" className="mb-1 block text-sm font-medium">
-              New Email
-            </label>
-            <input
-              id="newEmail"
-              type="email"
-              value={newEmail}
-              onChange={(ev) => setNewEmail(ev.target.value)}
-              className="w-full rounded border px-3 py-2"
-              placeholder="you@domain.com"
-              required
-            />
-          </div>
-          <div>
-            <label htmlFor="emailPassword" className="mb-1 block text-sm font-medium">
-              Current Password
-            </label>
-            <input
-              id="emailPassword"
-              type="password"
-              value={emailPassword}
-              onChange={(ev) => setEmailPassword(ev.target.value)}
-              className="w-full rounded border px-3 py-2"
-              placeholder="••••••••"
-              required
-            />
-          </div>
-          {emailErr && <p className="text-sm text-red-600">{emailErr}</p>}
-          {emailMsg && <p className="text-sm text-green-700">{emailMsg}</p>}
-          <button
-            type="submit"
-            disabled={emailBusy}
-            className="rounded bg-green-600 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
-          >
-            {emailBusy ? "Saving..." : "Save Email"}
-          </button>
-          <p className="mt-2 text-xs text-neutral-600">
-            Your email will not update until you verify the new address.
-          </p>
-        </form>
-      </section>
+        {/* Change Email */}
+        <section className="mb-10 rounded-2xl bg-white p-6 shadow">
+          <h2 className="mb-4 text-xl font-semibold">Change Email</h2>
+          <form onSubmit={submitEmail} className="space-y-4">
+            <div>
+              <label htmlFor="newEmail" className="mb-1 block text-sm font-medium">
+                New Email
+              </label>
+              <input
+                id="newEmail"
+                type="email"
+                value={newEmail}
+                onChange={(ev) => setNewEmail(ev.target.value)}
+                className="w-full rounded border px-3 py-2"
+                placeholder="you@domain.com"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="emailPassword" className="mb-1 block text-sm font-medium">
+                Current Password
+              </label>
+              <div className="relative">
+                <input
+                  id="emailPassword"
+                  type={showEmailPw ? "text" : "password"}
+                  value={emailPassword}
+                  onChange={(ev) => setEmailPassword(ev.target.value)}
+                  className="w-full rounded border px-3 py-2 pr-10"
+                  placeholder="••••••••"
+                  required
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowEmailPw((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-neutral-600 hover:text-neutral-900 cursor-pointer"
+                  aria-label={showEmailPw ? "Hide password" : "Show password"}
+                  title={showEmailPw ? "Hide password" : "Show password"}
+                >
+                  {showEmailPw ? (
+                    // eye-off
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 3l18 18" />
+                      <path d="M10.58 10.58A3 3 0 0 0 12 15a3 3 0 0 0 2.42-4.42" />
+                      <path d="M6.16 6.16A18.9 18.9 0 0 0 1 12s4 8 11 8c1.78 0 3.46-.42 5-.97" />
+                      <path d="M21.05 17.94A18.9 18.9 0 0 0 23 12s-4-8-11-8c-.73 0-1.44.08-2.12.24" />
+                    </svg>
+                  ) : (
+                    // eye
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+            {emailErr && <p className="text-sm text-red-600">{emailErr}</p>}
+            {emailMsg && <p className="text-sm text-green-700">{emailMsg}</p>}
+            <button
+              type="submit"
+              disabled={emailBusy}
+              className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+            >
+              {emailBusy ? "Saving..." : "Save Email"}
+            </button>
+            <p className="mt-2 text-xs text-neutral-600">
+              Your email will not update until you verify the new email address.
+            </p>
+          </form>
+        </section>
 
-      {/* Change Password */}
-      <section className="rounded-2xl bg-white p-6 shadow">
-        <h2 className="mb-4 text-xl font-semibold">Change Password</h2>
-        <form onSubmit={submitPassword} className="space-y-4">
-          <div>
-            <label htmlFor="currentPassword" className="mb-1 block text-sm font-medium">
-              Current Password
-            </label>
-            <input
-              id="currentPassword"
-              type="password"
-              value={currentPassword}
-              onChange={(ev) => setCurrentPassword(ev.target.value)}
-              className="w-full rounded border px-3 py-2"
-              placeholder="••••••••"
-              required
-            />
-          </div>
-          <div>
-            <label htmlFor="newPassword" className="mb-1 block text-sm font-medium">
-              New Password (min 8 chars)
-            </label>
-            <input
-              id="newPassword"
-              type="password"
-              value={newPassword}
-              onChange={(ev) => setNewPassword(ev.target.value)}
-              className="w-full rounded border px-3 py-2"
-              placeholder="••••••••"
-              required
-              minLength={8}
-            />
-          </div>
-          {pwErr && <p className="text-sm text-red-600">{pwErr}</p>}
-          {pwMsg && <p className="text-sm text-green-700">{pwMsg}</p>}
-          <button
-            type="submit"
-            disabled={pwBusy}
-            className="rounded bg-green-600 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
-          >
-            {pwBusy ? "Saving..." : "Save Password"}
-          </button>
-          <p className="mt-2 text-xs text-neutral-600">
-            After changing your password, you may need to sign in again.
-          </p>
-        </form>
-      </section>
+        {/* Change Password */}
+        <section className="rounded-2xl bg-white p-6 shadow">
+          <h2 className="mb-4 text-xl font-semibold">Change Password</h2>
+          <form onSubmit={submitPassword} className="space-y-4">
+            <div>
+              <label htmlFor="currentPassword" className="mb-1 block text-sm font-medium">
+                Current Password
+              </label>
+              <div className="relative">
+                <input
+                  id="currentPassword"
+                  type={showCurrentPw ? "text" : "password"}
+                  value={currentPassword}
+                  onChange={(ev) => setCurrentPassword(ev.target.value)}
+                  className="w-full rounded border px-3 py-2 pr-10"
+                  placeholder="••••••••"
+                  required
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCurrentPw((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-neutral-600 hover:text-neutral-900 cursor-pointer"
+                  aria-label={showCurrentPw ? "Hide password" : "Show password"}
+                  title={showCurrentPw ? "Hide password" : "Show password"}
+                >
+                  {showCurrentPw ? (
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 3l18 18" />
+                      <path d="M10.58 10.58A3 3 0 0 0 12 15a3 3 0 0 0 2.42-4.42" />
+                      <path d="M6.16 6.16A18.9 18.9 0 0 0 1 12s4 8 11 8c1.78 0 3.46-.42 5-.97" />
+                      <path d="M21.05 17.94A18.9 18.9 0 0 0 23 12s-4-8-11-8c-.73 0-1.44.08-2.12.24" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+            <div>
+              <label htmlFor="newPassword" className="mb-1 block text-sm font-medium">
+                New Password (min 8 chars)
+              </label>
+              <div className="relative">
+                <input
+                  id="newPassword"
+                  type={showNewPw ? "text" : "password"}
+                  value={newPassword}
+                  onChange={(ev) => setNewPassword(ev.target.value)}
+                  className="w-full rounded border px-3 py-2 pr-10"
+                  placeholder="••••••••"
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPw((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-neutral-600 hover:text-neutral-900 cursor-pointer"
+                  aria-label={showNewPw ? "Hide password" : "Show password"}
+                  title={showNewPw ? "Hide password" : "Show password"}
+                >
+                  {showNewPw ? (
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 3l18 18" />
+                      <path d="M10.58 10.58A3 3 0 0 0 12 15a3 3 0 0 0 2.42-4.42" />
+                      <path d="M6.16 6.16A18.9 18.9 0 0 0 1 12s4 8 11 8c1.78 0 3.46-.42 5-.97" />
+                      <path d="M21.05 17.94A18.9 18.9 0 0 0 23 12s-4-8-11-8c-.73 0-1.44.08-2.12.24" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+            {pwErr && <p className="text-sm text-red-600">{pwErr}</p>}
+            {pwMsg && <p className="text-sm text-green-700">{pwMsg}</p>}
+            <button
+              type="submit"
+              disabled={pwBusy}
+              className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+            >
+              {pwBusy ? "Saving..." : "Save Password"}
+            </button>
+            <p className="mt-2 text-xs text-neutral-600">
+              After clicking Save Password, your password is automatically changed.
+            </p>
+          </form>
+        </section>
+      </div>
     </div>
   );
 }

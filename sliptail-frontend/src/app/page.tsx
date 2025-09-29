@@ -193,7 +193,7 @@ function ProductTypesSection() {
       key: "oneoff",
       title: "One-Time Purchases",
       blurb:
-        "Creators run quick drops without subscriptions. Fans buy exactly what they want.",
+        "Creators run quick one-time content without subscriptions. Fans buy exactly what they want.",
       creatorPoints: ["Lifetime access", "Digital Downloads"],
       fanPoints: ["No commitment required", "Keep forever in your My Purcahses Page"],
       icon: (
@@ -363,7 +363,7 @@ export default function Home() {
 
             <Link
               href="/creators"
-              className="rounded-md border border-black px-8 py-3 font-semibold text-black transition hover:scale-105 hover:bg-white/20"
+              className="rounded-md border border-black px-8 py-3 font-semibold text-black bg-white transition hover:scale-105 "
             >
               For Fans: Explore Creators
             </Link>

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { mutate } from "swr";
 import { useAuth } from "@/components/auth/AuthProvider";
 import PasswordField from "@/components/forms/PasswordField";
+import NextImage from "next/image";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -107,7 +108,7 @@ export default function LoginPage() {
 
         {err && <div className="text-sm text-red-600">{err}</div>}
 
-        <button disabled={loading} className="w-full rounded-xl bg-black py-2 text-white">
+        <button disabled={loading} className="cursor-pointer w-full rounded-xl bg-black py-2 text-white">
           {loading ? "Signing in…" : "Sign in"}
         </button>
 
@@ -116,7 +117,7 @@ export default function LoginPage() {
           <button
             type="button"
             onClick={goForgotPassword}
-            className="underline"
+            className="cursor-pointer underline"
           >
             Forgot your password?
           </button>
@@ -125,11 +126,20 @@ export default function LoginPage() {
 
       <button
         onClick={googleAuth}
-        className="w-full rounded-xl border py-2 text-sm"
+        className="cursor-pointer w-full rounded-xl border py-2 text-sm flex items-center justify-center gap-3"
         aria-label="Continue with Google"
         type="button"
       >
-        Continue with Google
+        <NextImage
+        src="/icons/googleicon.png"
+        alt=""
+        width={18}
+        height={18}
+        className="inline-block"
+        priority
+        />
+        <span>
+        Continue with Google</span>
       </button>
 
       <div className="text-sm text-center">
