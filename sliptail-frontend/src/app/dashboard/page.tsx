@@ -146,6 +146,39 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   return `${apiBase}${s}`;
 }
 
+function isLikelyImage(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean);
+}
+function isLikelyVideo(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
+}
+function AttachmentViewer({
+  src,
+  className = "w-full rounded-lg border overflow-hidden bg-black/5",
+}: { src: string; className?: string }) {
+  if (isLikelyImage(src)) {
+    return <img src={src} alt="attachment" className={`${className} object-contain`} />;
+  }
+  if (isLikelyVideo(src)) {
+    return (
+      <video
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        className={`${className} aspect-video`}
+      />
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+      Open attachment
+    </a>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth?.() ?? { user: null };
@@ -1437,21 +1470,26 @@ export default function DashboardPage() {
                 <div className="text-xs text-neutral-500">{new Date(activeRequest.created_at).toLocaleDateString()} at {new Date(activeRequest.created_at).toLocaleTimeString()}</div>
 
                 {/* Download original buyer attachment (if present) */}
-                {activeRequest.attachment_path ? (
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={handleDownloadAttachment}
-                      className="rounded-xl border px-4 py-2 text-sm inline-flex items-center gap-2 hover:bg-neutral-50"
-                    >
-                      {/* Download icon */}
-                      <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-                      </svg>
-                      Download attachment
-                    </button>
-                  </div>
-                ) : null}
+                  {activeRequest.attachment_path ? (
+                    <div className="pt-2 space-y-3">
+                      {/* Inline preview */}
+                      <AttachmentViewer src={buildAttachmentUrl(activeRequest.attachment_path)} />
+
+                      {/* Buttons below the preview */}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDownloadAttachment}
+                          className="rounded-xl border px-4 py-2 text-sm inline-flex items-center gap-2 hover:bg-neutral-50"
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                          </svg>
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
               </div>
 
               <div className="flex items-center justify-end gap-2">

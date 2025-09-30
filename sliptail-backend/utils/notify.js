@@ -212,21 +212,11 @@ async function notifyCreatorNewRequest({ requestId }) {
     const dashboardUrl = buildActionUrl("dashboard", { tab: "requests" });
     const msg = T.creatorNewRequest({ dashboardUrl });
 
-    await Promise.allSettled([
-      // Email (respects creator's notify_new_request preference)
-      sendIfUserPref(r.creator_id, "notify_new_request", {
+      await sendIfUserPref(r.creator_id, "notify_new_request", {
         subject: msg.subject,
         html: msg.html,
         text: msg.text,
-      }),
-
-      notifyInApp(r.creator_id, {
-        type: "new_request",
-        title: "New request received",
-        body: "A buyer submitted a new request.",
-        metadata: { request_id: r.id },
-      }),
-    ]);
+      });
   } catch (e) {
     console.error("notifyCreatorNewRequest error:", e);
   }

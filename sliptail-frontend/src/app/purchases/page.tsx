@@ -67,6 +67,40 @@ function toApiBase(): string {
   return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 }
 
+function isLikelyImage(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean);
+}
+function isLikelyVideo(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
+}
+
+function AttachmentViewer({
+  src,
+  className = "w-full rounded-lg border overflow-hidden bg-black/5",
+}: { src: string; className?: string }) {
+  if (isLikelyImage(src)) {
+    return <img src={src} alt="attachment" className={`${className} object-contain`} />;
+  }
+  if (isLikelyVideo(src)) {
+    return (
+      <video
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        className={`${className} aspect-video`}
+      />
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+      Open attachment
+    </a>
+  );
+}
+
 export default function PurchasesPage() {
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -480,7 +514,7 @@ export default function PurchasesPage() {
               <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
                 {memberships.map((m) => (
                   <div key={m.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group">
-                    <div className="aspect-w-16 aspect-h-9 bg-gradient-to-br from-green-50 to-green-100 p-6">
+                    <div className="aspect-w-16 aspect-h-9 bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 p-6">
                       <div className="flex items-center space-x-4">
                         <img
                           src={resolveImageUrl(m.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
@@ -513,7 +547,7 @@ export default function PurchasesPage() {
                       <div className="space-y-3">
                         <button
                           onClick={() => router.push(`/feed?product_id=${m.product_id}`)}
-                          className="w-full bg-green-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 flex items-center justify-center group"
+                          className="cursor-pointer w-full bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 flex items-center justify-center group"
                         >
                           View Feed
                           <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
@@ -523,7 +557,7 @@ export default function PurchasesPage() {
                           {!m.user_has_review && (
                             <button
                               onClick={() => setShowReviewModal(m)}
-                              className="flex-1 text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center"
+                              className="cursor-pointer flex-1 text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 flex items-center justify-center"
                             >
                               <Star className="w-4 h-4 mr-1" />
                               Review
@@ -532,7 +566,7 @@ export default function PurchasesPage() {
                           {!m.membership_cancel_at_period_end && (
                             <button
                               onClick={() => setShowCancelConfirm(m.id)}
-                              className="flex-1 text-red-600 hover:text-red-700 text-sm font-medium py-2 px-3 rounded-lg hover:bg-red-50 transition-colors duration-200"
+                              className="cursor-pointer flex-1 text-red-600 hover:text-red-700 text-sm font-medium py-2 px-3 rounded-lg hover:bg-red-50 transition-colors duration-200"
                             >
                               Cancel
                             </button>
@@ -602,7 +636,7 @@ export default function PurchasesPage() {
                               <div className="flex items-center space-x-3">
                                 <button
                                   onClick={() => setSelectedItem(r)}
-                                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors duration-200 inline-flex items-center"
+                                  className="cursor-pointer bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors duration-200 inline-flex items-center"
                                 >
                                   <Eye className="w-4 h-4 mr-2" />
                                   View Response
@@ -610,7 +644,7 @@ export default function PurchasesPage() {
                                 {!r.user_has_review && (
                                   <button
                                     onClick={() => setShowReviewModal(r)}
-                                    className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
+                                    className="cursor-pointer text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
                                   >
                                     <Star className="w-4 h-4 mr-1" />
                                     Review
@@ -624,7 +658,7 @@ export default function PurchasesPage() {
                                 </p>
                                 <button
                                   onClick={() => setSelectedItem(r)}
-                                  className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                  className="cursor-pointer text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
                                 >
                                   View Request Details
                                   <ChevronRight className="w-4 h-4 ml-1" />
@@ -635,7 +669,7 @@ export default function PurchasesPage() {
                                 <p className="text-sm text-gray-500 mb-3">Please submit your request details</p>
                                 <button
                                   onClick={() => router.push(`/requests/new?orderId=${r.id}`)}
-                                  className="text-blue-600 hover:text-blue-700 text-sm font-medium inline-flex items-center"
+                                  className="cursor-pointer bg-emerald-300 text-black px-4 py-2 rounded-lg text-sm font-medium hover:emerald-700 transition-colors duration-200 inline-flex items-center"
                                 >
                                   Submit Request Details
                                   <ChevronRight className="w-4 h-4 ml-1" />
@@ -682,7 +716,7 @@ export default function PurchasesPage() {
                         <div className="flex items-center space-x-3">
                           <button
                             onClick={() => handleDownload(p)}
-                            className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 inline-flex items-center"
+                            className="cursor-pointer bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors duration-200 inline-flex items-center"
                           >
                             <Download className="w-4 h-4 mr-2" />
                             Download
@@ -690,7 +724,7 @@ export default function PurchasesPage() {
                           {!p.user_has_review && (
                             <button
                               onClick={() => setShowReviewModal(p)}
-                              className="text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
+                              className="cursor-pointer text-gray-600 hover:text-gray-900 text-sm font-medium py-2 px-3 rounded-lg hover:bg-gray-50 transition-colors duration-200 inline-flex items-center"
                             >
                               <Star className="w-4 h-4 mr-1" />
                               Review
@@ -777,7 +811,7 @@ export default function PurchasesPage() {
                             selectedItem.request_user_attachment_url ||
                             "#"
                           }
-                          className="inline-flex items-center bg-blue-50 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
+                          className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
                           download
                         >
                           <Download className="w-5 h-5 mr-2" />
@@ -797,19 +831,34 @@ export default function PurchasesPage() {
                   </div>
                 )}
 
-                {selectedItem.request_media_url && (
-                  <div>
-                    <h4 className="font-medium text-gray-700 mb-3">Creator's Attachment</h4>
-                    <a
-                      href={selectedItem.request_media_url}
-                      className="inline-flex items-center bg-blue-50 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
-                      download
-                    >
-                      <Download className="w-5 h-5 mr-2" />
-                      Download Media
-                    </a>
-                  </div>
-                )}
+                  {selectedItem.request_user_attachment_url && (
+                    <div>
+                      <h5 className="font-medium text-gray-700 mb-2">Your Attachment</h5>
+
+                      {/* Inline preview */}
+                      <AttachmentViewer
+                        src={
+                          resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
+                          selectedItem.request_user_attachment_url!
+                        }
+                      />
+
+                      {/* Buttons */}
+                      <div className="mt-3">
+                        <a
+                          href={
+                            resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
+                            selectedItem.request_user_attachment_url!
+                          }
+                          className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
+                          download
+                        >
+                          <Download className="w-5 h-5 mr-2" />
+                          Download Attachment
+                        </a>
+                      </div>
+                    </div>
+                  )}
               </div>
             </div>
           </div>

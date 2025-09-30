@@ -329,7 +329,7 @@ export default function MembershipFeedPage() {
                           {post.media_path && (
                             <div className="relative aspect-video rounded-xl overflow-hidden bg-neutral-100 mt-3 ring-1 ring-neutral-200">
                               {isVideoMedia(null, post.media_path) ? (
-                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls className="h-full w-full object-cover" />
+                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls controlsList="nodownload" className="h-full w-full object-cover" />
                               ) : (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img src={resolveMediaUrl(post.media_path) || post.media_path} alt="post" className="h-full w-full object-cover" />

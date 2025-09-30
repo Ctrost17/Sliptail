@@ -9,6 +9,7 @@ const { validate } = require("../middleware/validate");
 const { requestCreate, requestDecision, requestDeliver } = require("../validators/schemas");
 const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
 const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/notify");
+const { needsTranscode, transcodeToMp4 } = require("../utils/video");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -104,6 +105,26 @@ async function getRequestProduct(productId, creatorId) {
   return { ok: true, product: p };
 }
 
+// Returns true if a notification for (user_id,type,request_id) already exists
+async function alreadyNotified(userId, type, requestId) {
+  try {
+    const { rows } = await db.query(
+      `SELECT 1
+         FROM notifications
+        WHERE user_id = $1
+          AND type = $2
+          AND (metadata->>'request_id') = $3
+        LIMIT 1`,
+      [Number(userId), String(type), String(requestId)]
+    );
+    return rows.length > 0;
+  } catch (e) {
+    console.error("alreadyNotified check failed:", e?.message || e);
+    // fail-open so notifications don't silently stop if DB hiccups
+    return false;
+  }
+}
+
 /* -------------------------------- Routes -------------------------------- */
 
 /**
@@ -136,7 +157,7 @@ router.post(
     }
 
     // attachment path if provided (store only basename)
-    const attachment_path = req.file ? path.basename(req.file.path) : null;
+    const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
 
     try {
       // 1) validate that product_id is a request product of this creator
@@ -174,17 +195,18 @@ router.post(
       // respond to client
       res.status(201).json({ success: true, order, request: normalizeStatus(request) });
 
-      // 3) in-app notification to the creator (fire-and-forget)
-      notify(
-        Number(creator_id),
-        "creator_request",
-        "You’ve got a new custom request! 🎉",
-        "Check out the details on your creator dashboard and let your creativity shine",
-        { request_id: request.id }
-      ).catch(console.error);
+        // in-app + email to creator — only once per request
+        if (!(await alreadyNotified(Number(creator_id), "creator_request", request.id))) {
+          notify(
+            Number(creator_id),
+            "creator_request",
+            "You’ve got a new custom request! 🎉",
+            "Check out the details on your creator dashboard and let your creativity shine",
+            { request_id: request.id }
+          ).catch(console.error);
 
-      // email notification to the creator (respects their email prefs)
-      notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
+          notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
+        }
     } catch (err) {
       try {
         await db.query("ROLLBACK");
@@ -221,7 +243,7 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
     if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
     if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
 
-    const attachment_path = req.file ? path.basename(req.file.path) : null;
+    const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
 
     const { rows: existing } = await db.query(
       `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
@@ -249,19 +271,20 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
       requestId = ins[0].id;
 
       // notify creator only on NEW
-      notify(
-        Number(row.creator_id),
-        "creator_request",
-        "You’ve got a new custom request! 🎉",
-        "Check out the details on your creator dashboard and let your creativity shine",
-        { request_id: requestId }
-      ).catch(console.error);
-      // email notification to the creator on brand-new request
-     notifyCreatorNewRequest({ requestId }).catch(console.error);
+// notify creator only on NEW (de-duped)
+if (!(await alreadyNotified(Number(row.creator_id), "creator_request", requestId))) {
+  notify(
+    Number(row.creator_id),
+    "creator_request",
+    "You’ve got a new custom request! 🎉",
+    "Check out the details on your creator dashboard and let your creativity shine",
+    { request_id: requestId }
+  ).catch(console.error);
+
+  notifyCreatorNewRequest({ requestId }).catch(console.error);
+}
+      return res.status(201).json({ ok: true, requestId });
     }
-// email notification to the creator on brand-new request
-+      notifyCreatorNewRequest({ requestId }).catch(console.error);
-    return res.status(201).json({ ok: true, requestId });
   } catch (e) {
     console.error("legacy POST /requests error:", e);
     return res.status(500).json({ ok: false, error: "Failed" });
@@ -418,30 +441,48 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-      const deliveredFile = path.basename(req.file.path);
-      const webPath = `/uploads/requests/${deliveredFile}`;
-      const { rows: upd } = await db.query(
-        `UPDATE custom_requests
-            SET creator_attachment_path = $1,
-                status = 'delivered'
-          WHERE id = $2
-          RETURNING *`,
-        [webPath, requestId]
-      );
+        let deliveredFile = path.basename(req.file.path); // default: original upload
+
+        // If it's not already mp4 (e.g. .mov) and needs transcoding, convert to mp4
+        if (needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
+          const base = path.parse(deliveredFile).name;                 // filename without extension
+          const mp4Name = `${base}.mp4`;
+          const inPath = req.file.path;                                // /public/uploads/requests/<rand>.<ext>
+          const outPath = path.join(uploadDirRequests, mp4Name);       // /public/uploads/requests/<rand>.mp4
+
+          await transcodeToMp4(inPath, outPath);
+          try { fs.unlinkSync(inPath); } catch {}                      // remove the original source after success
+          deliveredFile = mp4Name;
+        }
+
+const webPath = `/uploads/requests/${deliveredFile}`;
+const { rows: upd } = await db.query(
+  `UPDATE custom_requests
+      SET creator_attachment_path = $1,
+          status = 'delivered'
+    WHERE id = $2
+    RETURNING *`,
+  [webPath, requestId]
+);
 
       res.json({ success: true, request: normalizeStatus(upd[0]) });
 
-      // in-app notification to buyer
-      notify(
-        Number(r.buyer_id),
-        "request_ready",
-        "Your request is ready! 🎉",
-        "Check it out on your My Purchases page!",
-        { request_id: requestId }
-      ).catch(console.error);
-      
-      // email notification to buyer
-      notifyRequestDelivered({ requestId }).catch(console.error);
+        // Only notify/email the first time we transition into delivered
+        if (r.status !== "delivered") {
+          // in-app (deduped)
+          if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
+            notify(
+              Number(r.buyer_id),
+              "request_ready",
+              "Your request is ready! 🎉",
+              "Check it out on your My Purchases page!",
+              { request_id: requestId }
+            ).catch(console.error);
+          }
+
+          // Email once (same condition)
+          notifyRequestDelivered({ requestId }).catch(console.error);
+        }
     
       } catch (err) {
       console.error("Deliver error:", err);
@@ -491,7 +532,18 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-      const newAttachment = req.file ? `/uploads/requests/${path.basename(req.file.path)}` : null;
+      let newAttachment = null;
+          if (req.file) {
+            let fname = path.basename(req.file.path);
+            if (needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
+              const base = path.parse(fname).name;
+              const mp4Name = `${base}.mp4`;
+              await transcodeToMp4(req.file.path, path.join(uploadDirRequests, mp4Name));
+              try { fs.unlinkSync(req.file.path); } catch {}
+              fname = mp4Name;
+            }
+            newAttachment = `/uploads/requests/${fname}`;
+          }
 
       let updatedRow;
       try {
@@ -553,18 +605,18 @@ router.post(
       res.json({ success: true, request: responseRow });
 
       // in-app notification to buyer on completion as well
-      notify(
-        Number(r.buyer_id),
-        "request_ready",
-        "Your request is ready! 🎉",
-        "Check it out on your My Purchases page!",
-        { request_id: requestId }
-      ).catch(console.error);
+              if (r.status !== "delivered") {
+          notify(
+            Number(r.buyer_id),
+            "request_ready",
+            "Your request is ready! 🎉",
+            "Check it out on your My Purchases page!",
+            { request_id: requestId }
+          ).catch(console.error);
 
-      // email notification (only if we jumped straight to 'complete' without a prior 'delivered')
-      if (r.status !== "delivered") {
-      notifyRequestDelivered({ requestId }).catch(console.error);
-      }
+          // Email too (same condition)
+          notifyRequestDelivered({ requestId }).catch(console.error);
+        }
       } catch (err) {
       try {
         await db.query("ROLLBACK");
@@ -659,7 +711,7 @@ router.post(
       if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
       if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
 
-      const attachment_path = req.file ? path.basename(req.file.path) : null;
+      const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
 
       // Upsert custom_request for (order_id, buyer_id)
       const existing = await db.query(
@@ -687,16 +739,20 @@ router.post(
         );
         request = ins[0];
 
-        // notify the creator on a brand-new request from session flow
-        notify(
-          Number(row.creator_id),
-          "creator_request",
-          "You’ve got a new custom request! 🎉",
-          "Check out the details on your creator dashboard and let your creativity shine",
-          { request_id: request.id }
-        ).catch(console.error);
-        // email notification to the creator
-       notifyCreatorNewRequest({ requestId: request.id }).catch(console.error);
+        // notify creator only on NEW (de-duped)
+        if (!(await alreadyNotified(Number(row.creator_id), "creator_request", request.id))) {
+          await Promise.allSettled([
+            notify(
+              Number(row.creator_id),
+              "creator_request",
+              "You’ve got a new custom request! 🎉",
+              "Check out the details on your creator dashboard and let your creativity shine",
+              { request_id: request.id }
+            ),
+            // Email only (see section C); ok to keep here
+            notifyCreatorNewRequest({ requestId: request.id }),
+          ]);
+        }
       }
 
       return res.status(201).json({ success: true, request: normalizeStatus(request) });

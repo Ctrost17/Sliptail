@@ -6,18 +6,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { API_BASE } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 
-// Replace with your real toast system/hook
 function useToast() {
   return {
     success: (msg: string) => console.log("[TOAST SUCCESS]", msg),
     error: (msg: string) => console.error("[TOAST ERROR]", msg),
   };
 }
-
-type CreateRequestOk = { ok: true; requestId: number };
-type CreateRequestErr = { ok: false; error: string };
-type CreateRequestResponse = CreateRequestOk | CreateRequestErr;
-
 
 export default function NewRequestPage() {
   const search = useSearchParams();
@@ -26,39 +20,61 @@ export default function NewRequestPage() {
   const { token } = useAuth();
 
   const orderId = useMemo(() => {
-    const raw = search.get("orderId");
+    const raw = search.get("orderId") || search.get("order_id") || "";
     const num = raw ? Number(raw) : NaN;
     return Number.isFinite(num) ? num : 0;
   }, [search]);
 
-  const sid = search.get("sid");
+  // Accept session_id, sessionId, or sid
+  const sessionId = useMemo(
+    () =>
+      (search.get("session_id") ||
+        search.get("sessionId") ||
+        search.get("sid") ||
+        ""
+      ).trim(),
+    [search]
+  );
 
   const initialToast = search.get("toast");
 
-  const [details, setDetails] = useState<string>("");
+  const [details, setDetails] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
-  // If a toast was passed via query (legacy), show it once via console placeholder
   useEffect(() => {
     if (initialToast && initialToast.trim()) success(initialToast);
   }, [initialToast, success]);
 
-  // If no orderId but we have a Stripe session id, we can still create the request from session
-  if (!orderId && !sid) {
+  if (!orderId && !sessionId) {
     return (
       <div className="mx-auto max-w-xl p-8">
         <h1 className="text-xl font-semibold">Invalid request</h1>
         <p className="mt-2 text-neutral-600">We couldn’t find your order.</p>
-        <button
-          onClick={() => router.replace("/purchases")}
-          className="mt-4 rounded border px-4 py-2"
-        >
+        <button onClick={() => router.replace("/purchases")} className="mt-4 rounded border px-4 py-2">
           Go to Purchases
         </button>
       </div>
     );
+  }
+
+  function redirectToPurchases(toastMsg: string) {
+    // don’t await anything before navigating
+    try {
+      // set toast asynchronously; don’t block redirect
+      import("@/lib/flash")
+        .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() }))
+        .catch(() => {});
+    } catch {}
+    const url = `/purchases?toast=${encodeURIComponent(toastMsg)}`;
+    router.replace(url);
+    // hard fallback in case SPA navigation is stuck (dev edge cases)
+    setTimeout(() => {
+      if (window.location.pathname.includes("/requests/new")) {
+        window.location.href = url;
+      }
+    }, 150);
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -66,104 +82,116 @@ export default function NewRequestPage() {
     if (submittingRef.current) return;
     setSubmitting(true);
     submittingRef.current = true;
+
+    // 20s safety timeout so the UI never hangs
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20000);
+
     try {
       const formData = new FormData();
-      const headers: Record<string, string> = { Accept: "application/json" };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      // Prefer session-based creation when sid is present, even if orderId is provided
+      const useSessionFlow = Boolean(sessionId);
       let url = `${API_BASE}/api/requests`;
 
-      if (sid) {
+      if (useSessionFlow) {
         url = `${API_BASE}/api/requests/create-from-session`;
-        formData.append("session_id", String(sid));
-        formData.append("message", details);
-        if (file) formData.append("attachment", file);
-      } else if (orderId) {
+        formData.append("session_id", sessionId); // backend expects snake_case
+        formData.append("message", details || "");
+      } else {
         formData.append("orderId", String(orderId));
-        formData.append("details", details);
-        if (file) formData.append("attachment", file);
+        formData.append("details", details || "");
       }
+      if (file) formData.append("attachment", file);
+
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
 
       let res = await fetch(url, {
         method: "POST",
         credentials: "include",
         headers,
         body: formData,
+        signal: ac.signal,
       });
 
       if (res.status === 401 || res.status === 403) {
         const params = new URLSearchParams();
         if (orderId) params.set("orderId", String(orderId));
-        if (sid) params.set("sid", String(sid));
+        if (sessionId) params.set("session_id", sessionId);
         const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
         router.replace(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
         return;
       }
 
-      let payload: any = await res.json().catch(() => ({}));
+      // If session flow 5xx, fallback to orderId route
+      if (!res.ok && useSessionFlow && res.status >= 500 && orderId) {
+        const fd2 = new FormData();
+        fd2.append("orderId", String(orderId));
+        fd2.append("details", details || "");
+        if (file) fd2.append("attachment", file);
+        res = await fetch(`${API_BASE}/api/requests`, {
+          method: "POST",
+          credentials: "include",
+          headers,
+          body: fd2,
+          signal: ac.signal,
+        });
+      }
 
       if (!res.ok) {
-        // If we tried create-from-session (sid present), only fallback on server errors (5xx).
-        // For client errors (4xx), surface the specific message instead of masking with 'Failed'.
-        const isCreateFromSession = Boolean(sid);
-        const isServerError = res.status >= 500;
-        if (isCreateFromSession && isServerError && orderId) {
-          const fd2 = new FormData();
-          fd2.append("orderId", String(orderId));
-          fd2.append("details", details);
-          if (file) fd2.append("attachment", file);
-          res = await fetch(`${API_BASE}/api/requests`, {
-            method: "POST",
-            credentials: "include",
-            headers,
-            body: fd2,
-          });
-          payload = await res.json().catch(() => ({}));
-        }
-        if (!res.ok) {
-          const message = payload?.error || `${res.status} ${res.statusText}`;
-          throw new Error(message);
-        }
+        // Try to read error safely (don’t block if body is empty/wrong length)
+        let msg = `${res.status} ${res.statusText}`;
+        try {
+          const text = await res.text();
+          if (text) {
+            try {
+              const j = JSON.parse(text);
+              msg = j?.error || j?.message || text;
+            } catch {
+              msg = text;
+            }
+          }
+        } catch {}
+        throw new Error(msg);
       }
 
-      // Support both legacy and new shapes
-      const newOk = payload && payload.success === true;
-      const legacyOk = payload && payload.ok === true;
-      if (!newOk && !legacyOk) {
-        const message = payload?.error || "Request failed";
-        throw new Error(message);
+      // ✅ Success – don’t wait for JSON; just go
+      const toastMsg =
+        initialToast && initialToast.includes("Thanks for Supporting")
+          ? initialToast
+          : "Your request was submitted";
+      redirectToPurchases(toastMsg);
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        error("Request timed out. Please try again.");
+      } else {
+        const msg = e instanceof Error ? e.message : "Could not submit your request.";
+        error(msg);
       }
-
-      const toastMsg = initialToast && initialToast.includes("Thanks for Supporting")
-        ? initialToast
-        : "Thanks for Supporting Your Creator";
-      try {
-        const { setFlash } = await import("@/lib/flash");
-        setFlash({ kind: "success", title: toastMsg, ts: Date.now() });
-      } catch { }
-      router.replace(`/purchases`);
-    } catch (e) {
-      const message =
-        e instanceof Error ? e.message : "Could not submit your request.";
-      error(message);
     } finally {
+      clearTimeout(t);
       setSubmitting(false);
       submittingRef.current = false;
     }
   }
 
   function handleFileChange(ev: React.ChangeEvent<HTMLInputElement>) {
-    const f = ev.currentTarget.files?.[0] ?? null;
-    setFile(f);
+    setFile(ev.currentTarget.files?.[0] ?? null);
   }
 
   function doLater() {
-    const toastMsg = initialToast && initialToast.includes("Thanks for Supporting")
-      ? initialToast
-      : "Thanks for Supporting Your Creator";
-    import("@/lib/flash").then(m => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() })).catch(() => { });
+    const toastMsg =
+      initialToast && initialToast.includes("Thanks for Supporting")
+        ? initialToast
+        : "Thanks for Supporting Your Creator";
+    import("@/lib/flash")
+      .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() }))
+      .catch(() => {});
     router.replace(`/purchases`);
+    setTimeout(() => {
+      if (window.location.pathname.includes("/requests/new")) {
+        window.location.href = "/purchases";
+      }
+    }, 150);
   }
 
   return (
@@ -195,9 +223,7 @@ export default function NewRequestPage() {
             className="block"
           />
           {file && (
-            <span className="text-xs text-neutral-600">
-              Selected: {file.name}
-            </span>
+            <span className="text-xs text-neutral-600">Selected: {file.name}</span>
           )}
         </label>
 
@@ -205,14 +231,14 @@ export default function NewRequestPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="rounded bg-green-600 px-5 py-2 font-semibold text-white disabled:opacity-60"
+            className="cursor-pointer rounded bg-green-600 px-5 py-2 font-semibold text-white disabled:opacity-60"
           >
             {submitting ? "Submitting…" : "Submit Request"}
           </button>
           <button
             type="button"
             onClick={doLater}
-            className="rounded border px-5 py-2 font-semibold"
+            className="cursor-pointer rounded border px-5 py-2 font-semibold"
           >
             Do Later
           </button>
