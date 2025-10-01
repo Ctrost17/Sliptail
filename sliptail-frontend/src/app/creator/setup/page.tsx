@@ -590,7 +590,7 @@ export default function CreatorSetupPage() {
             Payouts are handled via Stripe. You’ll be redirected to finish onboarding.
           </p>
           <div className="flex items-center gap-2">
-            <button onClick={connectStripe} className="cursor-pointer rounded-xl border px-4 py-2 text-sm">
+            <button onClick={connectStripe} className="cursor-pointer rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 transition-colors">
               Connect Stripe
             </button>
             <button

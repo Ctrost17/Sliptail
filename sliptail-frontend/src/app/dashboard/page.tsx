@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { loadAuth } from "@/lib/auth";
 
-// ----- Types -----
+/* ----------------------------- Types ----------------------------- */
 type Product = {
   id: string;
   title: string;
@@ -24,7 +24,6 @@ type CreatorProfile = {
   products_count: number;
 };
 type GalleryPhoto = { position: number; url: string | null };
-
 type CategoryItem = { id: string; name: string };
 
 type Review = {
@@ -34,22 +33,22 @@ type Review = {
   buyer_id: number;
   created_at: string;
   product: {
-    description: string | null;
-    view_url: string | null;
-    download_url: string | null;
-    product_type: string;
-    title: string;
-    filename: string;
+      description: string | null;
+      view_url: string | null;
+      download_url: string | null;
+      product_type: string;
+      title: string;
+      filename: string;
   };
 };
 
-// Enhanced review type: include buyer info and product id, defensive optional fields
+// Enhanced review type
 type ReviewExtended = Review & {
   buyer?: { id?: number; username?: string | null; email?: string | null } | null;
   product_id?: string | null;
 };
 
-// --------- Safe helpers ----------
+/* -------------------------- Safe helpers -------------------------- */
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
@@ -121,8 +120,6 @@ function uniqStrings(list: string[]): string[] {
 function extractMessage(obj: unknown, fallback: string): string {
   return getStringProp(obj, "error") || getStringProp(obj, "message") || fallback;
 }
-
-// Attach Authorization header (Bearer) when we have a saved token
 function buildAuthHeaders(extra?: Record<string, string>): HeadersInit {
   let token: string | null = null;
   try {
@@ -135,8 +132,6 @@ function buildAuthHeaders(extra?: Record<string, string>): HeadersInit {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
-
-// Resolve relative /uploads paths to full URLs
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
   let s = src.trim();
@@ -145,7 +140,6 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
 }
-
 function isLikelyImage(url: string) {
   const clean = url.split("?")[0].toLowerCase();
   return /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean);
@@ -179,6 +173,25 @@ function AttachmentViewer({
   );
 }
 
+/* ----------------------- Small UI helpers ----------------------- */
+function StarRating({ value, size = 16 }: { value: number; size?: number }) {
+  const pct = Math.max(0, Math.min(5, Number(value || 0))) / 5 * 100;
+  return (
+    <div className="relative inline-flex" aria-label={`${value.toFixed(1)} out of 5`}>
+      <div className="text-neutral-300" style={{ fontSize: size }}>
+        {"★★★★★"}
+      </div>
+      <div
+        className="absolute left-0 top-0 overflow-hidden text-yellow-500"
+        style={{ width: `${pct}%`, fontSize: size }}
+      >
+        {"★★★★★"}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ Component ------------------------------ */
 export default function DashboardPage() {
   const router = useRouter();
   const { user } = useAuth?.() ?? { user: null };
@@ -188,32 +201,26 @@ export default function DashboardPage() {
   useEffect(() => {
     (async () => {
       try {
-        const review = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"}/api/me`, {
+        await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"}/api/me`, {
           credentials: "include",
           headers: buildAuthHeaders(),
         });
-
-
       } catch (error) {
         console.error("Error checking auth:", error);
-      } finally {
-        // You can add any cleanup or final actions here if needed
       }
     })();
   }, []);
 
-  // --- Place apiBase, creatorId, and pending requests state/effect after user is defined ---
-  // (MUST be after user is defined)
   const apiBase = useMemo(
     () => (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, ""),
     []
   );
   const creatorId = user?.id ? String(user.id) : null;
-  // Pending Requests state
+
+  /* ---------------- Pending requests ---------------- */
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
 
-  // Expose a reusable loader so the Refresh button can trigger it
   const loadPending = useCallback(async () => {
     if (!creatorId) return;
     setPendingLoading(true);
@@ -222,23 +229,11 @@ export default function DashboardPage() {
         credentials: "include",
         headers: buildAuthHeaders(),
       });
-
-      if (!res.ok) {
-        console.error("Failed to load pending requests:", res.status, res.statusText);
-        throw new Error("Failed to load pending requests");
-      }
-
+      if (!res.ok) throw new Error("Failed to load pending requests");
       const data: unknown = await res.json();
-      console.log("Pending requests response:", data); // Debug log
-
       let list: any[] = [];
-      if (Array.isArray((data as any)?.requests)) {
-        list = (data as any).requests;
-      } else if (Array.isArray(data)) {
-        list = data as any[];
-      }
-
-      console.log("Parsed pending requests:", list); // Debug log
+      if (Array.isArray((data as any)?.requests)) list = (data as any).requests;
+      else if (Array.isArray(data)) list = data as any[];
       setPendingRequests(list);
     } catch (e) {
       console.error("Failed to load pending requests:", e);
@@ -248,12 +243,12 @@ export default function DashboardPage() {
     }
   }, [creatorId, apiBase]);
 
-  // Initial load
   useEffect(() => {
     if (!creatorId) return;
     loadPending();
   }, [creatorId, loadPending]);
 
+  /* ---------------- Creator/profile/products ---------------- */
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [gallery, setGallery] = useState<GalleryPhoto[]>([
     { position: 1, url: null },
@@ -270,10 +265,9 @@ export default function DashboardPage() {
   ];
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
-  // Derived: whether creator has any membership products
-  const hasMembership = useMemo(() => products.some(p => p.product_type === 'membership'), [products]);
+  const hasMembership = useMemo(() => products.some((p) => p.product_type === "membership"), [products]);
 
-  // Reviews state: map productId -> { items, page, hasMore, loading }
+  // Reviews state
   const [reviewsMap, setReviewsMap] = useState<Record<
     string,
     { items: ReviewExtended[]; page: number; hasMore: boolean; loading: boolean }
@@ -287,10 +281,9 @@ export default function DashboardPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
-  // Dynamic categories from DB
+  // Categories
   const [allCategories, setAllCategories] = useState<CategoryItem[]>([]);
   const [catsLoading, setCatsLoading] = useState(false);
-  // Debounced auto-save helpers for categories
   const catsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const catsInitializedRef = useRef(false);
 
@@ -299,39 +292,37 @@ export default function DashboardPage() {
   const [stripeLoading, setStripeLoading] = useState(false);
   const [stripeConnected, setStripeConnected] = useState<boolean | null>(null);
 
-  // Delete confirm
+  // Delete product
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
-  // NEW: Toast state
+  // Toast
   const [toastOpen, setToastOpen] = useState(false);
   const [toastText, setToastText] = useState<string>("");
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Active request modal
-  const [activeRequest, setActiveRequest] = useState<any | null>(null);
-  function openRequest(req: any) {
-    setActiveRequest(req);
-  }
-  function closeRequest() {
-    setActiveRequest(null);
-  }
+  // Average rating (force fresh)
+  const [averageRating, setAverageRating] = useState<number | null>(null);
 
-  // Complete-request modal state
+  // Request modals
+  const [activeRequest, setActiveRequest] = useState<any | null>(null);
+  function openRequest(req: any) { setActiveRequest(req); }
+  function closeRequest() { setActiveRequest(null); }
+
+  // Complete modal
   const [activeCompleteRequest, setActiveCompleteRequest] = useState<any | null>(null);
   const completeFilesRef = useRef<HTMLInputElement | null>(null);
   const [completeDesc, setCompleteDesc] = useState<string>("");
   const [completing, setCompleting] = useState(false);
-  function openComplete(req: any) {
-    setActiveCompleteRequest(req);
-    setCompleteDesc("");
-  }
+  const [completeFileNames, setCompleteFileNames] = useState<string[]>([]);
+  function openComplete(req: any) { setActiveCompleteRequest(req); setCompleteDesc(""); }
   function closeComplete() {
-    setActiveCompleteRequest(null);
-    setCompleteDesc("");
-    if (completeFilesRef.current) completeFilesRef.current.value = "";
-  }
+  setActiveCompleteRequest(null);
+  setCompleteDesc("");
+  setCompleteFileNames([]); // ← reset displayed file names
+  if (completeFilesRef.current) completeFilesRef.current.value = "";
+}
 
   async function submitComplete() {
     if (!activeCompleteRequest) return;
@@ -341,29 +332,15 @@ export default function DashboardPage() {
       fd.append("description", completeDesc || "");
       const files = completeFilesRef.current?.files;
       if (files && files.length > 0) {
-        for (let i = 0; i < files.length; i++) {
-          fd.append("media", files[i]);
-        }
+        for (let i = 0; i < files.length; i++) fd.append("media", files[i]);
       }
-      
-      console.log(fd.getAll("media")); // Debug log
-      
-      const res = await fetch(`${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`, {
-        method: "POST",
-        credentials: "include",
-        headers: buildAuthHeaders(),
-        body: fd,
-      });
-
-      console.log("Complete request response status:", res.status); // Debug log
-      
+      const res = await fetch(
+        `${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`,
+        { method: "POST", credentials: "include", headers: buildAuthHeaders(), body: fd }
+      );
       const payload: any = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const err = extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`);
-        throw new Error(err);
-      }
+      if (!res.ok) throw new Error(extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`));
 
-      // Success: remove from pendingRequests if present and close modal
       setPendingRequests((prev) => prev.filter((r) => String(r.id) !== String(activeCompleteRequest.id)));
       closeComplete();
       showToast("Request marked complete");
@@ -375,28 +352,22 @@ export default function DashboardPage() {
     }
   }
 
-
-
-  // Load creator profile & products
+  // Load profile + products
   useEffect(() => {
     const ac = new AbortController();
-
     async function load() {
-      if (!creatorId) {
-        setLoading(false);
-        return;
-      }
+      if (!creatorId) { setLoading(false); return; }
       try {
         setLoading(true);
-        // Own profile (includes ungated + gallery)
+        // profile
         const profRes = await fetch(`${apiBase}/api/creators/me`, {
           credentials: "include",
           signal: ac.signal,
           headers: buildAuthHeaders(),
         });
-        const profJson: unknown = await profRes.json();
-        // If not eligible yet, fields may differ but we map defensively
+        const profJson: any = await profRes.json();
         const prof = profJson as Partial<CreatorProfile> & { gallery?: string[] };
+
         setCreator({
           creator_id: Number(prof?.creator_id || user?.id || creatorId),
           display_name: prof?.display_name || "",
@@ -407,28 +378,24 @@ export default function DashboardPage() {
         });
         setDisplayName(prof?.display_name || "");
         setBio(((prof as any)?.bio as string) || "");
-        const cats = getStringArrayProp(profJson, "categories");
-        if (cats && cats.length) {
-          setSelectedCategories(uniqStrings(cats));
-        }
-        const galArr = Array.isArray((prof as any)?.gallery)
-          ? ((prof as any)?.gallery as string[])
-          : [];
-        setGallery((prev) =>
-          prev.map((g) => ({ position: g.position, url: galArr[g.position - 1] || null }))
-        );
 
-        // Products
+        const cats = getStringArrayProp(profJson, "categories");
+        if (cats && cats.length) setSelectedCategories(uniqStrings(cats));
+
+        const galArr = Array.isArray((prof as any)?.gallery) ? ((prof as any)?.gallery as string[]) : [];
+        setGallery((prev) => prev.map((g) => ({ position: g.position, url: galArr[g.position - 1] || null })));
+
+        // products
         const prodRes = await fetch(`${apiBase}/api/products/user/${creatorId}`, {
           credentials: "include",
           signal: ac.signal,
         });
-        const prodJson: unknown = await prodRes.json();
-        const list =
-          (isRecord(prodJson) && Array.isArray((prodJson as Record<string, unknown>).products)
-            ? (((prodJson as Record<string, unknown>).products as unknown[]) || [])
-            : []
-          ).filter(isRecord);
+        const prodJson: any = await prodRes.json();
+        const list = (isRecord(prodJson) && Array.isArray((prodJson as any).products)
+          ? ((prodJson as any).products as unknown[])
+          : []
+        ).filter(isRecord);
+
         const typedProducts: Product[] = list.map((x) => {
           const id = getStringProp(x, "id") ?? "";
           const title = getStringProp(x, "title") ?? "";
@@ -436,16 +403,19 @@ export default function DashboardPage() {
           const typeStr = getStringProp(x, "product_type") ?? "purchase";
           const product_type: Product["product_type"] =
             typeStr === "membership" ? "membership" : typeStr === "request" ? "request" : "purchase";
-          const priceRaw = isRecord(x) ? (x as Record<string, unknown>)["price"] : undefined;
+          const priceRaw = (x as any)["price"];
           const price =
             typeof priceRaw === "number"
               ? priceRaw
               : typeof priceRaw === "string"
-                ? Number(priceRaw)
-                : 0;
+              ? Number(priceRaw)
+              : 0;
           return { id, title, description, product_type, price };
         });
         setProducts(typedProducts);
+
+        // reflect fetched count
+        setCreator((prev) => (prev ? { ...prev, products_count: typedProducts.length } : prev));
       } catch (e) {
         if (!(e instanceof DOMException && e.name === "AbortError")) {
           console.error("dashboard load error", e);
@@ -454,15 +424,82 @@ export default function DashboardPage() {
         setLoading(false);
       }
     }
-
     load();
     return () => ac.abort();
+  }, [creatorId, apiBase, user?.id]);
+
+  // --- Average rating loader (robust) ---
+  const loadAverageRating = useCallback(async () => {
+    if (!creatorId) return;
+    const idNum = Number(creatorId);
+    const tryExtract = (obj: any): number | null => {
+      if (!obj || typeof obj !== "object") return null;
+      const candidates = [
+        "average_rating", "avg_rating", "average", "avg", "rating",
+        "ratings_avg", "mean", "score", "stars"
+      ];
+      for (const k of candidates) {
+        const v = obj[k];
+        const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+        if (!Number.isNaN(n) && Number.isFinite(n)) return n;
+      }
+      if (obj.summary) return tryExtract(obj.summary);
+      return null;
+    };
+
+    // 1) canonical summary endpoint (if exists)
+    const endpoints = [
+      `${apiBase}/api/reviews/creator/${encodeURIComponent(idNum)}/summary`,
+      `${apiBase}/api/reviews/creator/${encodeURIComponent(idNum)}?summary=1`,
+    ];
+
+    for (const url of endpoints) {
+      try {
+        const r = await fetch(url, { credentials: "include", headers: buildAuthHeaders() });
+        if (!r.ok) continue;
+        const data: any = await r.json().catch(() => ({}));
+        const n = tryExtract(data);
+        if (typeof n === "number") {
+          setAverageRating(n);
+          setCreator((prev) => (prev ? { ...prev, average_rating: n } : prev));
+          return;
+        }
+      } catch {
+        /* ignore and continue */
+      }
+    }
+
+    // 2) fallback: fetch list & compute
+    try {
+      const r = await fetch(
+        `${apiBase}/api/reviews/creator/${encodeURIComponent(idNum)}?limit=200&offset=0`,
+        { credentials: "include", headers: buildAuthHeaders() }
+      );
+      if (r.ok) {
+        const data: any = await r.json().catch(() => ({}));
+        const list: any[] = Array.isArray(data?.reviews) ? data.reviews : Array.isArray(data) ? data : [];
+        const ratings = list
+          .map((it) => (typeof it?.rating === "number" ? it.rating : Number(it?.rating || 0)))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (ratings.length > 0) {
+          const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+          setAverageRating(avg);
+          setCreator((prev) => (prev ? { ...prev, average_rating: avg } : prev));
+          return;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
   }, [creatorId, apiBase]);
 
-  // Load categories list from DB (tolerant parsing)
+  useEffect(() => {
+    if (creatorId) loadAverageRating();
+  }, [creatorId, apiBase, products.length, loadAverageRating]);
+
+  // Load categories
   useEffect(() => {
     const ac = new AbortController();
-
     async function loadAllCategories() {
       if (!creatorId) return;
       setCatsLoading(true);
@@ -473,7 +510,6 @@ export default function DashboardPage() {
           `${apiBase}/api/category`,
           `${apiBase}/api/creators/${creatorId}/categories`,
         ];
-
         for (const url of endpoints) {
           try {
             const res = await fetch(url, { credentials: "include", signal: ac.signal });
@@ -485,28 +521,21 @@ export default function DashboardPage() {
             if (err instanceof DOMException && err.name === "AbortError") break;
           }
         }
-
-        if (items.length === 0) {
-          // Fallback to current selections to avoid blank UI
-          if (selectedCategories.length > 0) {
-            items = selectedCategories.map((name) => ({ id: name, name }));
-          }
+        if (items.length === 0 && selectedCategories.length > 0) {
+          items = selectedCategories.map((name) => ({ id: name, name }));
         }
-
         setAllCategories(items);
       } finally {
         setCatsLoading(false);
       }
     }
-
     loadAllCategories();
     return () => ac.abort();
   }, [creatorId, apiBase, selectedCategories]);
 
-  // Load Stripe connect status (requires auth)
+  // Stripe status
   useEffect(() => {
     const ac = new AbortController();
-
     async function loadStripeStatus() {
       if (!creatorId) return;
       setStripeLoading(true);
@@ -517,28 +546,21 @@ export default function DashboardPage() {
           headers: buildAuthHeaders(),
         });
         if (res.ok) {
-          const data: unknown = await res.json().catch(() => ({}));
+          const data: any = await res.json().catch(() => ({}));
           const connected =
-            getBooleanProp(data, "connected") ??
-            getBooleanProp(data, "details_submitted") ??
-            null;
+            getBooleanProp(data, "connected") ?? getBooleanProp(data, "details_submitted") ?? null;
           setStripeConnected(connected);
         } else {
-          // fallback
-          try {
-            const altRes = await fetch(`${apiBase}/api/me/creator-status`, {
-              credentials: "include",
-              signal: ac.signal,
-              headers: buildAuthHeaders(),
-            });
-            if (altRes.ok) {
-              const alt: unknown = await altRes.json();
-              const sc = getBooleanProp(alt, "stripeConnected") ?? null;
-              setStripeConnected(sc);
-            } else {
-              setStripeConnected(null);
-            }
-          } catch {
+          const altRes = await fetch(`${apiBase}/api/me/creator-status`, {
+            credentials: "include",
+            signal: ac.signal,
+            headers: buildAuthHeaders(),
+          });
+          if (altRes.ok) {
+            const alt: any = await altRes.json();
+            const sc = getBooleanProp(alt, "stripeConnected") ?? null;
+            setStripeConnected(sc);
+          } else {
             setStripeConnected(null);
           }
         }
@@ -548,27 +570,18 @@ export default function DashboardPage() {
         setStripeLoading(false);
       }
     }
-
     loadStripeStatus();
     return () => ac.abort();
   }, [creatorId, apiBase]);
 
   function toggleCategoryName(name: string) {
-    setSelectedCategories((prev) =>
-      prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]
-    );
+    setSelectedCategories((prev) => (prev.includes(name) ? prev.filter((c) => c !== name) : [...prev, name]));
   }
 
-  // Auto-save categories when changed (debounced), so highlights persist after leaving the page
+  // Debounced auto-save categories
   useEffect(() => {
     if (!creatorId) return;
-    // Skip the very first run that comes from server-loaded profile
-    if (!catsInitializedRef.current) {
-      catsInitializedRef.current = true;
-      return;
-    }
-
-    // Debounce to avoid spamming server while toggling multiple chips
+    if (!catsInitializedRef.current) { catsInitializedRef.current = true; return; }
     if (catsSaveTimerRef.current) clearTimeout(catsSaveTimerRef.current);
     catsSaveTimerRef.current = setTimeout(async () => {
       try {
@@ -580,12 +593,9 @@ export default function DashboardPage() {
         });
         const payload: unknown = await res.json().catch(() => ({}));
         if (!res.ok) {
-          // If unknown categories, don't block UI; just inform quietly
-          const msg = extractMessage(payload, "Could not save categories");
-          console.warn("Auto-save categories failed:", msg);
+          console.warn("Auto-save categories failed:", extractMessage(payload, "Could not save categories"));
         } else if (isRecord(payload)) {
-          // Normalize from server response if provided
-          const catsVal = (payload as Record<string, unknown>).categories;
+          const catsVal = (payload as any).categories;
           const serverCats = Array.isArray(catsVal) ? catsVal.filter((x: unknown) => typeof x === "string") as string[] : null;
           if (serverCats) setSelectedCategories(uniqStrings(serverCats));
         }
@@ -593,10 +603,7 @@ export default function DashboardPage() {
         console.warn("Auto-save categories error:", e);
       }
     }, 800);
-
-    return () => {
-      if (catsSaveTimerRef.current) clearTimeout(catsSaveTimerRef.current);
-    };
+    return () => { if (catsSaveTimerRef.current) clearTimeout(catsSaveTimerRef.current); };
   }, [selectedCategories, creatorId, apiBase]);
 
   async function saveQuickProfile() {
@@ -608,24 +615,18 @@ export default function DashboardPage() {
         method: "PUT",
         credentials: "include",
         headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          display_name: displayName.trim(),
-          bio: bio.trim(),
-          categories: selectedCategories,
-        }),
+        body: JSON.stringify({ display_name: displayName.trim(), bio: bio.trim(), categories: selectedCategories }),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         if (res.status === 401) throw new Error("Unauthorized — please sign in again.");
-        if (res.status === 403)
-          throw new Error("Forbidden — you don’t have permission to edit this profile.");
+        if (res.status === 403) throw new Error("Forbidden — you don’t have permission to edit this profile.");
         throw new Error(text || "Failed to save profile");
       }
-      const updated: unknown = await res.json().catch(() => ({}));
+      const updated: any = await res.json().catch(() => ({}));
       const newDisplay = getStringProp(updated, "display_name") ?? displayName;
       const newBio = getStringProp(updated, "bio") ?? bio;
       const newCats = getStringArrayProp(updated, "categories");
-
       setCreator((prev) => ({
         ...(prev ?? ({} as CreatorProfile)),
         display_name: newDisplay,
@@ -635,9 +636,7 @@ export default function DashboardPage() {
         products_count: prev?.products_count ?? 0,
         creator_id: prev?.creator_id ?? Number(creatorId),
       }));
-      if (newCats && Array.isArray(newCats) && newCats.length >= 0) {
-        setSelectedCategories(uniqStrings(newCats));
-      }
+      if (newCats) setSelectedCategories(uniqStrings(newCats));
       setSaveMsg("Saved ✔");
       setTimeout(() => setSaveMsg(null), 2000);
     } catch (e) {
@@ -656,12 +655,11 @@ export default function DashboardPage() {
         credentials: "include",
         headers: buildAuthHeaders(),
       });
-      const data: unknown = await res.json();
+      const data: any = await res.json();
       const url = getStringProp(data, "url");
       if (url) {
         window.location.href = url;
       } else {
-        // use toast instead of alert for consistency
         showToast(extractMessage(data, "Could not start Stripe onboarding"));
       }
     } catch {
@@ -671,7 +669,6 @@ export default function DashboardPage() {
     }
   }
 
-  // Delete product (protected)
   function requestDelete(id: string) {
     setDeleteErr(null);
     setConfirmDeleteId(id);
@@ -690,11 +687,8 @@ export default function DashboardPage() {
         const text = await res.text().catch(() => "");
         throw new Error(text || "Failed to delete product");
       }
-      const payload: unknown = await res.json().catch(() => ({}));
-      const success =
-        (isRecord(payload) &&
-          typeof (payload as Record<string, unknown>).success === "boolean" &&
-          (payload as Record<string, unknown>).success === true) || false;
+      const payload: any = await res.json().catch(() => ({}));
+      const success = !!(payload?.success === true);
       if (!success) throw new Error(extractMessage(payload, "Delete failed"));
 
       setProducts((prev) => prev.filter((p) => p.id !== confirmDeleteId));
@@ -707,10 +701,7 @@ export default function DashboardPage() {
     }
   }
 
-  // --- Reviews loader ---
   async function loadReviewsForProduct(productId: string, nextPage = 1, limit = 20) {
-    // Backend exposes creator-level listing: GET /api/reviews/creator/:creatorId?limit=20&offset=0
-    // We fetch reviews for the current creator (creatorId) and then filter client-side for the productId.
     if (!creatorId) return;
     setReviewsMap((prev) => ({
       ...prev,
@@ -718,16 +709,14 @@ export default function DashboardPage() {
     }));
     try {
       const offset = Math.max((nextPage - 1) * limit, 0);
-      const res = await fetch(`${apiBase}/api/reviews/creator/${encodeURIComponent(Number(creatorId))}?limit=${limit}&offset=${offset}`, {
-        credentials: "include",
-        headers: buildAuthHeaders(),
-      });
+      const res = await fetch(
+        `${apiBase}/api/reviews/creator/${encodeURIComponent(Number(creatorId))}?limit=${limit}&offset=${offset}`,
+        { credentials: "include", headers: buildAuthHeaders() }
+      );
       if (!res.ok) throw new Error(`Failed to load reviews: ${res.status}`);
       const data: any = await res.json();
 
-      // data.reviews is expected (array), plus optional summary
       const list: unknown[] = Array.isArray(data?.reviews) ? data.reviews : Array.isArray(data) ? data : [];
-
       const parsed: ReviewExtended[] = list
         .filter(isRecord)
         .map((r) => {
@@ -742,13 +731,13 @@ export default function DashboardPage() {
           const product_id = (r as any).product_id != null ? String((r as any).product_id) : getStringProp(r, "productId") ?? null;
           const product = isRecord((r as any).product)
             ? {
-              description: getStringProp((r as any).product, "description") ?? null,
-              view_url: getStringProp((r as any).product, "view_url") ?? getStringProp((r as any).product, "viewUrl") ?? null,
-              download_url: getStringProp((r as any).product, "download_url") ?? getStringProp((r as any).product, "downloadUrl") ?? null,
-              product_type: getStringProp((r as any).product, "product_type") ?? getStringProp((r as any).product, "productType") ?? "purchase",
-              title: getStringProp((r as any).product, "title") ?? "",
-              filename: getStringProp((r as any).product, "filename") ?? "",
-            }
+                description: getStringProp((r as any).product, "description") ?? null,
+                view_url: getStringProp((r as any).product, "view_url") ?? getStringProp((r as any).product, "viewUrl") ?? null,
+                download_url: getStringProp((r as any).product, "download_url") ?? getStringProp((r as any).product, "downloadUrl") ?? null,
+                product_type: getStringProp((r as any).product, "product_type") ?? getStringProp((r as any).product, "productType") ?? "purchase",
+                title: getStringProp((r as any).product, "title") ?? "",
+                filename: getStringProp((r as any).product, "filename") ?? "",
+              }
             : ({ description: null, view_url: null, download_url: null, product_type: "purchase", title: "", filename: "" } as any);
 
           return {
@@ -762,8 +751,7 @@ export default function DashboardPage() {
             product_id,
           } as ReviewExtended;
         })
-        // filter to only reviews that reference this product (if product_id is set)
-        .filter((rv) => rv.product_id === null || rv.product_id === undefined ? false : String(rv.product_id) === String(productId));
+        .filter((rv) => (rv.product_id == null ? false : String(rv.product_id) === String(productId)));
 
       setReviewsMap((prev) => {
         const prevEntry = prev[productId] ?? { items: [], page: 0, hasMore: true, loading: false };
@@ -773,33 +761,28 @@ export default function DashboardPage() {
       });
     } catch (err) {
       console.error("loadReviewsForProduct error", err);
-      setReviewsMap((prev) => ({ ...prev, [productId]: { ...(prev[productId] ?? { items: [], page: 0, hasMore: false }), loading: false } }));
+      setReviewsMap((prev) => ({
+        ...prev,
+        [productId]: { ...(prev[productId] ?? { items: [], page: 0, hasMore: false }), loading: false },
+      }));
     }
   }
 
   function openReviews(productId: string) {
     setActiveReviewsProduct(productId);
     const entry = reviewsMap[productId];
-    if (!entry || entry.items.length === 0) {
-      loadReviewsForProduct(productId, 1);
-    }
+    if (!entry || entry.items.length === 0) loadReviewsForProduct(productId, 1);
   }
-
-  function closeReviews() {
-    setActiveReviewsProduct(null);
-  }
-
+  function closeReviews() { setActiveReviewsProduct(null); }
   function loadMoreReviews(productId: string) {
     const entry = reviewsMap[productId];
     const next = entry ? entry.page + 1 : 1;
     loadReviewsForProduct(productId, next);
   }
 
-  // ----- NEW: View profile + Copy link actions -----
   const publicProfilePath = creatorId ? `/creators/${creatorId}` : "/";
   const onViewProfile = () => router.push(publicProfilePath);
 
-  // Toast helpers
   function showToast(text: string) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastText(text);
@@ -807,24 +790,16 @@ export default function DashboardPage() {
     toastTimerRef.current = setTimeout(() => {
       setToastOpen(false);
       toastTimerRef.current = null;
-    }, 5000);
+    }, 4000);
   }
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    };
-  }, []);
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
-  // Build full URL for an attachment that may be stored as a basename or web path
   const buildAttachmentUrl = useCallback((p: string) => {
     const clean = String(p || "");
-    const webPath = clean.startsWith("/uploads/")
-      ? clean
-      : `/uploads/${clean.replace(/^\/+/, "")}`;
+    const webPath = clean.startsWith("/uploads/") ? clean : `/uploads/${clean.replace(/^\/+/, "")}`;
     return `${apiBase}${webPath}`;
   }, [apiBase]);
 
-  // Auto-download the buyer's attachment in the active request modal
   const handleDownloadAttachment = useCallback(async () => {
     try {
       const p = (activeRequest as any)?.attachment_path as string | undefined;
@@ -853,9 +828,8 @@ export default function DashboardPage() {
       const origin = typeof window !== "undefined" ? window.location.origin : "";
       const fullUrl = `${origin}${publicProfilePath}`;
       await navigator.clipboard.writeText(fullUrl);
-      showToast("Profile link copied to clipboard");
+      showToast("Profile link copied");
     } catch {
-      // Fallback prompt (still show toast so it feels consistent)
       const origin = typeof window !== "undefined" ? window.location.origin : "";
       const fullUrl = `${origin}${publicProfilePath}`;
       window.prompt("Copy your profile link:", fullUrl);
@@ -872,9 +846,10 @@ export default function DashboardPage() {
     );
   }
 
+  /* ------------------------------- UI ------------------------------- */
   return (
     <>
-      {/* Toast (Instagram-style): bottom center, grey bg, check icon, fade/slide */}
+      {/* Toast — bright on black bg */}
       <div
         className={[
           "fixed left-1/2 bottom-8 z-[1000] -translate-x-1/2",
@@ -884,122 +859,113 @@ export default function DashboardPage() {
         role="status"
         aria-live="polite"
       >
-        <div className="flex items-center gap-2 rounded-full bg-neutral-800 px-4 py-2 text-white shadow-lg">
-          {/* Check icon */}
+        <div className="flex items-center gap-2 rounded-full px-4 py-2 text-black shadow-xl bg-gradient-to-r from-amber-300 to-yellow-400">
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M20 6L9 17l-5-5"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <span className="text-sm">{toastText}</span>
+          <span className="text-sm font-medium">{toastText}</span>
         </div>
       </div>
 
-      <main className="mx-auto max-w-6xl px-4 py-8 space-y-8">
-        {/* Header: avatar + name + stats */}
-        <header className="flex items-center gap-4">
-          <div className="relative h-20 w-20 overflow-hidden rounded-full bg-neutral-100">
-            {creator?.profile_image ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
-                alt={creator.display_name || "Creator"}
-                className="h-full w-full object-cover"
-              />
-            ) : null}
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold">
-              {loading ? "Loading..." : creator?.display_name || "Your Profile"}
-            </h1>
-            {creator?.bio && <p className="text-neutral-700">{creator.bio}</p>}
-            {creator && (
-              <div className="text-sm text-neutral-600 mt-1">
-                {(Number(creator.average_rating) || 0).toFixed(1)} ★ · {creator.products_count} products
+      <main className="mx-auto max-w-6xl px-4 py-8 space-y-8 bg-black min-h-screen">
+                  {/* Top bar */}
+          <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-white p-4">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 overflow-hidden rounded-full bg-neutral-100">
+                {creator?.profile_image ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={resolveImageUrl(creator.profile_image, apiBase) || creator.profile_image}
+                    alt={creator?.display_name || "Creator"}
+                    className="h-full w-full object-cover"
+                  />
+                ) : null}
               </div>
-            )}
-          </div>
-        </header>
+              <div>
+                <h1 className="text-lg font-semibold">Dashboard</h1>
+                <p className="text-xs text-neutral-600">
+                  {loading ? "Loading…" : `Welcome, ${creator?.display_name || "creator"}`}
+                </p>
+              </div>
+            </div>
 
-        {/* View profile & Copy link actions */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* View Profile card */}
-          <div className="rounded-2xl border p-4">
-            <button
-              onClick={onViewProfile}
-              className="w-full rounded-xl bg-black py-2 text-white hover:bg-black/90"
-              aria-label="View your public profile"
-            >
-              View your profile
-            </button>
-            <p className="mt-2 text-xs text-neutral-600 text-center">
-              See how your profile looks to others
-            </p>
-          </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Average rating */}
+              <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
+                <StarRating value={Number(averageRating ?? creator?.average_rating ?? 0)} />
+                <span className="text-sm font-medium">
+                  {(Number(averageRating ?? creator?.average_rating ?? 0) || 0).toFixed(1)}
+                </span>
+              </div>
+              {/* Product count from fetched list */}
+              <div className="rounded-lg border px-3 py-2 text-sm">
+                <span className="font-medium">{products.length}</span> products
+              </div>
+            </div>
+          </header>
 
-          {/* Copy Link card */}
-          <div className="rounded-2xl border p-4">
-            <button
-              onClick={onCopyLink}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-xl border py-2 hover:bg-neutral-50"
-              aria-label="Copy your profile link"
-              title="Copy profile link"
-            >
-              {/* Copy icon */}
-              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M8 7V5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-2"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-                <rect
-                  x="3"
-                  y="7"
-                  width="11"
-                  height="14"
-                  rx="3"
-                  ry="3"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                />
-              </svg>
-              Copy profile link
-            </button>
-            <p className="mt-2 text-xs text-neutral-600 text-center">
-              Copy your profile link to share for more engagement by adding to social media profiles
-            </p>
-          </div>
-        </section>
+                  {/* Quick actions */}
+          <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Copy profile link */}
+            <div className="rounded-xl border bg-white p-4">
+              <button
+                onClick={onCopyLink}
+                className="cursor-pointer w-full inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                title="Copy profile link"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M8 7V5a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  <rect x="3" y="7" width="11" height="14" rx="3" ry="3" fill="none" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                Copy profile link
+              </button>
+              <p className="mt-2 text-xs text-neutral-600 text-center">
+                Share your link on socials to increase engagement
+              </p>
+            </div>
 
-        {/* ROW 1: Quick Edit (span 2) • Pending (span 1) */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Quick Edit: wider */}
-          <div className="md:col-span-2 rounded-2xl border p-4">
-            <div className="font-semibold mb-2">Quick Edit: Profile</div>
-            <div className="grid gap-3">
-              <div className="space-y-1">
+            {/* View public profile (moved here from header) */}
+            <div className="rounded-xl border bg-white p-4">
+              <button
+                onClick={onViewProfile}
+                className="cursor-pointer w-full inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                title="View your public profile"
+              >
+                View public profile
+              </button>
+              <p className="mt-2 text-xs text-neutral-600 text-center">
+                See how your page looks to others
+              </p>
+            </div>
+          </section>
+
+        {/* ROW 1: Quick Edit (2) • Pending (1) */}
+        <section className="grid items-stretch grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Quick Edit */}
+          <div className="md:col-span-2 h-full rounded-xl border bg-white p-5">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Quick Edit</h2>
+              {saveMsg && (
+                <span className={`text-sm ${saveMsg.includes("Saved") ? "text-green-700" : "text-red-700"}`}>{saveMsg}</span>
+              )}
+            </div>
+
+            <div className="grid gap-4 mt-4">
+              {/* Display name */}
+              <div>
                 <label className="block text-xs font-medium text-neutral-700">Display name</label>
                 <input
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="Display name"
-                  className="w-full rounded-xl border px-3 py-2"
+                  className="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900"
                 />
               </div>
 
-              <div className="space-y-1">
+              {/* Categories (kept as chips for clarity; pointer enabled) */}
+              <div>
                 <label className="block text-xs font-medium text-neutral-700">Categories</label>
-
-                {/* Category chips from DB */}
-                <div className="flex flex-wrap gap-2">
+                <div className="mt-2 flex flex-wrap gap-2">
                   {catsLoading && allCategories.length === 0 ? (
                     <span className="text-sm text-neutral-500">Loading categories…</span>
                   ) : allCategories.length > 0 ? (
@@ -1010,8 +976,9 @@ export default function DashboardPage() {
                           key={cat.id || cat.name}
                           type="button"
                           onClick={() => toggleCategoryName(cat.name)}
-                          className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-black text-white border-black" : "hover:bg-neutral-100"
-                            }`}
+                          className={`cursor-pointer rounded-full border px-3 py-1 text-sm transition ${
+                            active ? "bg-neutral-900 text-white border-neutral-900" : "hover:bg-neutral-100"
+                          }`}
                           aria-pressed={active}
                           title={cat.name}
                         >
@@ -1019,31 +986,26 @@ export default function DashboardPage() {
                         </button>
                       );
                     })
+                  ) : selectedCategories.length > 0 ? (
+                    selectedCategories.map((name) => (
+                      <button
+                        key={`fallback-${name}`}
+                        type="button"
+                        onClick={() => toggleCategoryName(name)}
+                        className="cursor-pointer rounded-full border px-3 py-1 text-sm bg-neutral-900 text-white border-neutral-900"
+                        aria-pressed
+                        title={name}
+                      >
+                        {name}
+                      </button>
+                    ))
                   ) : (
-                    <>
-                      {selectedCategories.length > 0 ? (
-                        selectedCategories.map((name) => (
-                          <button
-                            key={`fallback-${name}`}
-                            type="button"
-                            onClick={() => toggleCategoryName(name)}
-                            className="rounded-full border px-3 py-1 text-sm bg-black text-white border-black"
-                            aria-pressed
-                            title={name}
-                          >
-                            {name}
-                          </button>
-                        ))
-                      ) : (
-                        <span className="text-sm text-neutral-500">No categories configured yet.</span>
-                      )}
-                    </>
+                    <span className="text-sm text-neutral-500">No categories configured yet.</span>
                   )}
                 </div>
 
-                {/* If creator has a category that's not in the master list, show it too */}
                 {selectedCategories.some((n) => !allCategories.find((c) => c.name === n)) && (
-                  <div className="mt-2">
+                  <div className="mt-3">
                     <div className="text-xs text-neutral-500 mb-1">Your categories</div>
                     <div className="flex flex-wrap gap-2">
                       {selectedCategories
@@ -1053,7 +1015,7 @@ export default function DashboardPage() {
                             key={`own-${name}`}
                             type="button"
                             onClick={() => toggleCategoryName(name)}
-                            className="rounded-full border px-3 py-1 text-sm bg-black text-white border-black"
+                            className="cursor-pointer rounded-full border px-3 py-1 text-sm bg-neutral-900 text-white border-neutral-900"
                             aria-pressed
                             title={name}
                           >
@@ -1064,30 +1026,29 @@ export default function DashboardPage() {
                   </div>
                 )}
 
-                <p className="text-xs text-neutral-500">
-                  Pick one or more categories that best describe your work.
-                </p>
+                <p className="text-xs text-neutral-500 mt-2">Pick one or more categories that best describe your work. (Max three)</p>
               </div>
 
-              <div className="space-y-1">
+              {/* Bio */}
+              <div>
                 <label className="block text-xs font-medium text-neutral-700">Bio</label>
                 <textarea
                   value={bio}
                   onChange={(e) => setBio(e.target.value)}
                   placeholder="Tell buyers what you do"
                   rows={4}
-                  className="w-full rounded-xl border px-3 py-2"
+                  className="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900"
                 />
               </div>
 
-              {/* Profile Image uploader */}
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-neutral-700">Profile Image</label>
+              {/* Profile Image (kept neutral UI, pointer added) */}
+              <div>
+                <label className="block text-xs font-medium text-neutral-700 mb-2">Profile Image</label>
                 <div className="flex items-center gap-4">
                   <button
                     type="button"
                     onClick={() => profileImgInputRef.current?.click()}
-                    className="relative h-20 w-20 overflow-hidden rounded-full border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
+                    className="cursor-pointer relative h-20 w-20 overflow-hidden rounded-full border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
                     aria-label="Change profile image"
                   >
                     {creator?.profile_image ? (
@@ -1099,8 +1060,7 @@ export default function DashboardPage() {
                       />
                     ) : (
                       <span>Upload</span>
-                    )
-                  }
+                    )}
                   </button>
                   <div className="text-xs text-neutral-600 max-w-xs">
                     Click the image to upload / replace. JPG, PNG, WEBP, GIF up to 15MB.
@@ -1139,17 +1099,19 @@ export default function DashboardPage() {
                   />
                 </div>
               </div>
+                            {/* Gallery (4 photos) */}
+              <div>
+                <label className="block text-xs font-medium text-neutral-700 mb-2">
+                  Gallery Photos (4)
+                </label>
 
-              {/* Gallery (4 photos) */}
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-neutral-700">Gallery Photos (4)</label>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {gallery.map((g, idx) => (
                     <div key={g.position} className="flex flex-col items-center gap-1">
                       <button
                         type="button"
                         onClick={() => galleryInputRefs[idx].current?.click()}
-                        className="relative h-28 w-full overflow-hidden rounded-xl border bg-neutral-50 flex items-center justify-center text-xs text-neutral-500 hover:ring-2 hover:ring-black/20"
+                        className="cursor-pointer relative h-28 w-full overflow-hidden rounded-lg border bg-neutral-50 flex items-center justify-center text-xs text-neutral-600 hover:ring-2 hover:ring-black/20"
                         aria-label={`Replace gallery photo ${g.position}`}
                       >
                         {g.url ? (
@@ -1162,8 +1124,11 @@ export default function DashboardPage() {
                         ) : (
                           <span>Photo {g.position}</span>
                         )}
-                        <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">Edit</span>
+                        <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">
+                          Edit
+                        </span>
                       </button>
+
                       <input
                         ref={galleryInputRefs[idx]}
                         type="file"
@@ -1175,23 +1140,27 @@ export default function DashboardPage() {
                           try {
                             const fd = new FormData();
                             fd.append("photo", file);
-                            const res = await fetch(`${apiBase}/api/creators/me/gallery/${g.position}`, {
-                              method: "PATCH",
-                              credentials: "include",
-                              headers: buildAuthHeaders(),
-                              body: fd,
-                            });
+                            const res = await fetch(
+                              `${apiBase}/api/creators/me/gallery/${g.position}`,
+                              {
+                                method: "PATCH",
+                                credentials: "include",
+                                headers: buildAuthHeaders(),
+                                body: fd,
+                              }
+                            );
                             if (!res.ok) throw new Error(await res.text());
                             const data: any = await res.json();
                             const newUrl = data?.url as string | undefined;
                             const newGallery: string[] | undefined = data?.gallery;
+
                             setGallery((prev) =>
                               prev.map((ph) =>
                                 ph.position === g.position
                                   ? { ...ph, url: newUrl || ph.url }
                                   : newGallery && newGallery[ph.position - 1]
-                                    ? { ...ph, url: newGallery[ph.position - 1] }
-                                    : ph
+                                  ? { ...ph, url: newGallery[ph.position - 1] }
+                                  : ph
                               )
                             );
                             showToast(`Gallery photo ${g.position} updated`);
@@ -1206,37 +1175,35 @@ export default function DashboardPage() {
                     </div>
                   ))}
                 </div>
-                <p className="text-xs text-neutral-500">These appear on the back of your creator card.</p>
+
+                <p className="text-xs text-neutral-500 mt-2">
+                  These appear on the back of your creator card.
+                </p>
               </div>
 
               <div className="flex items-center gap-3">
                 <button
                   onClick={saveQuickProfile}
                   disabled={savingProfile}
-                  className={`rounded-xl px-4 py-2 text-sm ${savingProfile ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
-                    }`}
+                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium ${
+                    savingProfile
+                      ? "bg-neutral-300 text-neutral-600"
+                      : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                  }`}
                 >
                   {savingProfile ? "Saving…" : "Save"}
                 </button>
-                {saveMsg && (
-                  <span
-                    className={`text-sm ${saveMsg.includes("Saved") ? "text-green-700" : "text-red-700"
-                      }`}
-                  >
-                    {saveMsg}
-                  </span>
-                )}
               </div>
             </div>
           </div>
 
-          {/* Pending Requests */}
-          <div className="rounded-2xl border p-4">
+          {/* Pending Requests — tall panel with internal scroll */}
+          <div className="h-[65vh] rounded-xl border bg-white p-5 flex flex-col">
             <div className="flex justify-between items-center mb-2">
-              <div className="font-semibold">Pending Requests</div>
+              <h2 className="font-semibold">Pending Requests</h2>
               <button
-                onClick={() => loadPending()} // Add manual refresh
-                className="text-xs text-neutral-500 hover:text-neutral-700"
+                onClick={() => loadPending()}
+                className="cursor-pointer text-xs rounded-md px-2 py-1 font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
               >
                 Refresh
               </button>
@@ -1251,32 +1218,31 @@ export default function DashboardPage() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-2 max-h-157 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
                 {pendingRequests.map((req) => (
-                  <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition-colors">
+                  <div key={req.id} className="rounded-lg border p-3 bg-neutral-50 hover:bg-neutral-100 transition">
                     <div className="flex justify-between items-start">
-                      <div className="flex-1">
-                        <div className="text-sm font-medium">{req.product_title || `Request #${req.id}`}</div>    
-
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold truncate">{req.product_title || `Request #${req.id}`}</div>
                         {req.amount !== undefined && req.amount !== null && (
                           <div className="text-sm font-medium text-neutral-900 mt-1">
                             ${(req.amount / 100).toFixed(2)}
                           </div>
                         )}
                         <div className="text-xs text-neutral-500 mt-1">
-                          {new Date(req.created_at).toLocaleDateString()} at {new Date(req.created_at).toLocaleTimeString()}
+                          {new Date(req.created_at).toLocaleDateString()} · {new Date(req.created_at).toLocaleTimeString()}
                         </div>
                       </div>
-                      <div className="ml-2">
+                      <div className="ml-2 shrink-0 flex gap-2">
                         <button
                           onClick={() => openRequest(req)}
-                          className="text-xs px-2 py-1 rounded-md bg-black text-white hover:bg-black/90"
+                          className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                         >
                           View
                         </button>
                         <button
                           onClick={() => openComplete(req)}
-                          className="text-xs px-2 py-1 mx-2 rounded-md bg-black text-white hover:bg-black/90"
+                          className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                         >
                           Complete
                         </button>
@@ -1289,84 +1255,74 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* ROW 2: Stripe (span 2) • Add Product (span 1) */}
+        {/* ROW 2: Stripe • Manage in Feed (distinct) • Add Product */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Stripe: left, span 2 */}
-          <div className="md:col-span-1 rounded-2xl border p-4">
-            <div className="font-semibold mb-2">Stripe Connect</div>
-
+          {/* Stripe */}
+          <div className="rounded-xl border bg-white p-5">
+            <h2 className="font-semibold mb-2">Stripe Connect</h2>
             <div className="flex items-center gap-2">
               <span
-                className={`inline-block h-2 w-2 rounded-full ${stripeConnected ? "bg-green-500" : stripeConnected === false ? "bg-red-500" : "bg-neutral-300"
-                  }`}
+                className={`inline-block h-2 w-2 rounded-full ${stripeConnected ? "bg-green-500" : stripeConnected === false ? "bg-red-500" : "bg-neutral-300"}`}
                 aria-hidden="true"
               />
               <span className="text-sm text-neutral-700">
                 {stripeLoading
                   ? "Checking status…"
                   : stripeConnected
-                    ? "Connected"
-                    : stripeConnected === false
-                      ? "Not connected"
-                      : "Status unavailable"}
+                  ? "Connected"
+                  : stripeConnected === false
+                  ? "Not connected"
+                  : "Status unavailable"}
               </span>
             </div>
 
             <button
               onClick={connectStripe}
               disabled={connecting}
-              className="mt-3 w-full rounded-xl bg-black py-2 text-white"
+              className={`cursor-pointer mt-3 w-full rounded-lg px-4 py-2 text-sm font-medium ${
+                connecting
+                  ? "bg-neutral-300 text-neutral-700"
+                  : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+              }`}
             >
               {connecting ? "Redirecting…" : stripeConnected ? "Manage in Stripe" : "Connect Stripe"}
             </button>
           </div>
-          {hasMembership ? (
-            <button
-              type="button"
-              onClick={() => router.push("/feed")}
-              className="rounded-2xl border p-4 flex items-center justify-center hover:bg-neutral-50"
-              aria-label="Manage feed posts"
-              title="Manage feed posts"
-            >
-              <div className="flex flex-col items-center gap-2">
-                <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed">
-                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                </div>
-                <span className="text-sm font-medium">Manage in Feed</span>
-              </div>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => router.push("/feed")}
-              className="rounded-2xl border p-4 flex items-center justify-center hover:bg-neutral-50"
-              aria-label="Manage feed posts"
-              title="Manage feed posts"
-            >
-              <div className="flex flex-col items-center gap-2">
-                <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed">
-                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                </div>
-                <span className="text-sm font-medium">You do not currently have any memberships to post to.</span>
-              </div>
-            </button>
-          )}
 
-          {/* Add Product Icon card: right */}
+          {/* Manage in Feed — EXEMPT from gradient */}
+          <button
+            type="button"
+            onClick={() => router.push("/feed")}
+            className={`cursor-pointer rounded-xl p-5 flex items-center justify-center text-center shadow-sm
+              ${hasMembership ? "bg-indigo-600 text-white hover:bg-indigo-700" : "bg-indigo-50 text-indigo-900 border border-indigo-200"}
+            `}
+            title="Manage feed posts"
+          >
+            <div className="flex flex-col items-center gap-2">
+              <div className={`flex h-12 w-12 items-center justify-center rounded-full ${hasMembership ? "bg-white/20" : "bg-indigo-100"}`}>
+                <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </div>
+              <span className="text-sm font-semibold">
+                {hasMembership ? "Manage Membship(s) Feed" : "No memberships yet"}
+              </span>
+              {!hasMembership && (
+                <span className="text-xs opacity-80">Create a membership to start posting</span>
+              )}
+            </div>
+          </button>
+
+          {/* Add Product — EXEMPT from gradient */}
           <button
             type="button"
             onClick={() => router.push("/dashboard/products/new")}
-            className="rounded-2xl border p-4 flex items-center justify-center hover:bg-neutral-50"
-            aria-label="Add Product"
+            className="cursor-pointer rounded-xl border bg-white p-5 flex items-center justify-center hover:bg-neutral-50"
             title="Add Product"
           >
             <div className="flex flex-col items-center gap-2">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-dashed">
-                <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-dashed">
+                <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
               </div>
@@ -1375,53 +1331,55 @@ export default function DashboardPage() {
           </button>
         </section>
 
-        {/* Products grid */}
+        {/* Products grid — compact cards */}
         <section>
-          <h2 className="font-semibold mb-2">Your Products</h2>
+          <h2 className="font-semibold mb-2 text-white">Your Products</h2>
           {loading ? (
-            <div className="text-sm text-neutral-600">Loading…</div>
+            <div className="text-sm text-neutral-300">Loading…</div>
           ) : products.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {products.map((p) => (
-                <div key={p.id} className="rounded-2xl border p-4">
-                  <div className="text-xs uppercase tracking-wide text-neutral-600">{p.product_type}</div>
-                  <div className="font-semibold">{p.title}</div>
+                <div key={p.id} className="rounded-lg border bg-white p-3 hover:shadow-sm transition">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] uppercase tracking-wide text-neutral-600">{p.product_type}</span>
+                    <span className="text-xs font-semibold">${((p.price || 0) / 100).toFixed(2)}</span>
+                  </div>
+                  <div className="mt-1 font-semibold truncate">{p.title}</div>
                   {p.description && (
-                    <p className="text-sm text-neutral-700 mt-1 line-clamp-3">{p.description}</p>
+                    <p className="text-xs text-neutral-600 mt-1 line-clamp-2">{p.description}</p>
                   )}
-                  <div className="mt-2 font-semibold">${((p.price || 0) / 100).toFixed(2)}</div>
-                  <div className="mt-3 flex gap-2">
+                  <div className="mt-2 flex flex-wrap gap-2">
                     <button
-                      className="rounded-lg border px-3 py-1 text-sm"
+                      className="cursor-pointer rounded-md px-2.5 py-1 text-xs text-white font-medium bg-blue-700 hover:brightness-95"
                       onClick={() => router.push(`/products/${p.id}`)}
                     >
                       Edit
                     </button>
                     <button
-                      className="rounded-lg border px-3 py-1 text-sm"
+                      className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium bg-red-300 hover:brightness-95"
                       onClick={() => requestDelete(p.id)}
                     >
                       Delete
                     </button>
                     <button
-                      className="rounded-lg border px-3 py-1 text-sm"
+                      className="cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                       onClick={() => openReviews(p.id)}
                     >
-                      View reviews
+                      Reviews
                     </button>
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="text-sm text-neutral-600">No products yet.</div>
+            <div className="text-sm text-neutral-300">No products yet.</div>
           )}
         </section>
 
         {/* Delete confirm modal */}
         {confirmDeleteId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-md space-y-4 rounded-2xl bg-white p-5">
+            <div className="w-full max-w-md space-y-4 rounded-xl bg-white p-6">
               <h3 className="text-lg font-semibold">Delete product?</h3>
               <p className="text-sm text-neutral-700">
                 This action cannot be undone. Are you sure you want to delete this product?
@@ -1434,15 +1392,16 @@ export default function DashboardPage() {
               <div className="flex items-center justify-end gap-2">
                 <button
                   onClick={() => setConfirmDeleteId(null)}
-                  className="rounded-xl border px-4 py-2 text-sm"
+                  className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                   disabled={deleting}
                 >
                   No
                 </button>
                 <button
                   onClick={confirmDelete}
-                  className={`rounded-xl px-4 py-2 text-sm text-white ${deleting ? "bg-neutral-400" : "bg-black"
-                    }`}
+                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-black ${
+                    deleting ? "bg-neutral-300" : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                  }`}
                   disabled={deleting}
                 >
                   {deleting ? "Deleting…" : "Yes, delete"}
@@ -1451,56 +1410,52 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
+
         {/* Request details modal */}
         {activeRequest && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
+            <div className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6">
               <div className="flex justify-between items-center">
-                <h3 className="text-lg font-semibold">{activeRequest.product_title || `Request #${activeRequest.id}`}</h3>
+                <h3 className="text-lg font-semibold">
+                  {activeRequest.product_title || `Request #${activeRequest.id}`}
+                </h3>
               </div>
 
               <div className="space-y-2">
                 {activeRequest.user && (
-                  <div className="text-sm text-neutral-700"> Detail: {activeRequest.user}</div>
+                  <div className="text-sm text-neutral-700">Detail: {activeRequest.user}</div>
                 )}
-                
                 {activeRequest.amount !== undefined && activeRequest.amount !== null && (
                   <div className="text-sm font-semibold">Amount: ${((activeRequest.amount || 0) / 100).toFixed(2)}</div>
                 )}
-                <div className="text-xs text-neutral-500">{new Date(activeRequest.created_at).toLocaleDateString()} at {new Date(activeRequest.created_at).toLocaleTimeString()}</div>
+                <div className="text-xs text-neutral-500">
+                  {new Date(activeRequest.created_at).toLocaleDateString()} · {new Date(activeRequest.created_at).toLocaleTimeString()}
+                </div>
 
-                {/* Download original buyer attachment (if present) */}
-                  {activeRequest.attachment_path ? (
-                    <div className="pt-2 space-y-3">
-                      {/* Inline preview */}
-                      <AttachmentViewer src={buildAttachmentUrl(activeRequest.attachment_path)} />
-
-                      {/* Buttons below the preview */}
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleDownloadAttachment}
-                          className="rounded-xl border px-4 py-2 text-sm inline-flex items-center gap-2 hover:bg-neutral-50"
-                        >
-                          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-                          </svg>
-                          Download
-                        </button>
-                      </div>
+                {activeRequest.attachment_path ? (
+                  <div className="pt-2 space-y-3">
+                    <AttachmentViewer src={buildAttachmentUrl(activeRequest.attachment_path)} />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDownloadAttachment}
+                        className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium inline-flex items-center gap-2 bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+                        </svg>
+                        Download
+                      </button>
                     </div>
-                  ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="flex items-center justify-end gap-2">
-                <button onClick={closeRequest} className="rounded-xl border px-4 py-2 text-sm">Close</button>
+                <button onClick={closeRequest} className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95">Close</button>
                 <button
-                  onClick={() => {
-                    // Open the inline Complete modal for this request
-                    closeRequest();
-                    openComplete(activeRequest);
-                  }}
-                  className="rounded-xl px-4 py-2 text-sm bg-black text-white"
+                  onClick={() => { closeRequest(); openComplete(activeRequest); }}
+                  className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                 >
                   Complete
                 </button>
@@ -1508,36 +1463,81 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
-        {/* Complete request modal (submit description + optional media) */}
+
+        {/* Complete request modal */}
         {activeCompleteRequest && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5">
+            <div className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Complete Request</h3>
+                <button onClick={closeComplete} className="cursor-pointer text-sm rounded-md px-2 py-1 font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95">Close</button>
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-neutral-700">Description (required)</label>
-                <textarea
-                  value={completeDesc}
-                  onChange={(e) => setCompleteDesc(e.target.value)}
-                  rows={4}
-                  placeholder="Describe what you delivered or include buyer notes"
-                  className="w-full rounded-xl border px-3 py-2"
-                />
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700">Description (required)</label>
+                  <textarea
+                    value={completeDesc}
+                    onChange={(e) => setCompleteDesc(e.target.value)}
+                    rows={4}
+                    placeholder="Describe what you delivered or include buyer notes"
+                    className="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                  />
+                </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-700 mb-1">Attachments (optional)</label>
-                  <input ref={completeFilesRef} type="file" accept="image/*,video/*" multiple className="" />
-                  <p className="text-xs text-neutral-500 mt-1">You can attach images or a short video.</p>
-                </div>
-              </div>
+  <label className="block text-xs font-medium text-neutral-700 mb-1">
+    Attachments (optional)
+  </label>
+
+  {/* Hidden native input */}
+  <input
+    id="complete-files"
+    ref={completeFilesRef}
+    type="file"
+    accept="image/*,video/*"
+    multiple
+    className="hidden"
+    onChange={(e) => {
+      const names = Array.from(e.target.files ?? []).map((f) => f.name);
+      setCompleteFileNames(names);
+    }}
+  />
+
+  {/* Trigger + filename display */}
+  <div className="flex items-center gap-3">
+    <button
+      type="button"
+      onClick={() => completeFilesRef.current?.click()}
+      className="cursor-pointer inline-flex items-center rounded-lg bg-black text-white px-3 py-2 text-sm hover:bg-black/90"
+    >
+      Choose files
+    </button>
+
+    {/* Names (truncate long lists nicely) */}
+    <div className="text-xs text-neutral-700 max-w-full overflow-hidden">
+      {completeFileNames.length === 0 ? (
+        <span className="text-neutral-500">No files selected</span>
+      ) : (
+        <span className="block truncate" title={completeFileNames.join(", ")}>
+          {completeFileNames.join(", ")}
+        </span>
+      )}
+    </div>
+  </div>
+
+  <p className="text-xs text-neutral-500 mt-1">
+    You can attach images or a short video.
+  </p>
+</div>
 
               <div className="flex items-center justify-end gap-2">
-                <button onClick={closeComplete} className="rounded-xl border px-4 py-2 text-sm" disabled={completing}>Cancel</button>
+                <button onClick={closeComplete} className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95" disabled={completing}>Cancel</button>
                 <button
                   onClick={submitComplete}
-                  className={`rounded-xl px-4 py-2 text-sm text-white ${completing ? "bg-neutral-400" : "bg-black"}`}
+                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-black ${
+                    completing ? "bg-neutral-300" : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                  }`}
                   disabled={completing || !completeDesc.trim()}
                 >
                   {completing ? "Submitting…" : "Submit & Mark Complete"}
@@ -1545,17 +1545,20 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+          </div>
         )}
+
         {/* Reviews modal */}
         {activeReviewsProduct && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-2xl space-y-4 rounded-2xl bg-white p-5">
+            <div className="w-full max-w-2xl space-y-4 rounded-xl bg-white p-6">
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Reviews for product</h3>
-                <button onClick={closeReviews} className="text-sm text-neutral-500">Close</button>
+                <button onClick={closeReviews} className="cursor-pointer text-sm rounded-md px-2 py-1 font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95">Close</button>
               </div>
               <div className="max-h-96 overflow-y-auto space-y-3">
-                {(reviewsMap[activeReviewsProduct]?.items ?? []).length === 0 && !reviewsMap[activeReviewsProduct]?.loading ? (
+                {(reviewsMap[activeReviewsProduct]?.items ?? []).length === 0 &&
+                !reviewsMap[activeReviewsProduct]?.loading ? (
                   <div className="text-sm text-neutral-600">No reviews yet.</div>
                 ) : (
                   (reviewsMap[activeReviewsProduct]?.items ?? []).map((r) => (
@@ -1567,17 +1570,13 @@ export default function DashboardPage() {
                       <div className="text-sm text-neutral-700 mt-1">{r.comment}</div>
                       <div className="text-xs text-neutral-500 mt-2">
                         Rating:
-                        <span
-                          className="ml-1 inline-flex"
-                          aria-label={`Rating ${r.rating} out of 5`}
-                          title={`${r.rating} out of 5`}
-                        >
+                        <span className="ml-1 inline-flex" aria-label={`Rating ${r.rating} out of 5`} title={`${r.rating} out of 5`}>
                           {Array.from({ length: 5 }).map((_, i) => {
-                            const numeric = typeof r.rating === 'number' ? r.rating : Number(r.rating || 0);
+                            const numeric = typeof r.rating === "number" ? r.rating : Number(r.rating || 0);
                             const filled = i < Math.round(Math.max(0, Math.min(5, numeric)));
                             return (
-                              <span key={i} className={filled ? 'text-yellow-500' : 'text-neutral-300'}>
-                                {filled ? '★' : '☆'}
+                              <span key={i} className={filled ? "text-yellow-500" : "text-neutral-300"}>
+                                {filled ? "★" : "☆"}
                               </span>
                             );
                           })}
@@ -1588,14 +1587,16 @@ export default function DashboardPage() {
                 )}
               </div>
               <div className="flex items-center justify-between">
-                <div className="text-xs text-neutral-500">{(reviewsMap[activeReviewsProduct]?.items ?? []).length} reviews</div>
+                <div className="text-xs text-neutral-500">
+                  {(reviewsMap[activeReviewsProduct]?.items ?? []).length} reviews
+                </div>
                 <div>
                   {reviewsMap[activeReviewsProduct]?.loading ? (
-                    <button className="rounded-xl px-3 py-1 bg-neutral-200 text-sm">Loading…</button>
+                    <button className="cursor-pointer rounded-lg px-3 py-1 bg-neutral-200 text-sm">Loading…</button>
                   ) : reviewsMap[activeReviewsProduct]?.hasMore ? (
                     <button
                       onClick={() => loadMoreReviews(activeReviewsProduct)}
-                      className="rounded-xl px-3 py-1 bg-black text-white text-sm"
+                      className="cursor-pointer rounded-lg px-3 py-1 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
                     >
                       Load more
                     </button>

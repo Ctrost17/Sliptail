@@ -445,7 +445,7 @@ export default function PurchasesPage() {
   }) => (
     <button
       onClick={() => setActiveTab(tab)}
-      className={`relative flex-1 py-4 px-6 text-sm font-medium transition-all duration-300 ${
+      className={`relative flex-1 cursor-pointer py-4 px-6 text-sm font-medium transition-all duration-300 ${
         activeTab === tab ? "text-gray-900" : "text-gray-500 hover:text-gray-700"
       }`}
     >
@@ -528,7 +528,7 @@ export default function PurchasesPage() {
                             </span>
                           ) : (
                             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                              Active
+                              Active Membership
                             </span>
                           )}
                         </div>
@@ -596,7 +596,9 @@ export default function PurchasesPage() {
                     Boolean((r.request_user_message || "").trim()) ||
                     Boolean(r.request_user_attachment_url);
 
-                  const isComplete = r.status === "complete";
+                  const isComplete = ["delivered", "complete"].includes(
+                     (r.request_status || "").toLowerCase()
+                  );
 
                   return (
                     <div key={r.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
@@ -624,8 +626,8 @@ export default function PurchasesPage() {
                                 Pending
                               </span>
                             ) : (
-                              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                                <div className="w-1.5 h-1.5 bg-gray-500 rounded-full mr-1.5" />
+                              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-gray-700">
+                                <div className="w-1.5 h-1.5 bg-red-500 rounded-full mr-1.5" />
                                 Action Needed
                               </span>
                             )}
@@ -669,7 +671,7 @@ export default function PurchasesPage() {
                                 <p className="text-sm text-gray-500 mb-3">Please submit your request details</p>
                                 <button
                                   onClick={() => router.push(`/requests/new?orderId=${r.id}`)}
-                                  className="cursor-pointer bg-emerald-300 text-black px-4 py-2 rounded-lg text-sm font-medium hover:emerald-700 transition-colors duration-200 inline-flex items-center"
+                                  className="cursor-pointer bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:emerald-700 transition-colors duration-200 inline-flex items-center"
                                 >
                                   Submit Request Details
                                   <ChevronRight className="w-4 h-4 ml-1" />
@@ -784,6 +786,7 @@ export default function PurchasesPage() {
               </div>
 
               <div className="space-y-6">
+                {/* Request header */}
                 <div className="bg-gray-50 rounded-lg p-4">
                   <h4 className="font-medium text-gray-700 mb-2">Request</h4>
                   <h5 className="font-semibold text-gray-900">{selectedItem.product.title}</h5>
@@ -792,77 +795,95 @@ export default function PurchasesPage() {
                   )}
                 </div>
 
+                {/* Buyer-submitted details */}
                 {(selectedItem.request_user_message || selectedItem.request_user_attachment_url) && (
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Your Submitted Details</h4>
 
                     {selectedItem.request_user_message && (
                       <div className="bg-gray-50 rounded-lg p-4 mb-3">
-                        <p className="text-gray-700 whitespace-pre-wrap">{selectedItem.request_user_message}</p>
+                        <p className="text-gray-700 whitespace-pre-wrap">
+                          {selectedItem.request_user_message}
+                        </p>
                       </div>
                     )}
 
                     {selectedItem.request_user_attachment_url && (
-                      <div>
-                        <h5 className="font-medium text-gray-700 mb-2">Your Attachment</h5>
-                        <a
-                          href={
-                            resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
-                            selectedItem.request_user_attachment_url ||
-                            "#"
-                          }
-                          className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
-                          download
-                        >
-                          <Download className="w-5 h-5 mr-2" />
-                          Download Attachment
-                        </a>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {selectedItem.request_response && (
-                  <div>
-                    <h4 className="font-medium text-gray-700 mb-3">Creator's Response</h4>
-                    <div className="bg-green-50 rounded-lg p-4">
-                      <p className="text-gray-700 whitespace-pre-wrap">{selectedItem.request_response}</p>
-                    </div>
-                  </div>
-                )}
-
-                  {selectedItem.request_user_attachment_url && (
                     <div>
-                      <h5 className="font-medium text-gray-700 mb-2">Your Attachment</h5>
-
-                      {/* Inline preview */}
-                      <AttachmentViewer
-                        src={
+                      <a
+                        href={
                           resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
                           selectedItem.request_user_attachment_url!
                         }
-                      />
-
-                      {/* Buttons */}
-                      <div className="mt-3">
-                        <a
-                          href={
-                            resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
-                            selectedItem.request_user_attachment_url!
-                          }
-                          className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-100 transition-colors duration-200"
-                          download
-                        >
-                          <Download className="w-5 h-5 mr-2" />
-                          Download Attachment
-                        </a>
-                      </div>
+                        className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
+                        download
+                        rel="noopener noreferrer"
+                      >
+                        <Download className="w-5 h-5 mr-2" />
+                        Download Your Attachment
+                      </a>
                     </div>
                   )}
+                  </div>
+                )}
+
+                {/* Creator delivery (shown when creator attached a file on deliver/complete) */}
+                {selectedItem.request_media_url && (
+                  <div>
+                    <h4 className="font-medium text-gray-700 mb-3">Creator’s Delivery</h4>
+
+                    <AttachmentViewer
+                      src={
+                        resolveImageUrl(selectedItem.request_media_url, apiBase) ||
+                        selectedItem.request_media_url!
+                      }
+                    />
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {/* Direct file download */}
+                      <a
+                        href={
+                          resolveImageUrl(selectedItem.request_media_url, apiBase) ||
+                          selectedItem.request_media_url!
+                        }
+                        className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
+                        download
+                      >
+                        <Download className="w-5 h-5 mr-2" />
+                        Download Delivery
+                      </a>
+
+                      {/* Protected download route (works when status is 'delivered') */}
+                      {selectedItem.request_id &&
+                        (selectedItem.request_status || "").toLowerCase() === "delivered" && (
+                          <a
+                            href={`${apiBase}/api/requests/${selectedItem.request_id}/download`}
+                            className="inline-flex items-center bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg hover:bg-gray-200 transition-colors"
+                          >
+                            <Download className="w-5 h-5 mr-2" />
+                            Download (via secure route)
+                          </a>
+                        )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Creator text notes (if they wrote something) */}
+                {selectedItem.request_response && (
+                  <div>
+                    <h4 className="font-medium text-gray-700 mb-3">Creator’s Notes</h4>
+                    <div className="bg-green-50 rounded-lg p-4">
+                      <p className="text-gray-700 whitespace-pre-wrap">
+                        {selectedItem.request_response}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
+
 
         {/* Review Modal */}
         {showReviewModal && (
@@ -905,14 +926,14 @@ export default function PurchasesPage() {
                     setReviewText("");
                     setReviewRating(5);
                   }}
-                  className="flex-1 bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg font-medium hover:bg-gray-200 transition-colors duration-200"
+                  className="flex-1 cursor-pointer bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg font-medium hover:bg-gray-200 transition-colors duration-200"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSubmitReview}
                   disabled={!reviewText.trim()}
-                  className="flex-1 bg-green-600 text-white px-4 py-2.5 rounded-lg font-medium hover:bg-green-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex-1 cursor-pointer bg-green-600 text-white px-4 py-2.5 rounded-lg font-medium hover:bg-green-700 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Submit Review
                 </button>

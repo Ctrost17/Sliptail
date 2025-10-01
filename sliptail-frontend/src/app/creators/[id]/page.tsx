@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { fetchApi } from "@/lib/api"; // <-- added
+import { fetchApi } from "@/lib/api";
+import { Package, Quote } from "lucide-react";
 
 /* -------------------------- Types -------------------------- */
 
@@ -43,29 +44,24 @@ type Review = {
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
-
 function getString(obj: unknown, key: string): string | undefined {
   if (!isRecord(obj)) return undefined;
   const v = obj[key];
   return typeof v === "string" ? v : undefined;
 }
-
 function getNumber(obj: unknown, key: string): number | undefined {
   if (!isRecord(obj)) return undefined;
   const v = obj[key];
   return typeof v === "number" ? v : undefined;
 }
-
 function getArray(obj: unknown, key: string): unknown[] | undefined {
   if (!isRecord(obj)) return undefined;
   const v = obj[key];
   return Array.isArray(v) ? v : undefined;
 }
-
 function toApiBase(): string {
   return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 }
-
 /** Normalize backend image paths to absolute URLs usable by next/image */
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
@@ -74,6 +70,18 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (/^https?:\/\//i.test(s)) return s;
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
+}
+function formatDate(d?: string | null) {
+  if (!d) return "";
+  try {
+    return new Date(d).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return d || "";
+  }
 }
 
 /* ----------------------- JSON Parsers ----------------------- */
@@ -112,22 +120,13 @@ function parseCreatorProfile(json: unknown, fallbackId: string | null): CreatorP
     return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
   })();
 
-  return {
-    creator_id: id,
-    display_name,
-    bio,
-    profile_image,
-    average_rating,
-    products_count,
-    gallery,
-  };
+  return { creator_id: id, display_name, bio, profile_image, average_rating, products_count, gallery };
 }
 
 function parseProductItem(x: unknown): Product | null {
   if (!isRecord(x)) return null;
 
-  const id =
-    getString(x, "id") ?? (typeof x["id"] === "number" ? String(x["id"]) : undefined);
+  const id = getString(x, "id") ?? (typeof x["id"] === "number" ? String(x["id"]) : undefined);
   if (!id) return null;
 
   const title = getString(x, "title") ?? "";
@@ -149,7 +148,6 @@ function parseProductItem(x: unknown): Product | null {
 
   return { id, title, description, product_type, price };
 }
-
 function parseProductsResponse(json: unknown): Product[] {
   if (!isRecord(json)) return [];
   const arr = getArray(json, "products");
@@ -161,13 +159,8 @@ function parseProductsResponse(json: unknown): Product[] {
   }
   return out;
 }
-
-function parseCreatorCard(json: unknown): {
-  categories: CategoryChip[];
-  gallery: string[];
-} {
+function parseCreatorCard(json: unknown): { categories: CategoryChip[]; gallery: string[] } {
   if (!isRecord(json)) return { categories: [], gallery: [] };
-
   const front = isRecord(json.front) ? json.front : null;
   const back = isRecord(json.back) ? json.back : null;
 
@@ -175,8 +168,7 @@ function parseCreatorCard(json: unknown): {
   const categories: CategoryChip[] = [];
   for (const c of catsRaw) {
     if (!isRecord(c)) continue;
-    const id =
-      getNumber(c, "id") ?? (typeof c["id"] === "string" ? Number(c["id"]) : undefined);
+    const id = getNumber(c, "id") ?? (typeof c["id"] === "string" ? Number(c["id"]) : undefined);
     const name = getString(c, "name");
     const slug = getString(c, "slug") ?? "";
     if (typeof id === "number" && Number.isFinite(id) && name) {
@@ -191,18 +183,11 @@ function parseCreatorCard(json: unknown): {
 
   return { categories, gallery };
 }
-
 function parseReviews(json: unknown): Review[] {
   let arr: unknown[] | undefined;
-
-  if (Array.isArray(json)) {
-    arr = json;
-  } else if (isRecord(json)) {
-    arr = getArray(json, "reviews");
-  }
-
+  if (Array.isArray(json)) arr = json;
+  else if (isRecord(json)) arr = getArray(json, "reviews");
   if (!arr) return [];
-
   const out: Review[] = [];
   for (const r of arr) {
     if (!isRecord(r)) continue;
@@ -225,18 +210,59 @@ function parseReviews(json: unknown): Review[] {
       const cmt = r["comment"] ?? r["text"] ?? r["review"];
       return typeof cmt === "string" ? cmt : null;
     })();
-    const created_at =
-      getString(r, "created_at") ?? getString(r, "createdAt") ?? new Date().toISOString();
-
-    // NEW: capture product title for display (supports both product_title and title)
-    const product_title =
-      getString(r, "product_title") ??
-      getString(r, "title") ??
-      null;
-
+    const created_at = getString(r, "created_at") ?? getString(r, "createdAt") ?? new Date().toISOString();
+    const product_title = getString(r, "product_title") ?? getString(r, "title") ?? null;
     out.push({ id, author_name, rating, comment, created_at, product_title });
   }
   return out;
+}
+
+/* ------------------------------ UI bits ------------------------------ */
+
+function StarsRow({ value, size = "text-sm" }: { value: number; size?: string }) {
+  const clamped = Math.max(0, Math.min(5, value));
+  const full = Math.floor(clamped);
+  const half = clamped - full >= 0.5;
+  return (
+    <div className="inline-flex items-center gap-0.5">
+      {Array.from({ length: 5 }).map((_, i) => {
+        const active = i < full || (i === full && half);
+        return (
+          <span key={i} className={`${size} ${active ? "text-yellow-400" : "text-gray-300"}`} aria-hidden>
+            ★
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Expandable product description */
+function ExpandableText({
+  text,
+  initialChars = 280,
+}: {
+  text: string;
+  initialChars?: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const needsToggle = text.length > initialChars;
+  const visible = expanded || !needsToggle ? text : text.slice(0, initialChars) + "…";
+
+  return (
+    <div className="mt-1 text-sm text-gray-700">
+      <p className="whitespace-pre-wrap">{visible}</p>
+      {needsToggle && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-gray-900 underline underline-offset-2 hover:text-black cursor-pointer"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 /* ------------------------- Component ------------------------ */
@@ -248,11 +274,7 @@ export default function CreatorProfilePage() {
 
   const apiBase = useMemo(() => toApiBase(), []);
   const router = useRouter();
-  const { user, token, loading: authLoading } = useAuth?.() ?? {
-    user: null,
-    token: null,
-    loading: false,
-  };
+  const { user, token, loading: authLoading } = useAuth?.() ?? { user: null, token: null, loading: false };
 
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -263,8 +285,9 @@ export default function CreatorProfilePage() {
   const [err, setErr] = useState<string | null>(null);
   const [checkingOutId, setCheckingOutId] = useState<string | null>(null);
 
-  // NEW: track membership subscriptions the viewer currently has
+  // Subscriptions state
   const [subscribedIds, setSubscribedIds] = useState<Set<number>>(new Set());
+  const [subsReady, setSubsReady] = useState(false); // <-- NEW: know when subscribedIds is loaded
 
   const isOwner =
     !!user &&
@@ -281,18 +304,9 @@ export default function CreatorProfilePage() {
       setLoading(true);
       setErr(null);
       try {
-        const profReq = fetch(`${apiBase}/api/creators/${creatorId}`, {
-          credentials: "include",
-          signal: ac.signal,
-        });
-        const cardReq = fetch(`${apiBase}/api/creators/${creatorId}/card`, {
-          credentials: "include",
-          signal: ac.signal,
-        });
-        const prodReq = fetch(`${apiBase}/api/products/user/${creatorId}`, {
-          credentials: "include",
-          signal: ac.signal,
-        });
+        const profReq = fetch(`${apiBase}/api/creators/${creatorId}`, { credentials: "include", signal: ac.signal });
+        const cardReq = fetch(`${apiBase}/api/creators/${creatorId}/card`, { credentials: "include", signal: ac.signal });
+        const prodReq = fetch(`${apiBase}/api/products/user/${creatorId}`, { credentials: "include", signal: ac.signal });
 
         const profRes = await profReq;
         if (!profRes.ok) throw new Error(`HTTP ${profRes.status}`);
@@ -372,12 +386,14 @@ export default function CreatorProfilePage() {
     };
   }, [creatorId, apiBase]);
 
-  // NEW: fetch products the viewer is currently subscribed to
+  // Fetch products the viewer is subscribed to (for membership CTA state)
   useEffect(() => {
     let cancelled = false;
+    setSubsReady(false); // <-- reset readiness when token changes
     (async () => {
       if (!token) {
         setSubscribedIds(new Set());
+        setSubsReady(true);
         return;
       }
       try {
@@ -387,17 +403,14 @@ export default function CreatorProfilePage() {
         );
         const set = new Set<number>();
         for (const p of res?.products ?? []) {
-          const n =
-            typeof p.id === "number"
-              ? p.id
-              : typeof p.id === "string"
-              ? Number(p.id)
-              : NaN;
+          const n = typeof p.id === "number" ? p.id : typeof p.id === "string" ? Number(p.id) : NaN;
           if (Number.isFinite(n)) set.add(n);
         }
         if (!cancelled) setSubscribedIds(set);
       } catch {
         if (!cancelled) setSubscribedIds(new Set());
+      } finally {
+        if (!cancelled) setSubsReady(true); // <-- mark ready
       }
     })();
     return () => {
@@ -405,27 +418,23 @@ export default function CreatorProfilePage() {
     };
   }, [token]);
 
-  /**
-   * Client-side checkout:
-   * - If not signed in: push to login with next=/creators/:id?checkout=:pid
-   * - If signed in: call our server route at /stripe-checkout/start (which forwards cookies and picks the right backend route)
-   */
+  // Checkout handler (guard against already-subscribed membership)
   async function startCheckout(p: Product) {
     if (!creatorId) return;
 
-    // If auth is still hydrating, queue the intent and retry after user loads
-    if (authLoading) {
-      const selfWithCheckout = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
-        p.id
-      )}`;
-      router.replace(selfWithCheckout);
+    // If they're already subscribed to this membership, don't go to Stripe
+    if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
+      router.push("/purchases");
       return;
     }
 
+    if (authLoading) {
+      const selfWithCheckout = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
+      router.replace(selfWithCheckout);
+      return;
+    }
     if (!user) {
-      const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
-        p.id
-      )}`;
+      const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
       router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
       return;
     }
@@ -434,12 +443,8 @@ export default function CreatorProfilePage() {
     try {
       const mode = p.product_type === "membership" ? "subscription" : "payment";
       const origin = window.location.origin;
-      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-        p.id
-      )}&action=${encodeURIComponent(p.product_type)}`;
-      const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
-        p.id
-      )}&action=${encodeURIComponent(p.product_type)}`;
+      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
+      const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
 
       const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
         method: "POST",
@@ -459,9 +464,7 @@ export default function CreatorProfilePage() {
       });
 
       if (res.status === 401 || res.status === 403) {
-        const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(
-          p.id
-        )}`;
+        const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
         router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
         return;
       }
@@ -472,14 +475,9 @@ export default function CreatorProfilePage() {
           const j = await res.json();
           msg = (j && (j.error || j.message)) || msg;
         } catch {
-          try {
-            msg = await res.text();
-          } catch {}
+          try { msg = await res.text(); } catch {}
         }
-        console.error("Checkout error:", msg);
-        router.push(
-          `/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(msg || "Checkout failed")}`
-        );
+        router.push(`/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(msg || "Checkout failed")}`);
         return;
       }
 
@@ -488,27 +486,34 @@ export default function CreatorProfilePage() {
         window.location.href = data.url;
         return;
       }
-
-      window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(
-        p.id
-      )}&action=${encodeURIComponent(p.product_type)}`;
+      window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
     } finally {
       setCheckingOutId(null);
     }
   }
 
-  // Auto-start after login if ?checkout=PID
+  // Auto-start after login if ?checkout=PID (wait for subsReady, and guard for already-subscribed)
   useEffect(() => {
     const pid = searchParams.get("checkout");
-    if (!pid || !user || products.length === 0) return;
+    if (!pid || !user || products.length === 0 || !subsReady) return;
     const p = products.find((x) => x.id === pid);
-    if (p) void startCheckout(p);
+    if (!p) return;
+
+    // If it's a membership and they're already subscribed, don't go to Stripe
+    if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
+      // Optionally clear the ?checkout param
+      router.replace(`/creators/${encodeURIComponent(String(params?.id || ""))}`);
+      router.push("/purchases");
+      return;
+    }
+
+    void startCheckout(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, user, products]);
+  }, [searchParams, user, products, subsReady, subscribedIds]);
 
   if (!creatorId) {
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <h1 className="text-2xl font-bold">Creator</h1>
         <p className="mt-2 text-sm text-neutral-600">No creator id.</p>
       </main>
@@ -516,122 +521,132 @@ export default function CreatorProfilePage() {
   }
 
   const profileUrl = resolveImageUrl(creator?.profile_image ?? null, apiBase);
-  const galleryUrls = (gallery || [])
-    .slice(0, 4)
-    .map((u) => resolveImageUrl(u, apiBase))
-    .filter((u): u is string => !!u);
+  const galleryUrls = (gallery || []).slice(0, 4).map((u) => resolveImageUrl(u, apiBase)).filter((u): u is string => !!u);
+  const avg = Math.max(0, Math.min(5, Number(creator?.average_rating || 0)));
+  const productCount = Number(creator?.products_count || 0);
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10 space-y-10">
-      {loading ? (
-        <div className="text-sm text-neutral-600 text-center">Loading…</div>
-      ) : err ? (
-        <div className="rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-800 text-center">
-          {err}
-        </div>
-      ) : !creator ? (
-        <div className="text-sm text-neutral-600 text-center">Creator not found.</div>
-      ) : (
-        <>
-          {/* Header: centered */}
-          <header className="flex flex-col items-center text-center gap-4">
-            <div className="relative h-36 w-36 overflow-hidden rounded-full bg-neutral-100">
+    <div className="min-h-screen bg-gray-50">
+      {/* Hero */}
+      <section className="relative">
+        <div className="absolute inset-0 bg-gradient-to-tr from-emerald-300 via-cyan-400 to-sky-400 opacity-90" />
+        <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-24 sm:pt-12 sm:pb-28 lg:pt-14">
+          <div className="flex flex-col items-center text-center">
+            <div className="relative h-28 w-28 sm:h-32 sm:w-32 rounded-full ring-4 ring-white shadow-xl overflow-hidden bg-white">
               {profileUrl ? (
                 <Image
                   src={profileUrl}
-                  alt={creator.display_name}
+                  alt={creator?.display_name || "Creator"}
                   fill
+                  // Tell Next the real CSS size so it can pick a 2x/3x asset for retina/desktop
+                  sizes="(min-width: 640px) 8rem, 7rem"
+                  // Slightly higher quality helps logos/avatars
+                  quality={95}
+                  // Avoid layout shift & ask Next to prefetch
+                  priority
                   className="object-cover"
-                  unoptimized
-                  sizes="144px"
                 />
-              ) : null}
+              ) : (
+                <div className="grid h-full w-full place-items-center text-gray-400">No Image</div>
+              )}
             </div>
 
-            <div>
-              <h1 className="text-3xl font-bold">{creator.display_name}</h1>
-              <div className="mt-1 text-sm text-neutral-600">
-                {Number(creator.average_rating || 0).toFixed(1)} ★ · {creator.products_count} product
-                {creator.products_count === 1 ? "" : "s"}
-              </div>
+            <h1 className="mt-4 text-2xl sm:text-3xl font-bold text-black">{creator?.display_name}</h1>
+
+            {/* Stats pills (gallery count pill removed) */}
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-sm text-gray-800 shadow">
+                <StarsRow value={avg} />
+                <span className="ml-1 font-medium">{avg.toFixed(1)}</span>
+              </span>
+              <span className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-sm text-gray-800 shadow">
+                <Package className="h-4 w-4" />
+                <span className="font-medium">{productCount}</span>
+                <span className="text-gray-500">products</span>
+              </span>
             </div>
 
-            {/* Categories under rating */}
-            {categories.length > 0 ? (
-              <div className="mt-1 flex flex-wrap justify-center gap-2">
-                {categories.map((cat) => (
-                  <span
-                    key={cat.id}
-                    className="rounded-full border px-3 py-1 text-xs text-neutral-700"
-                    title={cat.name}
-                  >
-                    {cat.name}
+            {/* Categories */}
+            {categories.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                {categories.map((c) => (
+                  <span key={c.id} className="rounded-full border border-black/10 bg-white/80 px-3 py-1 text-xs text-gray-700 shadow-sm" title={c.name}>
+                    {c.name}
                   </span>
                 ))}
               </div>
-            ) : null}
-          </header>
+            )}
+          </div>
+        </div>
+        {/* Decorative curve */}
+        <svg className="absolute bottom-0 left-0 right-0" viewBox="0 0 1440 110" fill="none" preserveAspectRatio="none">
+          <path d="M0 0h1440v56c-224 40-448 60-720 54S224 78 0 56V0Z" className="fill-gray-50" />
+        </svg>
+      </section>
 
-          {/* About */}
-          {creator.bio ? (
-            <section className="text-center">
-              <h2 className="mb-2 text-lg font-semibold">About</h2>
-              <p className="whitespace-pre-line text-neutral-800">{creator.bio}</p>
-            </section>
-          ) : null}
+      {/* Body */}
+      <main className="relative mx-auto max-w-6xl px-4 -mt-16 space-y-10 sm:-mt-20">
+        {/* About */}
+        {creator?.bio ? (
+          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+            <h2 className="text-lg font-semibold">About</h2>
+            <p className="mt-3 whitespace-pre-wrap text-gray-700">{creator.bio}</p>
+          </section>
+        ) : null}
 
-          {/* Products */}
-          <section>
-            <h2 className="mb-3 text-lg font-semibold text-center">Products</h2>
-            {products.length === 0 ? (
-              <div className="text-sm text-neutral-600 text-center">No products yet.</div>
-            ) : (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {products.map((p) => {
-                  const basePriceLabel = `$${((p.price || 0) / 100).toFixed(2)}`;
-                  const priceLabel =
-                    p.product_type === "membership" ? `${basePriceLabel} per month` : basePriceLabel;
+        {/* Products */}
+        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Products</h2>
+            <div className="text-sm text-gray-500">{productCount} total</div>
+          </div>
 
-                  // NEW: decide if viewer is already subscribed to THIS membership product
-                  const isSubscribed =
-                    p.product_type === "membership" &&
-                    subscribedIds.has(Number(p.id));
+          {products.length === 0 ? (
+            <p className="mt-4 text-gray-600">No products yet.</p>
+          ) : (
+            <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {products.map((p) => {
+                const basePriceLabel = `$${((p.price || 0) / 100).toFixed(2)}`;
+                const priceLabel = p.product_type === "membership" ? `${basePriceLabel} / month` : basePriceLabel;
+                const isSubscribed = p.product_type === "membership" && subscribedIds.has(Number(p.id));
+                let cta = "Purchase download";
+                if (p.product_type === "membership") cta = isSubscribed ? "Currently Subscribed" : "Subscribe for membership";
+                else if (p.product_type === "request") cta = "Purchase request";
 
-                  let cta = "Purchase download";
-                  if (p.product_type === "membership") cta = isSubscribed ? "Currently Subscribed" : "Subscribe for membership";
-                  else if (p.product_type === "request") cta = "Purchase request";
-
-                  const ownerCTA = "Edit product";
-
-                  return (
-                    <div key={p.id} className="rounded-2xl border p-4 flex flex-col">
-                      <div className="text-xs uppercase tracking-wide text-neutral-600">
-                        {p.product_type}
+                return (
+                  <div key={p.id} className="group overflow-hidden rounded-2xl ring-1 ring-black/5 bg-white hover:shadow-md transition flex flex-col">
+                    {/* Header visual: brand gradient + darker text */}
+                    <div className="aspect-[16/9] bg-gradient-to-br from-emerald-200 via-cyan-200 to-sky-200 grid place-items-center">
+                      <div className="flex items-center gap-2 rounded-full bg-white/70 px-3 py-1 text-black/80 shadow-sm">
+                        <Package className="h-5 w-5 text-black/70" />
+                        <span className="text-xs font-semibold uppercase tracking-wide">{p.product_type}</span>
                       </div>
-                      <div className="font-semibold">{p.title}</div>
-                      {p.description ? (
-                        <p className="mt-1 text-sm text-neutral-700">{p.description}</p>
-                      ) : null}
+                    </div>
+
+                    <div className="p-4 flex-1 flex flex-col">
+                      <h3 className="font-semibold text-gray-900">{p.title}</h3>
+
+                      {/* Expandable description */}
+                      {p.description && <ExpandableText text={p.description} initialChars={280} />}
 
                       <div className="mt-auto">
-                        <div className="mt-2 font-semibold">{priceLabel}</div>
-
+                        <div className="mt-3 font-semibold">{priceLabel}</div>
                         {isOwner ? (
                           <button
-                            className="mt-3 w-full rounded-xl border py-2"
+                            className="mt-3 w-full rounded-xl cursor-pointer border py-2 text-sm hover:bg-gray-50"
                             onClick={() => router.push("/dashboard")}
                           >
-                            {ownerCTA}
+                            Edit product
                           </button>
                         ) : (
                           <button
-                            className="mt-3 w-full rounded-xl bg-black py-2 text-white hover:bg-black/90 disabled:opacity-60"
+                            className={`mt-3 w-full rounded-xl px-4 py-2 text-sm font-medium transition
+                              ${isSubscribed && p.product_type === "membership"
+                                ? "bg-gray-200 text-gray-700 cursor-pointer"
+                                : "bg-gray-900 text-white hover:bg-black/90 cursor-pointer"}`}
                             onClick={() => {
-                              if (isSubscribed && p.product_type === "membership") {
-                                router.push("/purchases");
-                              } else {
-                                void startCheckout(p);
-                              }
+                              if (isSubscribed && p.product_type === "membership") router.push("/purchases");
+                              else void startCheckout(p);
                             }}
                             disabled={checkingOutId === p.id}
                           >
@@ -640,65 +655,86 @@ export default function CreatorProfilePage() {
                         )}
                       </div>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* Photos */}
-          {galleryUrls.length > 0 ? (
-            <section aria-label="Creator photos">
-              <div className="mx-auto max-w-5xl overflow-hidden rounded-2xl">
-                <div className="flex">
-                  {[0, 1, 2, 3].map((idx) => {
-                    const src = galleryUrls[idx];
-                    return (
-                      <div key={idx} className="relative aspect-[4/3] w-1/4">
-                        {src ? (
-                          <Image
-                            src={src}
-                            alt={`${creator.display_name} photo ${idx + 1}`}
-                            fill
-                            className="object-cover"
-                            unoptimized
-                            sizes="(max-width: 1280px) 25vw, 320px"
-                          />
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </section>
-          ) : null}
-
-          {/* Reviews */}
-          {reviews.length > 0 ? (
-            <section>
-              <h2 className="mb-3 text-lg font-semibold text-center">Reviews</h2>
-              <div className="mx-auto max-w-3xl space-y-3">
-                {reviews.map((r) => (
-                  <div key={r.id} className="rounded-2xl border p-4">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">{r.author_name || "Anonymous"}</span>
-                      <span className="text-neutral-500">{(r.created_at || "").slice(0, 10)}</span>
-                    </div>
-                    {/* NEW: show product title when available */}
-                    {r.product_title ? (
-                      <div className="mt-0.5 text-xs text-neutral-600">
-                        Product: {r.product_title}
-                      </div>
-                    ) : null}
-                    <div className="mt-0.5 text-sm">{Number(r.rating || 0).toFixed(1)} ★</div>
-                    {r.comment ? <p className="mt-2 text-neutral-800">{r.comment}</p> : null}
                   </div>
-                ))}
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Gallery (4) */}
+        {galleryUrls.length > 0 ? (
+          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+            <h2 className="text-lg font-semibold">Gallery</h2>
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {galleryUrls.slice(0, 4).map((src, i) => (
+                <div key={`${src}-${i}`} className="overflow-hidden rounded-xl ring-1 ring-black/5 bg-gray-100">
+                  <Image src={src} alt={`Gallery ${i + 1}`} width={600} height={450} className="h-full w-full object-cover" />
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Reviews */}
+        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Reviews</h2>
+              <div className="mt-1 flex items-center gap-2 text-gray-700">
+                <StarsRow value={avg} />
+                <span className="text-sm font-medium">{avg.toFixed(1)} average</span>
               </div>
-            </section>
-          ) : null}
-        </>
+            </div>
+          </div>
+
+          {reviews.length === 0 ? (
+            <p className="mt-4 text-gray-600">No reviews yet.</p>
+          ) : (
+            <div className="mt-6 space-y-4">
+              {reviews.map((r) => (
+                <div key={r.id} className="rounded-xl ring-1 ring-black/5 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <StarsRow value={Math.max(0, Math.min(5, Number(r.rating) || 0))} />
+                      <span className="text-xs text-gray-500">{formatDate(r.created_at)}</span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      by <span className="font-medium text-gray-700">{r.author_name || "Anonymous"}</span>
+                    </div>
+                  </div>
+
+                  {r.product_title ? (
+                    <div className="mt-1 text-xs text-gray-500 flex items-center gap-1">
+                      <Package className="h-3 w-3" />
+                      <span>Product: {r.product_title}</span>
+                    </div>
+                  ) : null}
+
+                  {r.comment && (
+                    <div className="mt-3 flex gap-2 text-gray-700">
+                      <Quote className="h-4 w-4 mt-1 shrink-0 text-gray-300" />
+                      <p className="whitespace-pre-wrap">{r.comment}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* Loading / Error toasts */}
+      {loading && (
+        <div className="fixed inset-x-0 bottom-4 z-10 mx-auto w-fit rounded-full bg-gray-900 text-white px-4 py-2 text-sm shadow">
+          Loading creator…
+        </div>
       )}
-    </main>
+      {err && (
+        <div className="fixed inset-x-0 bottom-4 z-10 mx-auto w-fit rounded-full bg-red-600 text-white px-4 py-2 text-sm shadow">
+          {err}
+        </div>
+      )}
+    </div>
   );
 }

@@ -60,16 +60,13 @@ export default function NewRequestPage() {
   }
 
   function redirectToPurchases(toastMsg: string) {
-    // don’t await anything before navigating
     try {
-      // set toast asynchronously; don’t block redirect
       import("@/lib/flash")
         .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() }))
         .catch(() => {});
     } catch {}
     const url = `/purchases?toast=${encodeURIComponent(toastMsg)}`;
     router.replace(url);
-    // hard fallback in case SPA navigation is stuck (dev edge cases)
     setTimeout(() => {
       if (window.location.pathname.includes("/requests/new")) {
         window.location.href = url;
@@ -83,7 +80,6 @@ export default function NewRequestPage() {
     setSubmitting(true);
     submittingRef.current = true;
 
-    // 20s safety timeout so the UI never hangs
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 20000);
 
@@ -94,7 +90,7 @@ export default function NewRequestPage() {
 
       if (useSessionFlow) {
         url = `${API_BASE}/api/requests/create-from-session`;
-        formData.append("session_id", sessionId); // backend expects snake_case
+        formData.append("session_id", sessionId);
         formData.append("message", details || "");
       } else {
         formData.append("orderId", String(orderId));
@@ -122,7 +118,6 @@ export default function NewRequestPage() {
         return;
       }
 
-      // If session flow 5xx, fallback to orderId route
       if (!res.ok && useSessionFlow && res.status >= 500 && orderId) {
         const fd2 = new FormData();
         fd2.append("orderId", String(orderId));
@@ -138,7 +133,6 @@ export default function NewRequestPage() {
       }
 
       if (!res.ok) {
-        // Try to read error safely (don’t block if body is empty/wrong length)
         let msg = `${res.status} ${res.statusText}`;
         try {
           const text = await res.text();
@@ -154,7 +148,6 @@ export default function NewRequestPage() {
         throw new Error(msg);
       }
 
-      // ✅ Success – don’t wait for JSON; just go
       const toastMsg =
         initialToast && initialToast.includes("Thanks for Supporting")
           ? initialToast
@@ -216,15 +209,29 @@ export default function NewRequestPage() {
 
         <label className="grid gap-2">
           <span className="text-sm font-medium">Attachment (optional)</span>
+
+          {/* Hidden native file input */}
           <input
+            id="attachment"
             type="file"
             accept="image/*,video/*,application/pdf"
             onChange={handleFileChange}
-            className="block"
+            className="hidden"
           />
-          {file && (
-            <span className="text-xs text-neutral-600">Selected: {file.name}</span>
-          )}
+
+          {/* Button + filename text */}
+          <div className="flex items-center gap-3">
+            <label
+              htmlFor="attachment"
+              className="cursor-pointer inline-flex items-center rounded-xl border bg-black px-4 py-2 text-sm font-medium text-white"
+            >
+              Choose File
+            </label>
+
+            <span className="text-sm text-neutral-600 truncate">
+              {file ? file.name : "No file selected"}
+            </span>
+          </div>
         </label>
 
         <div className="mt-4 flex gap-3">
