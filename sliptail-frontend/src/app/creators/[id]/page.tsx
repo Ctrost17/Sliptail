@@ -289,6 +289,49 @@ export default function CreatorProfilePage() {
   const [subscribedIds, setSubscribedIds] = useState<Set<number>>(new Set());
   const [subsReady, setSubsReady] = useState(false); // <-- NEW: know when subscribedIds is loaded
 
+  // --- Smart, resolution-aware avatar (auto-sizes the circle; no crop/zoom) ---
+  const [avatarPx, setAvatarPx] = useState(225); // start ~11rem to avoid layout shift
+  const [naturalDims, setNaturalDims] = useState<{ w: number; h: number } | null>(null);
+
+  function computeAvatarSize(nw: number, nh: number) {
+    const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+
+    // Prefer a big avatar, scale a bit with viewport (desktop > tablet > phone)
+     let base = 224; // ~14rem default
+  if (typeof window !== "undefined") {
+    const vw = window.innerWidth;
+    if (vw >= 1280) base = 288;      // ~18rem on large desktops
+    else if (vw >= 1024) base = 256; // ~16rem on desktops
+    else if (vw >= 640)  base = 208; // ~13rem on tablets
+    else                 base = 176; // ~11rem on phones
+  }
+
+    // Don't upscale beyond the smallest natural dimension / DPR (prevents blur).
+    const safeMax = Math.max(128, Math.floor(Math.min(nw, nh) / dpr));
+
+    // Allow up to ~15% gentle upscale so tiny-but-hires images don't look too small
+    const allowed = Math.min(base, Math.floor(safeMax * 1.35));
+
+    // Ensure it's still "somewhat big"
+
+    setAvatarPx(allowed);
+  }
+
+  function handleAvatarLoaded(img: HTMLImageElement) {
+    const nw = img.naturalWidth || 1;
+    const nh = img.naturalHeight || 1;
+    setNaturalDims({ w: nw, h: nh });
+    computeAvatarSize(nw, nh);
+  }
+
+  // Recompute avatar size on resize to keep it nice across widths
+  useEffect(() => {
+    if (!naturalDims) return;
+    const onResize = () => computeAvatarSize(naturalDims.w, naturalDims.h);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [naturalDims]);
+
   const isOwner =
     !!user &&
     (typeof user.id === "number" ? user.id : Number(user.id)) ===
@@ -389,7 +432,7 @@ export default function CreatorProfilePage() {
   // Fetch products the viewer is subscribed to (for membership CTA state)
   useEffect(() => {
     let cancelled = false;
-    setSubsReady(false); // <-- reset readiness when token changes
+    setSubsReady(false);
     (async () => {
       if (!token) {
         setSubscribedIds(new Set());
@@ -410,7 +453,7 @@ export default function CreatorProfilePage() {
       } catch {
         if (!cancelled) setSubscribedIds(new Set());
       } finally {
-        if (!cancelled) setSubsReady(true); // <-- mark ready
+        if (!cancelled) setSubsReady(true);
       }
     })();
     return () => {
@@ -422,7 +465,6 @@ export default function CreatorProfilePage() {
   async function startCheckout(p: Product) {
     if (!creatorId) return;
 
-    // If they're already subscribed to this membership, don't go to Stripe
     if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
       router.push("/purchases");
       return;
@@ -499,9 +541,7 @@ export default function CreatorProfilePage() {
     const p = products.find((x) => x.id === pid);
     if (!p) return;
 
-    // If it's a membership and they're already subscribed, don't go to Stripe
     if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
-      // Optionally clear the ?checkout param
       router.replace(`/creators/${encodeURIComponent(String(params?.id || ""))}`);
       router.push("/purchases");
       return;
@@ -532,22 +572,26 @@ export default function CreatorProfilePage() {
         <div className="absolute inset-0 bg-gradient-to-tr from-emerald-300 via-cyan-400 to-sky-400 opacity-90" />
         <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-24 sm:pt-12 sm:pb-28 lg:pt-14">
           <div className="flex flex-col items-center text-center">
-            <div className="relative h-28 w-28 sm:h-32 sm:w-32 rounded-full ring-4 ring-white shadow-xl overflow-hidden bg-white">
+            {/* Resolution-aware, auto-sized round avatar (no zoom/crop) */}
+            <div
+              className="relative rounded-full overflow-hidden ring-4 ring-white shadow-xl"
+              style={{ width: avatarPx, height: avatarPx }}
+            >
               {profileUrl ? (
                 <Image
                   src={profileUrl}
                   alt={creator?.display_name || "Creator"}
                   fill
-                  // Tell Next the real CSS size so it can pick a 2x/3x asset for retina/desktop
-                  sizes="(min-width: 640px) 8rem, 7rem"
-                  // Slightly higher quality helps logos/avatars
-                  quality={95}
-                  // Avoid layout shift & ask Next to prefetch
+                  className="object-contain bg-black"
                   priority
-                  className="object-cover"
+                  quality={92}
+                  sizes={`${Math.ceil(avatarPx)}px`}
+                  onLoadingComplete={handleAvatarLoaded}
                 />
               ) : (
-                <div className="grid h-full w-full place-items-center text-gray-400">No Image</div>
+                <div className="absolute inset-0 grid place-items-center bg-gray-200 text-gray-500">
+                  No Image
+                </div>
               )}
             </div>
 

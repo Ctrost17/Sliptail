@@ -210,6 +210,7 @@ export default function ProductEditPage() {
     productType === "membership" ? "e.g., 12.00 per month" : "e.g., 12.00";
 
   return (
+     <div className="relative overflow-hidden min-h-screen bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400">
     <main className="mx-auto max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-bold tracking-tight md:text-3xl">
         {loading ? "Loading…" : "Edit Product"}
@@ -221,7 +222,7 @@ export default function ProductEditPage() {
         </div>
       )}
 
-      <form onSubmit={saveDetails} className="space-y-6 rounded-2xl border p-6" noValidate>
+      <form onSubmit={saveDetails} className="space-y-6 rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6" noValidate>
         {/* Product Type (read-only) */}
         <div className="space-y-2">
           <label className="block text-sm font-medium" htmlFor="productType">
@@ -290,7 +291,7 @@ export default function ProductEditPage() {
             type="submit"
             disabled={saving}
             className={`rounded-xl px-4 py-2 text-sm ${
-              saving ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
+              saving ? "bg-neutral-300 text-neutral-600" : "cursor-pointer bg-black text-white"
             }`}
           >
             {saving ? "Saving…" : "Save Changes"}
@@ -298,7 +299,7 @@ export default function ProductEditPage() {
           <button
             type="button"
             onClick={() => router.push("/dashboard")}
-            className="rounded-xl border px-4 py-2 text-sm"
+            className="cursor-pointer rounded-xl border px-4 py-2 text-sm"
           >
             Cancel
           </button>
@@ -307,18 +308,34 @@ export default function ProductEditPage() {
 
       {/* File replacement for purchase products */}
       {productType === "purchase" && (
-        <form onSubmit={replaceFile} className="mt-6 space-y-4 rounded-2xl border p-6" noValidate>
+        <form onSubmit={replaceFile} className="space-y-6 rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6" noValidate>
           <div className="space-y-2">
             <label className="block text-sm font-medium" htmlFor="file">
               Replace File (delivered to buyers)
             </label>
-            <input
-              id="file"
-              name="file"
-              type="file"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="w-full rounded-xl border px-3 py-2"
-            />
+              <div className="flex items-center gap-3">
+                {/* Styled button that triggers the hidden file input */}
+                <label
+                  htmlFor="file"
+                  className="inline-flex items-center rounded-lg bg-black text-white px-3 py-2 text-sm font-medium cursor-pointer"
+                >
+                  Choose file
+                </label>
+
+                {/* Visually hidden input; still accessible via the label above */}
+                <input
+                  id="file"
+                  name="file"
+                  type="file"
+                  className="sr-only"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+
+                {/* File name stays visible */}
+                <span className="text-sm text-neutral-800 truncate">
+                  {file?.name ?? "No file chosen"}
+                </span>
+              </div>
             <p className="text-xs text-neutral-600">
               PDF, images, video, text and other common formats supported.
             </p>
@@ -327,7 +344,7 @@ export default function ProductEditPage() {
             type="submit"
             disabled={replacingFile}
             className={`rounded-xl px-4 py-2 text-sm ${
-              replacingFile ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
+              replacingFile ? "bg-neutral-300 text-neutral-600" : "cursor-pointer bg-black text-white"
             }`}
           >
             {replacingFile ? "Updating…" : "Replace File"}
@@ -335,5 +352,6 @@ export default function ProductEditPage() {
         </form>
       )}
     </main>
+    </div>
   );
 }

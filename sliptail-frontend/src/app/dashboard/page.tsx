@@ -838,36 +838,38 @@ export default function DashboardPage() {
   };
 
   if (!creatorId) {
-    return (
-      <main className="max-w-4xl mx-auto p-6">
-        <h1 className="text-2xl font-bold">Creator Dashboard</h1>
-        <p className="mt-2 text-sm text-neutral-700">Please sign in to view your dashboard.</p>
-      </main>
-    );
-  }
+      return (
+        <div className="min-h-screen bg-black">
+          <main className="max-w-4xl mx-auto p-6">
+            <h1 className="text-2xl font-bold">Creator Dashboard</h1>
+            <p className="mt-2 text-sm text-neutral-700">Please sign in to view your dashboard.</p>
+          </main>
+        </div>
+      );
+    }
 
   /* ------------------------------- UI ------------------------------- */
-  return (
-    <>
-      {/* Toast — bright on black bg */}
-      <div
-        className={[
-          "fixed left-1/2 bottom-8 z-[1000] -translate-x-1/2",
-          "transition-all duration-300",
-          toastOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none",
-        ].join(" ")}
-        role="status"
-        aria-live="polite"
-      >
-        <div className="flex items-center gap-2 rounded-full px-4 py-2 text-black shadow-xl bg-gradient-to-r from-amber-300 to-yellow-400">
-          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-          <span className="text-sm font-medium">{toastText}</span>
-        </div>
-      </div>
+        return (
+          <div className="min-h-screen bg-black">
+            {/* Toast — bright on black bg */}
+            <div
+              className={[
+                "fixed left-1/2 bottom-8 z-[1000] -translate-x-1/2",
+                "transition-all duration-300",
+                toastOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none",
+              ].join(" ")}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="flex items-center gap-2 rounded-full px-4 py-2 text-black shadow-xl bg-gradient-to-r from-amber-300 to-yellow-400">
+                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="text-sm font-medium">{toastText}</span>
+              </div>
+            </div>
 
-      <main className="mx-auto max-w-6xl px-4 py-8 space-y-8 bg-black min-h-screen">
+            <main className="mx-auto max-w-6xl px-4 py-8 space-y-8">
                   {/* Top bar */}
           <header className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-white p-4">
             <div className="flex items-center gap-3">
@@ -962,6 +964,32 @@ export default function DashboardPage() {
                 />
               </div>
 
+                              {/* Bio */}
+              <div>
+                <label className="block text-xs font-medium text-neutral-700">Bio</label>
+                <textarea
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  placeholder="Tell buyers what you do"
+                  rows={4}
+                  className="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900"
+                />
+              </div>
+
+                            <div className="flex items-center gap-3">
+                <button
+                  onClick={saveQuickProfile}
+                  disabled={savingProfile}
+                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium ${
+                    savingProfile
+                      ? "bg-neutral-300 text-neutral-600"
+                      : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                  }`}
+                >
+                  {savingProfile ? "Saving…" : "Save"}
+                </button>
+              </div>
+
               {/* Categories (kept as chips for clarity; pointer enabled) */}
               <div>
                 <label className="block text-xs font-medium text-neutral-700">Categories</label>
@@ -1027,18 +1055,6 @@ export default function DashboardPage() {
                 )}
 
                 <p className="text-xs text-neutral-500 mt-2">Pick one or more categories that best describe your work. (Max three)</p>
-              </div>
-
-              {/* Bio */}
-              <div>
-                <label className="block text-xs font-medium text-neutral-700">Bio</label>
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  placeholder="Tell buyers what you do"
-                  rows={4}
-                  className="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-neutral-900"
-                />
               </div>
 
               {/* Profile Image (kept neutral UI, pointer added) */}
@@ -1181,19 +1197,7 @@ export default function DashboardPage() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={saveQuickProfile}
-                  disabled={savingProfile}
-                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium ${
-                    savingProfile
-                      ? "bg-neutral-300 text-neutral-600"
-                      : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
-                  }`}
-                >
-                  {savingProfile ? "Saving…" : "Save"}
-                </button>
-              </div>
+
             </div>
           </div>
 
@@ -1606,7 +1610,7 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
-      </main>
-    </>
+         </main>
+ </div>
   );
 }

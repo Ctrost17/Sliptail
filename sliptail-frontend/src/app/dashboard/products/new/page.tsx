@@ -347,6 +347,7 @@ export default function NewProductPage() {
       : "Leave blank for 0 (free). Stored as integer cents.";
 
   return (
+    <div className="relative overflow-hidden min-h-screen bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400">
     <main className="mx-auto max-w-3xl px-4 py-8">
       <h1 className="mb-6 text-2xl font-bold tracking-tight md:text-3xl">
         Create a New Product
@@ -398,7 +399,7 @@ export default function NewProductPage() {
 
       <form
         onSubmit={handleSubmit}
-        className="space-y-6 rounded-2xl border p-6"
+        className="space-y-6 rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6"
         noValidate
       >
         {/* Product Type */}
@@ -415,7 +416,7 @@ export default function NewProductPage() {
             value={form.productType}
             onChange={onChange("productType")}
             aria-describedby={IDS.productTypeHelp}
-            className="w-full rounded-xl border px-3 py-2"
+            className="cursor-pointer w-full rounded-xl border px-3 py-2"
           >
             <option value="purchase">Purchase (downloadable)</option>
             <option value="membership">Membership</option>
@@ -489,15 +490,29 @@ export default function NewProductPage() {
             <label htmlFor={IDS.file} className="block text-sm font-medium">
               Upload File (delivered to buyers)
             </label>
-            <input
-              id={IDS.file}
-              name="file"
-              type="file"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              aria-describedby={IDS.fileHelp}
-              required
-              className="w-full rounded-xl border px-3 py-2"
-            />
+              <div className="flex items-center gap-3">
+                {/* Styled button that triggers the hidden file input */}
+                <label
+                  htmlFor="file"
+                  className="inline-flex items-center rounded-lg bg-black text-white px-3 py-2 text-sm font-medium cursor-pointer"
+                >
+                  Choose file
+                </label>
+
+                {/* Visually hidden input; still accessible via the label above */}
+                <input
+                  id="file"
+                  name="file"
+                  type="file"
+                  className="sr-only"
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+
+                {/* File name stays visible */}
+                <span className="text-sm text-neutral-800 truncate">
+                  {file?.name ?? "No file chosen"}
+                </span>
+              </div>
             <p id={IDS.fileHelp} className="text-xs text-neutral-600">
               PDF, images, video, text and other common formats supported.
             </p>
@@ -519,7 +534,7 @@ export default function NewProductPage() {
             type="submit"
             disabled={saving}
             className={`rounded-xl px-4 py-2 text-sm ${
-              saving ? "bg-neutral-300 text-neutral-600" : "bg-black text-white"
+              saving ? "bg-neutral-300 text-neutral-600" : "cursor-pointer bg-black text-white"
             }`}
           >
             {saving ? "Creating…" : "Create Product"}
@@ -527,12 +542,13 @@ export default function NewProductPage() {
           <button
             type="button"
             onClick={() => router.back()}
-            className="rounded-xl border px-4 py-2 text-sm"
+            className="cursor-pointer rounded-xl border px-4 py-2 text-sm"
           >
             Cancel
           </button>
         </div>
       </form>
     </main>
+    </div>
   );
 }

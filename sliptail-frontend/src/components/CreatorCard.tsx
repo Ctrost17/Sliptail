@@ -1,3 +1,5 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -46,7 +48,7 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
     .map((src) => resolveImageUrl(src || null, apiBase) || "/placeholder-image.png");
 
   // --- Mobile tap-to-flip support ---
-  const [isCoarse, setIsCoarse] = useState(false);  // true on touch / coarse pointers
+  const [isCoarse, setIsCoarse] = useState(false);
   const [isFlipped, setIsFlipped] = useState(false);
 
   useEffect(() => {
@@ -58,7 +60,6 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
       mq.addEventListener("change", apply);
       return () => mq.removeEventListener("change", apply);
     } catch {
-      // Safari <14 fallback
       mq.addListener?.(apply);
       return () => mq.removeListener?.(apply);
     }
@@ -67,13 +68,42 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
   function toggleFlip() {
     if (isCoarse) setIsFlipped((f) => !f);
   }
-
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    // Allow keyboard toggle for accessibility
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       setIsFlipped((f) => !f);
     }
+  }
+
+  // ----- Smart avatar sizing: widen for horizontal, keep no-crop, add rounded corners -----
+  const [avatarDims, setAvatarDims] = useState<{ w: number; h: number }>({ w: 80, h: 80 });
+  const [avatarSized, setAvatarSized] = useState(false);
+
+  function onAvatarLoaded({
+    naturalWidth,
+    naturalHeight,
+  }: {
+    naturalWidth: number;
+    naturalHeight: number;
+  }) {
+    if (avatarSized) return;
+    const ar = naturalWidth / Math.max(1, naturalHeight);
+
+    // Base height steady; width expands for landscape
+    let h = 84; // ~5.25rem
+    let w = 84;
+
+    if (ar >= 1.25) {
+      w = Math.round(Math.min(144, Math.max(96, h * ar)));
+    }
+
+    // Guard against upscaling blur relative to DPR
+    const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+    const maxByPixels = Math.floor((naturalWidth / dpr) * 1.25);
+    w = Math.min(w, Math.max(84, maxByPixels));
+
+    setAvatarDims({ w, h });
+    setAvatarSized(true);
   }
 
   return (
@@ -89,7 +119,6 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
         className={
           "relative h-full w-full rounded-2xl shadow-2xl shadow-black/25 transition-transform duration-500 " +
           "[transform-style:preserve-3d] " +
-          // Flip on hover (desktop) and when state says so (mobile/keyboard)
           (isFlipped ? "[transform:rotateY(180deg)] " : "") +
           "group-hover:[transform:rotateY(180deg)]"
         }
@@ -99,13 +128,22 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
           className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
             bg-white/10 border-2 border-black backdrop-blur-xl text-black"
         >
-          <Image
-            src={avatarSrc}
-            alt={creator.displayName}
-            width={80}
-            height={80}
-            className="mb-2 rounded-full object-cover"
-          />
+          {/* Avatar: rounded rectangle, no border, no circle, object-contain */}
+          <div
+            className="mb-2 relative overflow-hidden rounded-full"
+            style={{ width: avatarDims.w, height: avatarDims.h }}
+          >
+            <Image
+              src={avatarSrc}
+              alt={creator.displayName}
+              fill
+              className="object-contain"
+              quality={92}
+              sizes={`${Math.ceil(avatarDims.w)}px`}
+              onLoadingComplete={onAvatarLoaded}
+            />
+          </div>
+
           <h3 className="font-semibold text-black tracking-tight truncate max-w-full">
             {creator.displayName}
           </h3>

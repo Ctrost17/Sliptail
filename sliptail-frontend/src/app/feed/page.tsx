@@ -18,6 +18,57 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   return `${apiBase}${s}`;
 }
 
+function PostMedia({
+  src,
+  file = null,
+}: {
+  src: string;
+  file?: File | null;
+}) {
+  const [ratio, setRatio] = useState<number | null>(null);
+
+  const isVideo = (file?.type?.startsWith("video/") ||
+    /\.(mp4|webm|ogg|m4v|mov)$/i.test((src || "").split("?")[0])) as boolean;
+
+  // Once metadata loads, record the natural aspect to avoid cropping
+  const handleVideoMeta = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const el = e.currentTarget;
+    if (el.videoWidth && el.videoHeight) setRatio(el.videoWidth / el.videoHeight);
+  };
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const el = e.currentTarget;
+    if (el.naturalWidth && el.naturalHeight) setRatio(el.naturalWidth / el.naturalHeight);
+  };
+
+  return (
+    <div
+      className="relative mt-3 rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
+      style={!isVideo && ratio ? { aspectRatio: String(ratio) } : undefined}
+    >
+      {isVideo ? (
+        <video
+          src={src}
+          controls
+          playsInline
+          preload="metadata"
+          controlsList="nodownload"
+          className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
+          onLoadedMetadata={handleVideoMeta}
+        />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt="post media"
+          loading="lazy"
+          className="block w-full h-auto object-contain bg-black"
+          onLoad={handleImageLoad}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function MembershipFeedPage() {
   const [{ token }] = useState(() => loadAuth());
   const searchParams = useSearchParams();
@@ -261,19 +312,17 @@ export default function MembershipFeedPage() {
   };
 
   return (
-    <main className="max-w-5xl mx-auto p-4 space-y-4">
+    <div className="relative overflow-hidden min-h-screen bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400">
+          <main className="max-w-5xl mx-auto p-4 space-y-4">
       <div className="flex items-center gap-3">
         <h1 className="text-2xl font-bold tracking-tight">Membership Feed</h1>
-        {!loading && token && (
-          <button onClick={load} className="text-xs px-3 py-1 border rounded-full hover:bg-neutral-100 active:scale-[.97] transition disabled:opacity-40" disabled={loading}>Refresh</button>
-        )}
       </div>
       {isCreator && (
         <div className="inline-flex rounded-full border bg-neutral-50 p-1 text-sm">
 
-          <button onClick={() => setTab("mine")} className={`px-4 py-1.5 rounded-full transition font-medium ${tab === "mine" ? "bg-white shadow-sm text-neutral-900" : "text-neutral-500 hover:text-neutral-800"}`}>My Posts</button>
+          <button onClick={() => setTab("mine")} className={`px-4 py-1.5 rounded-full transition font-medium ${tab === "mine" ? "cursor-pointer bg-white shadow-sm text-neutral-900" : "cursor-pointer text-neutral-500 hover:text-neutral-800"}`}>My Posts</button>
 
-          <button onClick={() => setTab("others")} className={`px-4 py-1.5 rounded-full transition font-medium ${tab === "others" ? "bg-white shadow-sm text-neutral-900" : "text-neutral-500 hover:text-neutral-800"}`}>Other Posts</button>
+          <button onClick={() => setTab("others")} className={`px-4 py-1.5 rounded-full transition font-medium ${tab === "others" ? "cursor-pointer bg-white shadow-sm text-neutral-900" : "cursor-pointer text-neutral-500 hover:text-neutral-800"}`}>Other Posts</button>
         </div>)}
 
       {loading && <div className="text-sm text-neutral-600">Loading...</div>}
@@ -287,17 +336,31 @@ export default function MembershipFeedPage() {
             const expanded = expandedProductId === prod.id;
             const isHighlighted = highlightProductId === prod.id;
             return (
-              <div key={prod.id} className={`border rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50/80 border-green-200 shadow-lg' : 'bg-white/50'} backdrop-blur-sm transition-all duration-300`}>
+              <div key={prod.id} className={`rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50 border border-green-200 shadow-lg' : 'bg-white ring-1 ring-black/5'} transition-all duration-300`}>
                 <div className={`flex items-center gap-3 px-4 py-3 ${isHighlighted ? 'bg-green-100/70' : 'bg-neutral-50/70'} border-b`}>
-                  <button
-                    aria-expanded={expanded}
-                    onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
-                    className="flex-1 min-w-0 text-left"
-                  >
-                    <h2 className="font-semibold text-sm leading-tight truncate">{prod.title || `Product #${prod.id}`}</h2>
-                    <p className="text-xs text-neutral-500">{prod.created_at && <>  {new Date(prod.created_at).toLocaleDateString()}</>}</p>
-                  </button>
-                  {isCreator && <button onClick={() => handleAdd(prod)} className="text-xs px-3 py-1 rounded-full bg-blue-600 text-white hover:bg-blue-500 active:scale-[.96] transition">Add Post</button>}
+              <button
+                  aria-expanded={expanded}
+                  onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
+                  className="cursor-pointer relative flex-1 min-w-0 text-left"
+                >
+                  <h2 className="font-semibold text-sm leading-tight truncate">
+                    {prod.title || `Product #${prod.id}`}
+                  </h2>
+                  <p className="text-xs text-neutral-500">
+                    {prod.created_at && <>  {new Date(prod.created_at).toLocaleDateString()}</>}
+                  </p>
+
+                  {/* Mobile: inline hint below content */}
+                  <div className="mt-1 text-sm font-semibold text-neutral-700 sm:hidden">
+                    {expanded ? "Tap to Close" : "Tap to Open"}
+                  </div>
+
+                  {/* sm+ : centered overlay hint */}
+                  <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden sm:block sm:text-base md:text-lg font-semibold text-neutral-700">
+                    {expanded ? "Tap to Close" : "Tap to Open"}
+                  </span>
+                </button>
+                  {isCreator && <button onClick={() => handleAdd(prod)} className="cursor-pointer text-xs px-3 py-1 rounded-full bg-blue-600 text-white hover:bg-blue-500 active:scale-[.96] transition">Add Post</button>}
                 </div>
                 {expanded && (
                   <div>
@@ -326,16 +389,9 @@ export default function MembershipFeedPage() {
                             )}
                           </div>
                           {post.body && <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">Description: {post.body}</p>}
-                          {post.media_path && (
-                            <div className="relative aspect-video rounded-xl overflow-hidden bg-neutral-100 mt-3 ring-1 ring-neutral-200">
-                              {isVideoMedia(null, post.media_path) ? (
-                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls controlsList="nodownload" className="h-full w-full object-cover" />
-                              ) : (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={resolveMediaUrl(post.media_path) || post.media_path} alt="post" className="h-full w-full object-cover" />
-                              )}
-                            </div>
-                          )}
+                        {post.media_path && (
+                          <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} />
+                        )}
 
                         </div>
                       </div>
@@ -357,16 +413,32 @@ export default function MembershipFeedPage() {
             const expanded = expandedProductId === prod.id;
             const isHighlighted = highlightProductId === prod.id;
             return (
-              <div key={prod.id} className={`border rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50/80 border-green-200 shadow-lg' : 'bg-white/60'} backdrop-blur-sm transition-all duration-300`}>
+              <div key={prod.id} className={`rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50 border border-green-200 shadow-lg' : 'bg-white ring-1 ring-black/5'} transition-all duration-300`}>
                 <div className={`flex items-center gap-3 px-4 py-3 ${isHighlighted ? 'bg-green-100/70' : 'bg-neutral-50/70'} border-b`}>
                   <button
                     aria-expanded={expanded}
                     onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
-                    className="flex-1 min-w-0 text-left"
+                    className="cursor-pointer relative flex-1 min-w-0 text-left"
                   >
-                    <h1 className="font-semibold text-sm leading-tight truncate">Creator: {prod.display_name}</h1>
-                    <h2 className="font-semibold text-sm leading-tight truncate">Title: {prod.title || `Product #${prod.id}`}</h2>
-                    <p className="text-xs text-neutral-500">Date: {prod.created_at && new Date(prod.created_at).toLocaleDateString()}</p>
+                    <h1 className="font-semibold text-sm leading-tight truncate">
+                      Creator: {prod.display_name}
+                    </h1>
+                    <h2 className="font-semibold text-sm leading-tight truncate">
+                      Title: {prod.title || `Product #${prod.id}`}
+                    </h2>
+                    <p className="text-xs text-neutral-500">
+                      Date: {prod.created_at && new Date(prod.created_at).toLocaleDateString()}
+                    </p>
+
+                    {/* Mobile: inline hint below content */}
+                    <div className="mt-1 text-sm font-semibold text-neutral-700 sm:hidden">
+                      {expanded ? "Tap to Close" : "Tap to Open"}
+                    </div>
+
+                    {/* sm+ : centered overlay hint */}
+                    <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden sm:block sm:text-base md:text-lg font-semibold text-neutral-700">
+                      {expanded ? "Tap to Close" : "Tap to Open"}
+                    </span>
                   </button>
                   <span className={`text-[10px] px-2 py-1 rounded-full ${isHighlighted ? 'bg-green-200 text-green-800' : 'bg-neutral-200 text-neutral-600'}`}>Subscribed</span>
                 </div>
@@ -378,34 +450,40 @@ export default function MembershipFeedPage() {
                         <span>No posts yet from this creator.</span>
                       </div>
                     )}
-                    {postsForProd.map(post => (
-                      <div key={post.id} className="p-4 border-t flex gap-3 hover:bg-neutral-50 transition">
-                        <img
-                          src={resolveImageUrl(post.profile_image, apiBase) || post.profile_image}
-                          alt="Profile"
-                          className="h-full w-[50px] rounded-full object-cover"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-xs text-neutral-500 flex-wrap">
-                              <span>{new Date(post.created_at).toLocaleString()}</span>
-                            </div>
-                            {post.title && <h3 className="font-medium text-sm mt-0.5 leading-snug break-words">{post.title}</h3>}
-                          </div>
-                          {post.media_path && (
-                            <div className="relative aspect-video rounded-xl overflow-hidden bg-neutral-100 mt-3 ring-1 ring-neutral-200">
-                              {isVideoMedia(null, post.media_path) ? (
-                                <video src={resolveMediaUrl(post.media_path) || post.media_path} controls className="h-full w-full object-cover" />
-                              ) : (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={resolveMediaUrl(post.media_path) || post.media_path} alt="post" className="h-full w-full object-cover" />
+                      {postsForProd.map(post => (
+                        <div key={post.id} className="p-4 border-t flex gap-3 hover:bg-neutral-50 transition">
+                          {/* Avatar */}
+                          <img
+                            src={resolveImageUrl(post.profile_image, apiBase) || post.profile_image}
+                            alt="Profile"
+                            className="h-full w-[50px] rounded-full object-cover"
+                          />
+
+                          {/* Content */}
+                          <div className="flex-1 min-w-0">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 text-xs text-neutral-500 flex-wrap">
+                                <span>{new Date(post.created_at).toLocaleString()}</span>
+                              </div>
+                              {post.title && (
+                                <h3 className="font-medium text-sm mt-0.5 leading-snug break-words">
+                                  {post.title}
+                                </h3>
                               )}
                             </div>
-                          )}
-                          {post.body && <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">{post.body}</p>}
+
+                            {post.media_path && (
+                              <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} />
+                            )}
+
+                            {post.body && (
+                              <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">
+                                {post.body}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
                   </div>
                 )}
               </div>
@@ -461,8 +539,8 @@ export default function MembershipFeedPage() {
               </div>
             </div>
             <div className="mt-6 flex justify-end gap-2">
-              <button onClick={closeAdd} className="px-3 h-8 rounded-md text-xs border hover:bg-neutral-100">Cancel</button>
-              <button onClick={saveAdd} className="px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50" disabled={addingSaving || (!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview)}>{addingSaving ? 'Creating...' : 'Create'}</button>
+              <button onClick={closeAdd} className="cursor-pointer px-3 h-8 rounded-md text-xs border hover:bg-neutral-100">Cancel</button>
+              <button onClick={saveAdd} className="cursor-pointer px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50" disabled={addingSaving || (!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview)}>{addingSaving ? 'Creating...' : 'Create'}</button>
             </div>
           </div>
         </div>
@@ -534,5 +612,6 @@ export default function MembershipFeedPage() {
         </div>
       )}
     </main>
+    </div>
   );
 }
