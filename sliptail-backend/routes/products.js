@@ -301,6 +301,57 @@ async function promoteAndRefreshAuth(userId, res) {
   }
 }
 
+  // Cancel all memberships tied to a specific product (best-effort, schema-aware)
+  async function cancelMembershipsForProduct(productId) {
+    try {
+      // Ensure table and target column exist
+      if (!(await hasTable("memberships"))) return;
+      const hasCancelAt = await hasColumn("memberships", "cancel_at_period_end");
+      const hasCanceledAt = await hasColumn("memberships", "canceled_at");
+      if (!hasCancelAt) return; 
+
+      let statusType = null;
+      try {
+        const { rows: st } = await db.query(
+          `SELECT data_type FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='memberships' AND column_name='status'
+            LIMIT 1`
+        );
+        statusType = st[0]?.data_type || null;
+      } catch (_) {}
+
+      if (statusType && ["text", "character varying", "character"].includes(statusType)) {
+        // Text status: mark as fully canceled now
+        const sql = `UPDATE memberships
+                        SET cancel_at_period_end = TRUE,
+                            status = 'canceled'${hasCanceledAt ? ",\n                            canceled_at = NOW()" : ""}
+                      WHERE product_id = $1
+                        AND status IN ('active','trialing')`;
+        await db.query(sql, [productId]);
+        return;
+      }
+
+      if (statusType === "boolean") {
+        // Boolean status: set status = FALSE and schedule canceled_at if column exists
+        const sql = `UPDATE memberships
+                        SET cancel_at_period_end = TRUE,
+                            status = FALSE${hasCanceledAt ? ",\n                            canceled_at = NOW()" : ""}
+                      WHERE product_id = $1
+                        AND status IS TRUE`;
+        await db.query(sql, [productId]);
+        return;
+      }
+
+      // Unknown or missing status column — still set the flag for all memberships on this product
+      const sql = `UPDATE memberships
+                      SET cancel_at_period_end = TRUE${hasCanceledAt ? ",\n                          canceled_at = NOW()" : ""}
+                    WHERE product_id = $1`;
+      await db.query(sql, [productId]);
+    } catch (e) {
+      console.warn("cancelMembershipsForProduct failed:", e?.message || e);
+    }
+  }
+
 function sanitizeRating(r) {
   const n = parseInt(String(r), 10);
   if (!Number.isFinite(n)) return null;
@@ -313,7 +364,7 @@ function sanitizeRating(r) {
 router.get("/", async (req, res, next) => {
   try {
     const result = await db.query(
-      "SELECT id, user_id, title, description, filename, product_type, price FROM products ORDER BY created_at DESC"
+      "SELECT id, user_id, title, description, filename, product_type, price FROM products WHERE active = TRUE ORDER BY created_at DESC"
     );
     const items = result.rows.map((row) => ({
       id: String(row.id),
@@ -467,7 +518,7 @@ router.get("/user/:userId", async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT * FROM products WHERE ${WHERE_USERID_TEXT} ORDER BY created_at DESC`,
+      `SELECT * FROM products WHERE ${WHERE_USERID_TEXT} AND active = TRUE ORDER BY created_at DESC`,
       [userIdRaw]
     );
     res.json({ products: result.rows.map(linkify) });
@@ -590,14 +641,12 @@ router.post("/:productId/reviews", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Not eligible to review this creator" });
     }
 
-    // 3) Upsert review by (buyer_id, product_id)
     const { rows: existing } = await db.query(
       "SELECT id FROM reviews WHERE buyer_id=$1 AND product_id=$2 LIMIT 1",
       [buyerId, productId]
     );
 
     if (existing.length) {
-      // only include updated_at if the column exists
       const haveUpdatedAt = await hasColumn("reviews", "updated_at");
       const sets = ["rating=$1", "comment=$2"];
       if (haveUpdatedAt) sets.push("updated_at=NOW()");
@@ -630,7 +679,7 @@ router.get("/:id", async (req, res) => {
   if (!rawId) return res.status(400).json({ error: "Invalid product id" });
 
   try {
-    const result = await db.query(`SELECT * FROM products WHERE ${WHERE_ID_TEXT}`, [rawId]);
+    const result = await db.query(`SELECT * FROM products WHERE ${WHERE_ID_TEXT} AND active = TRUE`, [rawId]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Product not found" });
     }
@@ -650,46 +699,36 @@ router.delete("/:id", requireAuth, async (req, res) => {
 
   try {
     const { rows: pre } = await db.query(
-      `SELECT id, filename, active FROM products WHERE ${WHERE_ID_TEXT}`,
+      `SELECT id, user_id, filename, product_type, active FROM products WHERE ${WHERE_ID_TEXT}`,
       [rawId]
     );
     if (!pre.length) return res.status(404).json({ error: "Product not found" });
-    const oldName = pre[0].filename;
-    const wasActive = pre[0].active === true;
+    const product = pre[0];
+    const wasActive = product.active === true;
+    const sets = ["active = FALSE"]; // soft-delete
+    if (await hasColumn("products", "updated_at")) sets.push("updated_at = NOW()");
+    if (await hasColumn("products", "deleted_at")) sets.push("deleted_at = NOW()");
 
-    await db.query("BEGIN");
     const { rows } = await db.query(
-      `DELETE FROM products WHERE ${WHERE_ID_TEXT} RETURNING *`,
+      `UPDATE products SET ${sets.join(", ")} WHERE ${WHERE_ID_TEXT} RETURNING *`,
       [rawId]
     );
-    await db.query("COMMIT");
-
     if (!rows.length) return res.status(404).json({ error: "Product not found" });
-    const deleted = rows[0];
+    const updated = rows[0];
 
-    if (oldName) {
-      const fp = path.join(uploadDir, oldName);
-      if (fs.existsSync(fp)) {
-        try {
-          fs.unlinkSync(fp);
-        } catch (e) {
-          console.warn("Could not delete file:", e.message);
-        }
-      }
+    if (product.product_type === "membership") {
+      await cancelMembershipsForProduct(product.id);
     }
 
     if (wasActive) {
       await setActiveFromPublished(req.user.id).catch((e) =>
-        console.warn("delete -> setActiveFromPublished failed:", e?.message || e)
+        console.warn("soft delete -> setActiveFromPublished failed:", e?.message || e)
       );
     }
 
-    return res.json({ success: true, deleted });
+    return res.json({ success: true, product: linkify(updated), softDeleted: true });
   } catch (err) {
-    try {
-      await db.query("ROLLBACK");
-    } catch {}
-    console.error("Delete product error:", err.message || err);
+    console.error("Soft delete product error:", err.message || err);
     return res.status(500).json({ error: "Failed to delete product" });
   }
 });
