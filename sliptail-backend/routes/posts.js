@@ -191,8 +191,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
         `SELECT 1 FROM memberships
           WHERE buyer_id=$1 AND creator_id=$2
             AND status IN ('active','trialing')
-            AND NOW() <= current_period_end
-            AND cancel_at_period_end = FALSE
+            AND NOW() <= COALESCE(current_period_end, NOW())
           LIMIT 1`,
         [userId, creatorId]
       );
@@ -231,7 +230,7 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
         `SELECT 1 FROM memberships
           WHERE buyer_id=$1 AND creator_id=$2
             AND status IN ('active','trialing')
-            AND NOW() <= current_period_end
+            AND NOW() <= COALESCE(current_period_end, NOW())
           LIMIT 1`,
         [userId, creatorId]
       );
