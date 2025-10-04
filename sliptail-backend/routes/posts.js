@@ -6,7 +6,6 @@ const multer = require("multer");
 const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
-// const { notifyMany } = require("../services/notifications"); // no longer needed; centralized in notifyPostToMembers
 
 const router = express.Router();
 
@@ -55,7 +54,7 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
   try {
     // Ensure the product exists and belongs to this creator
     const { rows: prodRows } = await db.query(
-      `SELECT id, user_id AS creator_id, product_type, title
+      `SELECT id, user_id AS creator_id, product_type, title, COALESCE(active, TRUE) AS active
          FROM products
         WHERE id = $1
         LIMIT 1`,
@@ -67,6 +66,11 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     }
 
     const product = prodRows[0];
+
+    // ⛔️ Creators cannot post to an inactive membership product
+    if (product.product_type === "membership" && !product.active) {
+      return res.status(403).json({ error: "This membership is inactive; cannot add new posts." });
+    }
 
     // Create post
     const { rows } = await db.query(
@@ -80,8 +84,7 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     // Respond to client first
     res.status(201).json({ post });
 
-    // NOTIFICATIONS (email + in-app) for members of THIS membership product:
-    // Centralize fan-out logic so we don't drift from the permissive membership filter.
+    // NOTIFICATIONS (email + in-app) for members of THIS membership product
     if (product.product_type === "membership") {
       notifyPostToMembers({
         creatorId,
@@ -170,46 +173,107 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
 /**
  * GET /api/posts/product/:productId
  * - Fetch posts that belong to a specific product (membership product)
- * - Access allowed if requester is the creator OR has an active membership to that creator
+ * - Access allowed if requester is the creator OR has a valid membership
+ * - Robust access:
+ *    1) If user has *product-level* access -> return posts for that product (+ legacy NULL posts)
+ *    2) Else if user has *creator-level* access to any of the creator's membership products
+ *       -> return all posts by that creator (covers product-ID migrations)
  */
 router.get("/product/:productId", requireAuth, async (req, res) => {
   const productId = parseInt(req.params.productId, 10);
   if (Number.isNaN(productId)) return res.status(400).json({ error: "Invalid product id" });
+
   try {
-    // Ensure product exists & get creator owning it
+    // Ensure product exists & get the owning creator
     const { rows: prod } = await db.query(
-      `SELECT id, user_id FROM products WHERE id=$1 LIMIT 1`,
+      `SELECT id, user_id, product_type, COALESCE(active, TRUE) AS active
+         FROM products
+        WHERE id=$1
+        LIMIT 1`,
       [productId]
     );
     if (!prod.length) return res.status(404).json({ error: "Product not found" });
+
     const creatorId = prod[0].user_id;
     const userId = req.user.id;
 
-    // If not the creator, verify membership access
-    if (String(userId) !== String(creatorId)) {
-      const { rows: access } = await db.query(
-        `SELECT 1 FROM memberships
-          WHERE buyer_id=$1 AND creator_id=$2
-            AND status IN ('active','trialing')
-            AND NOW() <= COALESCE(current_period_end, NOW())
-          LIMIT 1`,
-        [userId, creatorId]
+    // If requester is the creator, allow (regardless of product.active)
+    if (String(userId) === String(creatorId)) {
+      const { rows } = await db.query(
+        `SELECT p.*, cp.display_name, cp.profile_image
+           FROM posts p
+           JOIN creator_profiles cp ON cp.user_id = p.creator_id
+          WHERE p.creator_id=$2
+            AND (p.product_id = $1 OR p.product_id IS NULL)
+          ORDER BY p.created_at DESC`,
+        [productId, creatorId]
       );
-      if (!access.length) return res.status(403).json({ error: "Membership required" });
+      return res.json({ posts: rows });
     }
 
-    // Fetch posts for this creator that either belong to this product or are legacy (NULL product_id)
+    // --- Non-creator: check access ---
+
+    // 1) Product-level access (user is subscribed to this specific membership product)
+    const { rows: prodAccess } = await db.query(
+      `SELECT 1
+         FROM memberships m
+        WHERE m.buyer_id = $1
+          AND m.product_id = $2
+          AND (
+                m.status IN ('active','trialing','past_due')
+             OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+          )
+          AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
+        LIMIT 1`,
+      [userId, productId]
+    );
+
+    // 2) Creator-level access: user has an active membership to *any* product from this creator
+    const { rows: creatorAccess } = await db.query(
+      `SELECT 1
+         FROM memberships m
+         JOIN products    p ON p.id = m.product_id
+        WHERE m.buyer_id = $1
+          AND p.user_id  = $2
+          AND p.product_type = 'membership'
+          AND (
+                m.status IN ('active','trialing','past_due')
+             OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+          )
+          AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
+        LIMIT 1`,
+      [userId, creatorId]
+    );
+
+    if (!prodAccess.length && !creatorAccess.length) {
+      return res.status(403).json({ error: "Membership required" });
+    }
+
+    // If user has product-level access, show posts scoped to this product (+ legacy)
+    if (prodAccess.length) {
+      const { rows } = await db.query(
+        `SELECT p.*, cp.display_name, cp.profile_image
+           FROM posts p
+           JOIN creator_profiles cp ON cp.user_id = p.creator_id
+          WHERE p.creator_id=$2
+            AND (p.product_id = $1 OR p.product_id IS NULL)
+          ORDER BY p.created_at DESC`,
+        [productId, creatorId]
+      );
+      return res.json({ posts: rows });
+    }
+
+    // Else user has creator-level access (e.g., creator migrated products):
+    // show *all* posts from this creator so the feed is not empty.
     const { rows } = await db.query(
       `SELECT p.*, cp.display_name, cp.profile_image
          FROM posts p
          JOIN creator_profiles cp ON cp.user_id = p.creator_id
-        WHERE p.creator_id=$2
-          AND (p.product_id = $1 OR p.product_id IS NULL)
+        WHERE p.creator_id=$1
         ORDER BY p.created_at DESC`,
-      [productId, creatorId]
+      [creatorId]
     );
-
-    res.json({ posts: rows });
+    return res.json({ posts: rows });
   } catch (e) {
     console.error("get product posts error:", e);
     res.status(500).json({ error: "Could not fetch product posts" });
@@ -227,10 +291,16 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
   try {
     if (String(userId) !== String(creatorId)) {
       const { rows: access } = await db.query(
-        `SELECT 1 FROM memberships
-          WHERE buyer_id=$1 AND creator_id=$2
-            AND status IN ('active','trialing')
-            AND NOW() <= COALESCE(current_period_end, NOW())
+        `SELECT 1
+           FROM memberships m
+           JOIN products p ON p.id = m.product_id
+          WHERE m.buyer_id=$1 AND p.user_id=$2
+            AND p.product_type='membership'
+            AND (
+                  m.status IN ('active','trialing','past_due')
+               OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+            )
+            AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
           LIMIT 1`,
         [userId, creatorId]
       );

@@ -821,69 +821,85 @@ router.put("/:id", requireAuth, standardLimiter, validate(productUpdate), async 
 });
 
 /* ------------------------------ UPDATE FILE ------------------------------ */
-router.put("/:id/file", requireAuth, upload.single("file"), async (req, res) => {
-  const rawId = String(req.params.id || "").trim();
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+router.put(
+  "/:id/file",
+  requireAuth,
+  // wrap multer so we can catch its errors (bad type, size, etc.)
+  (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) {
+        // Multer denied the upload (bad mimetype / too big)
+        const msg = err?.message || "Upload failed";
+        return res.status(400).json({ error: msg });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    const rawId = String(req.params.id || "").trim();
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
-  const ownership = await assertOwner(rawId, req.user.id);
-  if (ownership.error) return res.status(ownership.code).json({ error: ownership.error });
+    const ownership = await assertOwner(rawId, req.user.id);
+    if (ownership.error) return res.status(ownership.code).json({ error: ownership.error });
 
-  const { rows: prevRows } = await db.query(`SELECT filename FROM products WHERE ${WHERE_ID_TEXT}`, [rawId]);
-  const oldName = prevRows[0]?.filename || null;
+    // fetch previous filename for cleanup
+    const { rows: prevRows } = await db.query(`SELECT filename FROM products WHERE ${WHERE_ID_TEXT}`, [rawId]);
+    const oldName = prevRows[0]?.filename || null;
 
-  const inputPath = req.file.path;
-  const mimeType = req.file.mimetype;
+    const inputPath = req.file.path;
+    const mimeType = req.file.mimetype;
 
-  const saveNewFilename = async (newName) => {
-    try {
-      const sets = ["filename = $1"];
-      if (await hasColumn("products", "updated_at")) sets.push("updated_at = NOW()");
-      const updated = await db.query(
-        `UPDATE products SET ${sets.join(", ")} WHERE ${WHERE_ID_TEXT} RETURNING *`,
-        [newName, rawId]
-      );
+    const saveNewFilename = async (newName) => {
+      try {
+        const sets = ["filename = $1"];
+        if (await hasColumn("products", "updated_at")) sets.push("updated_at = NOW()");
+        const updated = await db.query(
+          `UPDATE products SET ${sets.join(", ")} WHERE ${WHERE_ID_TEXT} RETURNING *`,
+          [newName, rawId]
+        );
 
-      if (oldName && oldName !== newName) {
-        const oldPath = path.join(uploadDir, oldName);
-        if (fs.existsSync(oldPath)) {
-          try {
-            fs.unlinkSync(oldPath);
-          } catch (e) {
-            console.warn("Delete old file failed:", e.message);
+        // delete old file (best effort)
+        if (oldName && oldName !== newName) {
+          const oldPath = path.join(uploadDir, oldName.replace(/^\/?uploads\//, "")); // normalize any legacy 'uploads/' prefix
+          if (fs.existsSync(oldPath)) {
+            try { fs.unlinkSync(oldPath); } catch (e) { console.warn("Delete old file failed:", e.message); }
           }
         }
+
+        return res.json({ success: true, product: linkify(updated.rows[0]) });
+      } catch (err) {
+        console.error("File update DB error:", err.message || err);
+        return res.status(500).json({ error: "Failed to update product file" });
       }
+    };
 
-      res.json({ success: true, product: linkify(updated.rows[0]) });
-    } catch (err) {
-      console.error("File update DB error:", err.message || err);
-      res.status(500).json({ error: "Failed to update product file" });
+    if (mimeType.startsWith("video/")) {
+      const outputFilename = `video-${Date.now()}.mp4`;
+      const outputPath = path.join(uploadDir, outputFilename);
+      ffmpeg(inputPath)
+        .output(outputPath)
+        .on("end", () => {
+          try { fs.unlinkSync(inputPath); } catch {}
+          saveNewFilename(outputFilename);
+        })
+        .on("error", (e) => {
+          console.error("FFmpeg error:", e?.message || e);
+          return res.status(500).json({ error: "Video conversion failed" });
+        })
+        .run();
+    } else {
+      const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
+      const finalPath = path.join(uploadDir, finalName);
+      fs.rename(inputPath, finalPath, (err) => {
+        if (err) {
+          console.error("Rename error:", err.message || err);
+          return res.status(500).json({ error: "File save failed" });
+        }
+        saveNewFilename(finalName);
+      });
     }
-  };
-
-  if (mimeType.startsWith("video/")) {
-    const outputFilename = `video-${Date.now()}.mp4`;
-    const outputPath = path.join(uploadDir, outputFilename);
-    ffmpeg(inputPath)
-      .output(outputPath)
-      .on("end", () => {
-        try {
-          fs.unlinkSync(inputPath);
-        } catch {}
-        saveNewFilename(outputFilename);
-      })
-      .on("error", () => res.status(500).json({ error: "Video conversion failed" }))
-      .run();
-  } else {
-    const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
-    const finalPath = path.join(uploadDir, finalName);
-    fs.rename(inputPath, finalPath, (err) => {
-      if (err) return res.status(500).json({ error: "File save failed" });
-      saveNewFilename(finalName);
-    });
   }
-});
-
+);
 /* -------------------- publish/unpublish -------------------- */
 // You can still manually publish/unpublish; new items default to active on create if column exists.
 
