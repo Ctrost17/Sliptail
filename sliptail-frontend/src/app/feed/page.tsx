@@ -27,6 +27,8 @@ function PostMedia({
 }) {
   const [ratio, setRatio] = useState<number | null>(null);
 
+  const isAudio = (file?.type?.startsWith("audio/") ||
+   /\.mp3$/i.test((src || "").split("?")[0])) as boolean;
   const isVideo = (file?.type?.startsWith("video/") ||
     /\.(mp4|webm|ogg|m4v|mov)$/i.test((src || "").split("?")[0])) as boolean;
 
@@ -45,26 +47,33 @@ function PostMedia({
       className="relative mt-3 rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
       style={!isVideo && ratio ? { aspectRatio: String(ratio) } : undefined}
     >
-      {isVideo ? (
-        <video
-          src={src}
-          controls
-          playsInline
-          preload="metadata"
-          controlsList="nodownload"
-          className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
-          onLoadedMetadata={handleVideoMeta}
-        />
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={src}
-          alt="post media"
-          loading="lazy"
-          className="block w-full h-auto object-contain bg-black"
-          onLoad={handleImageLoad}
-        />
-      )}
+        {isAudio ? (
+          <audio
+            src={src}
+            controls
+            preload="metadata"
+            className="block w-full bg-black"
+          />
+        ) : isVideo ? (
+          <video
+            src={src}
+            controls
+            playsInline
+            preload="metadata"
+            controlsList="nodownload"
+            className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
+            onLoadedMetadata={handleVideoMeta}
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={src}
+            alt="post media"
+            loading="lazy"
+            className="block w-full h-auto object-contain bg-black"
+            onLoad={handleImageLoad}
+          />
+        )}
     </div>
   );
 }
@@ -126,6 +135,14 @@ export default function MembershipFeedPage() {
     },
     []
   );
+   const isAudioMedia = useCallback(
+   (file: File | null, src: string | null | undefined): boolean => {
+     if (file?.type) return file.type.startsWith("audio/");
+     const s = (src || "").toLowerCase().split("?")[0].split("#")[0];
+     return /\.mp3$/i.test(s);
+  },
+   []
+ );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -521,9 +538,11 @@ export default function MembershipFeedPage() {
                 )}
                 {draftMediaPreview && (
                   <div className="relative group">
-                    {isVideoMedia(draftFile, draftMediaPreview) ? (
-                      <video src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
-                    ) : (
+                    {isAudioMedia(draftFile, draftMediaPreview) ? (
+              <audio src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
+                ) : isVideoMedia(draftFile, draftMediaPreview) ? (
+                    <video src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
+                  ) : (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} alt="preview" className="w-full rounded-xl border object-cover" />
                     )}
@@ -572,7 +591,9 @@ export default function MembershipFeedPage() {
                 )}
                 {draftMediaPreview && (
                   <div className="relative group">
-                    {isVideoMedia(draftFile, draftMediaPreview) ? (
+                  {isAudioMedia(draftFile, draftMediaPreview) ? (
+                    <audio src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
+                  ) : isVideoMedia(draftFile, draftMediaPreview) ? (
                       <video src={resolveMediaUrl(draftMediaPreview) || draftMediaPreview} controls className="w-full rounded-xl border" />
                     ) : (
                       // eslint-disable-next-line @next/next/no-img-element

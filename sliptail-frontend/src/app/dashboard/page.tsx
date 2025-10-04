@@ -148,6 +148,10 @@ function isLikelyVideo(url: string) {
   const clean = url.split("?")[0].toLowerCase();
   return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
 }
+function isLikelyAudio(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(mp3|wav|m4a|aac|ogg|webm)$/.test(clean);
+}
 function AttachmentViewer({
   src,
   className = "w-full rounded-lg border overflow-hidden bg-black/5",
@@ -166,12 +170,53 @@ function AttachmentViewer({
       />
     );
   }
+    if (isLikelyAudio(src)) {
+    return (
+      <audio
+        src={src}
+        controls
+        preload="metadata"
+        className={`${className} w-full`}
+      />
+    );
+  }
   return (
     <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
       Open attachment
     </a>
   );
 }
+
+function LocalAttachmentPreview({ file, url }: { file: File | null; url: string | null }) {
+  if (!file || !url) return null;
+
+  const mime = (file.type || "").toLowerCase();
+  const name = (file.name || "").toLowerCase();
+
+  const isVideo = mime.startsWith("video/") || /\.(mp4|webm|ogg|m4v|mov)$/.test(name);
+  const isAudio = mime.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|webm)$/.test(name);
+  const isImage = mime.startsWith("image/") || /\.(png|jpe?g|webp|gif|svg)$/.test(name);
+
+  if (isAudio) {
+    return <audio src={url} controls preload="metadata" className="block w-full bg-black" />;
+  }
+  if (isVideo) {
+    return (
+      <video
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="block w-full h-auto max-h-[60vh] object-contain bg-black"
+      />
+    );
+  }
+  if (isImage) {
+    return <img src={url} alt="preview" className="block w-full h-auto object-contain bg-black" />;
+  }
+  return <div className="text-sm text-neutral-700">{file.name}</div>;
+}
+
 
 /* ----------------------- Small UI helpers ----------------------- */
 function StarRating({ value, size = 16 }: { value: number; size?: number }) {
@@ -316,12 +361,28 @@ export default function DashboardPage() {
   const [completeDesc, setCompleteDesc] = useState<string>("");
   const [completing, setCompleting] = useState(false);
   const [completeFileNames, setCompleteFileNames] = useState<string[]>([]);
+  const [completePreviewUrl, setCompletePreviewUrl] = useState<string | null>(null);
+const [completePreviewFile, setCompletePreviewFile] = useState<File | null>(null);
+
+useEffect(() => {
+  return () => {
+    if (completePreviewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(completePreviewUrl);
+    }
+  };
+}, [completePreviewUrl]);
+
   function openComplete(req: any) { setActiveCompleteRequest(req); setCompleteDesc(""); }
   function closeComplete() {
   setActiveCompleteRequest(null);
   setCompleteDesc("");
-  setCompleteFileNames([]); // ← reset displayed file names
+  setCompleteFileNames([]);
   if (completeFilesRef.current) completeFilesRef.current.value = "";
+
+  // also clear/revoke the preview
+  if (completePreviewUrl?.startsWith("blob:")) URL.revokeObjectURL(completePreviewUrl);
+  setCompletePreviewUrl(null);
+  setCompletePreviewFile(null);
 }
 
   async function submitComplete() {
@@ -1495,18 +1556,28 @@ export default function DashboardPage() {
   </label>
 
   {/* Hidden native input */}
-  <input
-    id="complete-files"
-    ref={completeFilesRef}
-    type="file"
-    accept="image/*,video/*"
-    multiple
-    className="hidden"
-    onChange={(e) => {
-      const names = Array.from(e.target.files ?? []).map((f) => f.name);
-      setCompleteFileNames(names);
-    }}
-  />
+<input
+  id="complete-files"
+  ref={completeFilesRef}
+  type="file"
+  accept="image/*,video/*,audio/*,.mp3,.wav,.m4a,.aac,.ogg,.webm"
+  multiple
+  className="hidden"
+  onChange={(e) => {
+    const files = Array.from(e.target.files ?? []);
+    setCompleteFileNames(files.map((f) => f.name));
+
+    if (completePreviewUrl?.startsWith("blob:")) URL.revokeObjectURL(completePreviewUrl);
+    const first = files[0] || null;
+    setCompletePreviewFile(first);
+    setCompletePreviewUrl(first ? URL.createObjectURL(first) : null);
+  }}
+/>
+{completePreviewUrl && (
+  <div className="mt-3">
+    <LocalAttachmentPreview file={completePreviewFile} url={completePreviewUrl} />
+  </div>
+)}
 
   {/* Trigger + filename display */}
   <div className="flex items-center gap-3">

@@ -50,10 +50,24 @@ const allowed = new Set([
   "image/png",
   "image/jpeg",
   "image/webp",
+  "image/svg",
   "video/mp4",
   "video/quicktime",
   "video/x-msvideo",
   "text/plain",
+  "text/csv",
+  "application/csv",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "audio/mpeg",       // mp3
+  "audio/mp3",        // some browsers use this
+  "audio/aac",
+  "audio/m4a",
+  "audio/x-m4a",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/ogg",
+  "audio/webm",
 ]);
 
 const upload = multer({
@@ -444,7 +458,8 @@ router.post(
         let deliveredFile = path.basename(req.file.path); // default: original upload
 
         // If it's not already mp4 (e.g. .mov) and needs transcoding, convert to mp4
-        if (needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
+        const isAudio = req.file.mimetype && req.file.mimetype.startsWith("audio/");
+       if (!isAudio && needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
           const base = path.parse(deliveredFile).name;                 // filename without extension
           const mp4Name = `${base}.mp4`;
           const inPath = req.file.path;                                // /public/uploads/requests/<rand>.<ext>
@@ -535,7 +550,8 @@ router.post(
       let newAttachment = null;
           if (req.file) {
             let fname = path.basename(req.file.path);
-            if (needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
+             const isAudio = req.file.mimetype && req.file.mimetype.startsWith("audio/");
+             if (!isAudio && needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
               const base = path.parse(fname).name;
               const mp4Name = `${base}.mp4`;
               await transcodeToMp4(req.file.path, path.join(uploadDirRequests, mp4Name));

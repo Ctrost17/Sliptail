@@ -13,6 +13,79 @@ function useToast() {
   };
 }
 
+/** --- tiny preview component (image | video | audio) --- */
+function AttachmentPreview({
+  file,
+  url,
+}: {
+  file: File | null;
+  url: string | null;
+}) {
+  const [ratio, setRatio] = useState<number | null>(null);
+  if (!file || !url) return null;
+
+  const mime = file.type || "";
+  const name = file.name.toLowerCase();
+
+  const isVideo =
+    mime.startsWith("video/") ||
+    /\.(mp4|webm|ogg|m4v|mov)$/i.test(name.split("?")[0]);
+  const isAudio =
+    mime.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|webm)$/i.test(name);
+  const isImage =
+    mime.startsWith("image/") || /\.(png|jpe?g|webp|gif|svg)$/i.test(name);
+
+  const handleVideoMeta = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const el = e.currentTarget;
+    if (el.videoWidth && el.videoHeight) setRatio(el.videoWidth / el.videoHeight);
+  };
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const el = e.currentTarget;
+    if (el.naturalWidth && el.naturalHeight)
+      setRatio(el.naturalWidth / el.naturalHeight);
+  };
+
+  return (
+    <div
+      className="relative mt-3 rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
+      style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
+    >
+      {isAudio ? (
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          className="block w-full bg-black"
+        />
+      ) : isVideo ? (
+        <video
+          src={url}
+          controls
+          playsInline
+          preload="metadata"
+          controlsList="nodownload"
+          className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
+          onLoadedMetadata={handleVideoMeta}
+        />
+      ) : isImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt="attachment preview"
+          loading="lazy"
+          className="block w-full h-auto object-contain bg-black"
+          onLoad={handleImageLoad}
+        />
+      ) : (
+        <div className="flex items-center gap-2 p-3 text-sm text-white/90">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded bg-white/10">📎</span>
+          <span className="truncate">{file.name}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function NewRequestPage() {
   const search = useSearchParams();
   const router = useRouter();
@@ -40,12 +113,20 @@ export default function NewRequestPage() {
 
   const [details, setDetails] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
   useEffect(() => {
     if (initialToast && initialToast.trim()) success(initialToast);
   }, [initialToast, success]);
+
+  // cleanup object URL when file changes/unmounts
+  useEffect(() => {
+    return () => {
+      if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   if (!orderId && !sessionId) {
     return (
@@ -168,7 +249,11 @@ export default function NewRequestPage() {
   }
 
   function handleFileChange(ev: React.ChangeEvent<HTMLInputElement>) {
-    setFile(ev.currentTarget.files?.[0] ?? null);
+    const f = ev.currentTarget.files?.[0] ?? null;
+    // revoke old preview first
+    if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    setFile(f);
+    setPreviewUrl(f ? URL.createObjectURL(f) : null);
   }
 
   function doLater() {
@@ -213,10 +298,18 @@ export default function NewRequestPage() {
           {/* Hidden native file input */}
           <input
             id="attachment"
+            name="attachment"
             type="file"
-            accept="image/*,video/*,application/pdf"
-            onChange={handleFileChange}
             className="hidden"
+            onChange={handleFileChange}
+            // ← allow audio (MP3, WAV, M4A, OGG, etc.) plus common docs
+            accept="
+              image/*,
+              video/*,
+              audio/*,
+              .mp3,.wav,.m4a,.aac,.ogg,.webm,
+              .pdf,.epub,.txt,.csv,.xlsx,.xls,.svg
+            "
           />
 
           {/* Button + filename text */}
@@ -232,6 +325,9 @@ export default function NewRequestPage() {
               {file ? file.name : "No file selected"}
             </span>
           </div>
+
+          {/* Inline media preview (image / video / audio) */}
+          <AttachmentPreview file={file} url={previewUrl} />
         </label>
 
         <div className="mt-4 flex gap-3">

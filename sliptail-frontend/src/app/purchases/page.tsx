@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState,useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
@@ -75,6 +75,10 @@ function isLikelyVideo(url: string) {
   const clean = url.split("?")[0].toLowerCase();
   return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
 }
+function isLikelyAudio(url: string) {
+  const clean = url.split("?")[0].toLowerCase();
+  return /\.(mp3|m4a|aac|wav|ogg|webm)$/.test(clean);
+}
 
 function AttachmentViewer({
   src,
@@ -91,6 +95,16 @@ function AttachmentViewer({
         playsInline
         preload="metadata"
         className={`${className} aspect-video`}
+      />
+    );
+  }
+    if (isLikelyAudio(src)) {
+    return (
+      <audio
+        src={src}
+        controls
+        preload="metadata"
+        className={`${className} block bg-black`}
       />
     );
   }
@@ -428,6 +442,26 @@ export default function PurchasesPage() {
       if (fallback) window.open(fallback, "_blank", "noopener");
     }
   };
+
+  const downloadByUrl = useCallback(async (href: string, filename?: string) => {
+  try {
+    const res = await fetch(href, { credentials: "include" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename || href.split("?")[0].split("/").pop() || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(blobUrl);
+  } catch {
+    // fallback if fetch fails
+    window.open(href, "_blank", "noopener");
+  }
+}, []);
 
   const formatDate = (dateString: string) =>
     new Date(dateString).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -795,38 +829,39 @@ export default function PurchasesPage() {
                   )}
                 </div>
 
-                {/* Buyer-submitted details */}
-                {(selectedItem.request_user_message || selectedItem.request_user_attachment_url) && (
-                  <div>
-                    <h4 className="font-medium text-gray-700 mb-3">Your Submitted Details</h4>
-
-                    {selectedItem.request_user_message && (
-                      <div className="bg-gray-50 rounded-lg p-4 mb-3">
-                        <p className="text-gray-700 whitespace-pre-wrap">
-                          {selectedItem.request_user_message}
-                        </p>
-                      </div>
-                    )}
-
-                    {selectedItem.request_user_attachment_url && (
+                  {/* Buyer-submitted details */}
+                  {(selectedItem.request_user_message || selectedItem.request_user_attachment_url) && (
                     <div>
-                      <a
-                        href={
-                          resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
-                          selectedItem.request_user_attachment_url!
-                        }
-                        className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
-                        download
-                        rel="noopener noreferrer"
-                      >
-                        <Download className="w-5 h-5 mr-2" />
-                        Download Your Attachment
-                      </a>
+                      <h4 className="font-medium text-gray-700 mb-3">Your Submitted Details</h4>
+
+                      {selectedItem.request_user_message && (
+                        <div className="bg-gray-50 rounded-lg p-4 mb-3">
+                          <p className="text-gray-700 whitespace-pre-wrap">
+                            {selectedItem.request_user_message}
+                          </p>
+                        </div>
+                      )}
+
+                      {selectedItem.request_user_attachment_url && (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const url =
+                                resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
+                                selectedItem.request_user_attachment_url!;
+                              const name = url.split("?")[0].split("/").pop() || "attachment";
+                              downloadByUrl(url, name);
+                            }}
+                            className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
+                          >
+                            <Download className="w-5 h-5 mr-2" />
+                            Download Your Attachment
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
-                  </div>
-                )}
-
                 {/* Creator delivery (shown when creator attached a file on deliver/complete) */}
                 {selectedItem.request_media_url && (
                   <div>
@@ -841,28 +876,38 @@ export default function PurchasesPage() {
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       {/* Direct file download */}
-                      <a
-                        href={
-                          resolveImageUrl(selectedItem.request_media_url, apiBase) ||
-                          selectedItem.request_media_url!
-                        }
-                        className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
-                        download
-                      >
-                        <Download className="w-5 h-5 mr-2" />
-                        Download Delivery
-                      </a>
+                     <button
+                          type="button"
+                          onClick={() => {
+                            const url =
+                              resolveImageUrl(selectedItem.request_media_url, apiBase) ||
+                              selectedItem.request_media_url!;
+                            const name = url.split("?")[0].split("/").pop() || "delivery";
+                            downloadByUrl(url, name);
+                          }}
+                          className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
+                        >
+                          <Download className="w-5 h-5 mr-2" />
+                          Download Delivery
+                        </button>
 
                       {/* Protected download route (works when status is 'delivered') */}
                       {selectedItem.request_id &&
                         (selectedItem.request_status || "").toLowerCase() === "delivered" && (
-                          <a
-                            href={`${apiBase}/api/requests/${selectedItem.request_id}/download`}
-                            className="inline-flex items-center bg-gray-100 text-gray-700 px-4 py-2.5 rounded-lg hover:bg-gray-200 transition-colors"
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const url =
+                                resolveImageUrl(selectedItem.request_media_url, apiBase) ||
+                                selectedItem.request_media_url!;
+                              const name = url.split("?")[0].split("/").pop() || "delivery";
+                              downloadByUrl(url, name);
+                            }}
+                            className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
                           >
                             <Download className="w-5 h-5 mr-2" />
-                            Download (via secure route)
-                          </a>
+                            Download Delivery
+                          </button>
                         )}
                     </div>
                   </div>
