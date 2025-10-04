@@ -471,42 +471,44 @@ module.exports = async function stripeWebhook(req, res) {
       case "customer.subscription.updated":
       case "customer.subscription.deleted": {
         const sub = event.data.object;
+
         const status = sub.status; // trialing, active, past_due, canceled, etc.
-        
-        // Calculate proper period end - handle invalid or missing timestamps
-        let currentPeriodEnd;
-        if (sub.current_period_end && sub.current_period_end > 0) {
-          currentPeriodEnd = new Date(sub.current_period_end * 1000);
-        } else {
-          // Fallback: 1 month from now if Stripe doesn't provide valid period end
-          currentPeriodEnd = new Date();
-          currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
-        }
+        const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
 
-        const meta = sub.metadata || {};
-        const buyerId   = meta.buyer_id && parseInt(meta.buyer_id, 10);
-        const creatorId = meta.creator_id && parseInt(meta.creator_id, 10);
-        const productId = meta.product_id && parseInt(meta.product_id, 10);
+        // Use Stripe's timestamp if present; otherwise leave NULL (don't guess)
+        const currentPeriodEnd = sub.current_period_end
+          ? new Date(sub.current_period_end * 1000)
+          : null;
 
-        if (buyerId && creatorId && productId) {
-          if (event.type === "customer.subscription.deleted") {
-            await db.query(
-              `UPDATE memberships
-                  SET status='canceled',
-                      current_period_end=$1
-                WHERE stripe_subscription_id=$2`,
-              [currentPeriodEnd, sub.id]
-            );
-          } else {
+        // 1) First, try to UPDATE by subscription id (metadata is often missing on updates)
+        const upd = await db.query(
+          `UPDATE memberships
+              SET status = $2,
+                  cancel_at_period_end = $3,
+                  current_period_end   = $4
+            WHERE stripe_subscription_id = $1`,
+          [sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
+        );
+
+        // 2) If no row exists yet and metadata is present (e.g., first created), INSERT
+        if (upd.rowCount === 0) {
+          const meta = sub.metadata || {};
+          const buyerId   = meta.buyer_id && parseInt(meta.buyer_id, 10);
+          const creatorId = meta.creator_id && parseInt(meta.creator_id, 10);
+          const productId = meta.product_id && parseInt(meta.product_id, 10);
+
+          if (buyerId && creatorId && productId) {
             await db.query(
               `INSERT INTO memberships
-                 (buyer_id, creator_id, product_id, stripe_subscription_id, status, current_period_end, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,NOW())
-               ON CONFLICT (stripe_subscription_id) DO UPDATE
-                 SET status=EXCLUDED.status,
-                     current_period_end=EXCLUDED.current_period_end`,
-              [buyerId, creatorId, productId, sub.id, status, currentPeriodEnd]
-            );
+                (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
+              VALUES ($1,$2,$3,$4,$5,FALSE,$6,NOW())
+              ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
+                SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+                    status                 = EXCLUDED.status,
+                    cancel_at_period_end   = FALSE,
+                    current_period_end     = EXCLUDED.current_period_end`,
+              [buyerId, creatorId, productId, sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
+              );
 
             // NEW: Only on initial purchase (created), ping creator with "creator_sale"
             if (event.type === "customer.subscription.created") {
@@ -529,8 +531,12 @@ module.exports = async function stripeWebhook(req, res) {
                 console.error("creator_sale notify (subscription.created) error:", e);
               }
             }
+          } else {
+            // No metadata and no existing row; log and move on (can be expected on some updates)
+            console.warn("[webhook] subscription event with no local row and no metadata", sub.id);
           }
         }
+
         break;
       }
 
@@ -538,25 +544,21 @@ module.exports = async function stripeWebhook(req, res) {
         const invoice = event.data.object;
         const subId = invoice.subscription;
         if (subId) {
+          // Pull the latest subscription so we have authoritative status/flags/timestamps
           const sub = await stripe.subscriptions.retrieve(subId);
           const status = sub.status;
-          
-          // Calculate proper period end - handle invalid or missing timestamps
-          let currentPeriodEnd;
-          if (sub.current_period_end && sub.current_period_end > 0) {
-            currentPeriodEnd = new Date(sub.current_period_end * 1000);
-          } else {
-            // Fallback: 1 month from now if Stripe doesn't provide valid period end
-            currentPeriodEnd = new Date();
-            currentPeriodEnd.setMonth(currentPeriodEnd.getMonth() + 1);
-          }
-          
+          const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
+          const currentPeriodEnd = sub.current_period_end
+            ? new Date(sub.current_period_end * 1000)
+            : null;
+
           await db.query(
             `UPDATE memberships
                 SET status=$1,
-                    current_period_end=$2
-              WHERE stripe_subscription_id=$3`,
-            [status, currentPeriodEnd, subId]
+                    cancel_at_period_end=$2,
+                    current_period_end=$3
+              WHERE stripe_subscription_id=$4`,
+            [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
           );
           // No creator notification here — renewals would be too noisy
         }

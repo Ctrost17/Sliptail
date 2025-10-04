@@ -4,6 +4,10 @@ const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const { sendIfUserPref } = require("../utils/notify");
 
+// ✅ NEW: Stripe (needed so cancel actually stops future charges on Stripe)
+const Stripe = require("stripe");
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 const router = express.Router();
 
 // Build secure product links, mirroring orders route
@@ -92,27 +96,67 @@ router.post("/subscribe", requireAuth, async (req, res) => {
  * POST /api/memberships/:id/cancel
  * - Marks cancel_at_period_end = TRUE
  * - Keeps access until current_period_end
+ * - ✅ UPDATED: If a Stripe subscription exists, set cancel_at_period_end on Stripe too
  */
 router.post("/:id/cancel", requireAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const userId = req.user.id;
 
   try {
-    // must be the owner
+    // must be the owner; also fetch stripe_subscription_id if present
     const { rows: own } = await db.query(
-      `SELECT * FROM memberships WHERE id=$1 AND buyer_id=$2`,
+      `SELECT id, buyer_id, stripe_subscription_id
+         FROM memberships
+        WHERE id=$1 AND buyer_id=$2`,
       [id, userId]
     );
-    if (!own.length) return res.status(404).json({ error: "Membership not found" });
+    const m = own[0];
+    if (!m) return res.status(404).json({ error: "Membership not found" });
 
-    const { rows } = await db.query(
-      `UPDATE memberships
-          SET cancel_at_period_end = TRUE
-        WHERE id = $1
-        RETURNING *`,
-      [id]
-    );
-    res.json({ success: true, membership: rows[0] });
+    let stripeStatus = null;
+    let stripeCancelsAt = null;
+
+    // If linked to Stripe, cancel there at period end (this stops future renewals)
+    if (m.stripe_subscription_id) {
+      try {
+        const sub = await stripe.subscriptions.update(m.stripe_subscription_id, {
+          cancel_at_period_end: true,
+        });
+        stripeStatus = sub.status; // likely 'active' or 'trialing'
+        stripeCancelsAt = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+
+        // Mirror Stripe on our row
+        await db.query(
+          `UPDATE memberships
+              SET cancel_at_period_end = TRUE,
+                  current_period_end   = COALESCE($2, current_period_end),
+                  status               = $3
+            WHERE id = $1`,
+          [id, stripeCancelsAt, stripeStatus]
+        );
+      } catch (stripeErr) {
+        console.error("Stripe cancel_at_period_end failed:", stripeErr);
+        // If Stripe call fails, we *do not* flip local state, to avoid lying to the user.
+        return res.status(502).json({ error: "Stripe cancellation failed. Please try again." });
+      }
+    } else {
+      // No Stripe link — mark local cancel-at-period-end only
+      await db.query(
+        `UPDATE memberships
+            SET cancel_at_period_end = TRUE
+          WHERE id = $1`,
+        [id]
+      );
+    }
+
+    const { rows: updated } = await db.query(`SELECT * FROM memberships WHERE id=$1`, [id]);
+    return res.json({
+      success: true,
+      membership: updated[0],
+      note: m.stripe_subscription_id
+        ? "Stripe subscription will not renew; access continues until current_period_end."
+        : "Local-only cancel marked; no Stripe subscription linked.",
+    });
   } catch (e) {
     console.error("cancel error:", e);
     res.status(500).json({ error: "Could not cancel membership" });
@@ -122,15 +166,25 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
 /**
  * GET /api/memberships/mine
  * - Lists my memberships with access flags
- * - 👇 UPDATED to keep showing memberships that are scheduled to cancel,
- *   until current_period_end passes.
+ * - 👇 Keeps showing memberships that are scheduled to cancel, until current_period_end passes.
  */
 router.get("/mine", requireAuth, async (req, res) => {
   const userId = req.user.id;
   try {
     const { rows } = await db.query(
       `SELECT m.*,
-              (m.status IN ('active','trialing') AND NOW() <= m.current_period_end) AS has_access,
+              /* Access if still paid through OR in an active-ish status */
+              (
+                (
+                  m.status IN ('active','trialing','past_due')
+                )
+                OR (
+                  m.cancel_at_period_end = TRUE
+                  AND COALESCE(m.current_period_end, NOW()) >= NOW()
+                )
+              )
+              AND (m.current_period_end IS NULL OR m.current_period_end >= NOW())
+              AS has_access,
               json_build_object(
                 'id', p.id,
                 'user_id', p.user_id,
@@ -152,7 +206,7 @@ router.get("/mine", requireAuth, async (req, res) => {
          JOIN creator_profiles c ON c.user_id = p.user_id
         WHERE m.buyer_id = $1
           AND (
-                m.status IN ('active','trialing')
+                m.status IN ('active','trialing','past_due')
              OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
           )
         ORDER BY m.current_period_end DESC`,
@@ -204,7 +258,7 @@ router.get("/feed", requireAuth, async (req, res) => {
 /**
  * GET /api/memberships/subscribed-products
  * - Returns membership products the current user is subscribed to (other creators)
- * - 👇 UPDATED to allow cancel_at_period_end=TRUE but still within access window
+ * - Allows cancel_at_period_end=TRUE but still within access window
  */
 router.get("/subscribed-products", requireAuth, async (req, res) => {
   const userId = req.user.id;
@@ -225,9 +279,11 @@ router.get("/subscribed-products", requireAuth, async (req, res) => {
          JOIN products p ON p.id = m.product_id
          JOIN creator_profiles cp ON cp.user_id = p.user_id
         WHERE m.buyer_id = $1
-          AND m.status IN ('active','trialing')
-          AND NOW() <= m.current_period_end
-          -- removed the old "AND m.cancel_at_period_end = FALSE" so access continues to period end
+          AND (
+                m.status IN ('active','trialing','past_due')
+             OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+          )
+          AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
         ORDER BY p.created_at DESC`,
       [userId]
     );
@@ -251,8 +307,11 @@ router.get("/access/:creatorId", requireAuth, async (req, res) => {
       `SELECT 1
          FROM memberships
         WHERE buyer_id=$1 AND creator_id=$2
-          AND status IN ('active','trialing')
-          AND NOW() <= current_period_end
+          AND (
+                m.status IN ('active','trialing','past_due')
+             OR (m.cancel_at_period_end = TRUE AND COALESCE(m.current_period_end, NOW()) >= NOW())
+          )
+          AND (current_period_end IS NULL OR NOW() <= current_period_end)
         LIMIT 1`,
       [userId, creatorId]
     );

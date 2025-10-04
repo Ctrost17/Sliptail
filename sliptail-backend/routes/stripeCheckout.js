@@ -284,14 +284,17 @@ router.get("/finalize", requireAuth, async (req, res) => {
           }
           
           try {
-            await db.query(
-              `INSERT INTO memberships (buyer_id, creator_id, product_id, stripe_subscription_id, status, current_period_end, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,NOW())
-               ON CONFLICT (stripe_subscription_id) DO UPDATE
-                 SET status=EXCLUDED.status,
-                     current_period_end=EXCLUDED.current_period_end`,
-              [buyerId, creatorId, productId, subObj.id, subObj.status, currentPeriodEnd]
-            );
+              await db.query(
+                `INSERT INTO memberships
+                  (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
+                VALUES ($1,$2,$3,$4,$5,FALSE,$6,NOW())
+                ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
+                  SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+                      status                 = EXCLUDED.status,
+                      cancel_at_period_end   = FALSE,
+                      current_period_end     = EXCLUDED.current_period_end`,
+                [buyerId, creatorId, productId, subObj.id, subObj.status, currentPeriodEnd]
+              );
           } catch (dbError) {
             console.error("Database error while creating membership:", dbError);
             // Continue processing - return success anyway since Stripe subscription is valid

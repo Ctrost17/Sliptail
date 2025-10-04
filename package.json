@@ -1,0 +1,15 @@
+{
+  "name": "stripe-test-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "create-sub": "node scripts/create-sub.js",
+    "schedule-cancel": "node scripts/schedule-cancel.js",
+    "check-sub": "node scripts/check-sub.js"
+  },
+  "dependencies": {
+    "stripe": "^16.6.0",
+    "dotenv": "^16.4.5"
+  }
+}

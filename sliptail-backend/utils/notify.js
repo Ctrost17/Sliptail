@@ -58,55 +58,41 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
       return;
     }
 
-    // Get membership product title for nice copy (fallbacks if missing)
+    // Get membership product title (for copy)
     const { rows: prodRows } = await db.query(
       `SELECT id, title FROM products WHERE id=$1 LIMIT 1`,
       [productId]
     );
     const productTitle = prodRows?.[0]?.title || "your membership";
 
-    // IMPORTANT: your memberships table does NOT have m.user_id; use buyer_id only
+    // ✅ Include members who clicked "cancel", until current_period_end
     const { rows: members } = await db.query(
       `
       SELECT DISTINCT m.buyer_id AS user_id
         FROM memberships m
        WHERE m.product_id = $1
          AND m.status IN ('active','trialing')
-         AND (m.cancel_at_period_end IS FALSE OR m.cancel_at_period_end IS NULL)
-         AND (m.current_period_end IS NULL OR NOW() <= m.current_period_end)
+         AND NOW() <= COALESCE(m.current_period_end, NOW())
       `,
       [productId]
     );
 
-    // Debug fan-out size (helps verify inserts after posting)
     console.log("[notifyPostToMembers] productId=%s eligible=%d", productId, members.length);
-
     if (!members.length) return;
 
-    // Build the URL once; same for all recipients
     const postUrl = buildActionUrl("post", { postId });
-
-    // Build the branded email once; same for all recipients
-    const msg = T.userMembershipNewPost({
-      productTitle,
-      postUrl,
-    });
+    const msg = T.userMembershipNewPost({ productTitle, postUrl });
 
     const tasks = members.map(({ user_id }) =>
       Promise.allSettled([
-        // In-app (always stored) — IMPORTANT: type must be "member_post" to match frontend routing
+        // In-app (always)
         notifyInApp(user_id, {
           type: "member_post",
           title: "New content posted",
-          body: `New content from ${productTitle} has just been posted. Check it out on My Purchases page!`,
-          metadata: {
-            creator_id: creatorId,
-            product_id: productId,
-            post_id: postId,
-          },
+          body: `New content from ${productTitle} has just been posted. Check it out on your My Purchases page!`,
+          metadata: { creator_id: creatorId, product_id: productId, post_id: postId },
         }),
-
-        // Email (respect user setting)
+        // Email (respect user pref)
         sendIfUserPref(user_id, "notify_post", {
           subject: msg.subject,
           html: msg.html,
