@@ -244,6 +244,7 @@ router.get("/feed", requireAuth, async (req, res) => {
                          FROM products p
                         WHERE p.user_id = $1
                           AND p.product_type = 'membership'
+                          AND COALESCE(p.active, TRUE) = TRUE
                         ORDER BY p.created_at DESC`;
     const { rows } = await db.query(baseQuery, [userId]);
     const products = rows.map(linkify);
