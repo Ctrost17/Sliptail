@@ -137,7 +137,7 @@ export default function Navbar() {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b bg-white/70 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-3 md:px-4 py-2 md:py-3">
         {/* Left: Logo */}
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-3" aria-label="Home">
@@ -149,22 +149,22 @@ export default function Navbar() {
         <nav className="hidden md:flex" aria-hidden />
 
         {/* Right: auth area */}
-        {!user ? (
-          <div className="flex items-center gap-2">
-            <Link
-              href="/auth/login"
-              className="rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-neutral-100"
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/auth/signup?next=%2Fcreator%2Fsetup"
-              className="rounded-2xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-black/90"
-            >
-              Become a creator
-            </Link>
-          </div>
-        ) : (
+{!user ? (
+  <div className="flex items-center gap-2 sm:gap-2 md:gap-3">
+    <Link
+      href="/auth/login"
+      className="rounded-2xl border border-black px-3 py-1.5 text-xs font-semibold text-black hover:bg-neutral-100 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
+    >
+      Sign in
+    </Link>
+    <Link
+      href="/auth/signup?next=%2Fcreator%2Fsetup"
+      className="rounded-2xl bg-black px-3 py-1.5 text-xs font-semibold text-white hover:bg-black/90 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
+    >
+      Become a creator
+    </Link>
+  </div>
+) : (
           <div className="relative" ref={menuRef}>
             <button
               type="button"

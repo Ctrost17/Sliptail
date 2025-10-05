@@ -11,6 +11,7 @@ import React, {
 } from "react";
 import { api, setAuthToken } from "@/lib/api";
 import { loadAuth, saveAuth, clearAuth, AuthState, SafeUser } from "@/lib/auth";
+import { startInactivityWatch, markActivity } from "@/lib/auth"; // already present
 import axios from "axios";
 
 type AuthContextType = {
@@ -61,6 +62,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuth(next);
     saveAuth(next);
     lastAppliedRef.current = next;
+
+    // ⬅️ added: stamp activity whenever auth is applied (e.g., login/rehydrate)
+    if (tok) markActivity();
   }, []);
 
   /** Clear auth everywhere */
@@ -136,6 +140,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (e.key === "auth" || e.key === "token") {
         void rehydrateFromLocal();
       }
+      // ⬅️ added: if another tab triggers a logout (including inactivity), mirror it
+      if (e.key === "auth:logout") {
+        clearAllAuth();
+      }
     };
 
     window.addEventListener("storage", onStorage);
@@ -143,7 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.removeEventListener("storage", onStorage);
     };
-  }, [rehydrateFromLocal]);
+  }, [rehydrateFromLocal, clearAllAuth]);
 
   // --- Actions ---
 
@@ -207,6 +215,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {/* no-op */}
   }, [clearAllAuth]);
+
+  // ⬅️ added: start/stop inactivity watcher when token changes
+  const stopWatchRef = useRef<null | (() => void)>(null);
+  useEffect(() => {
+    // tear down any previous watcher
+    if (stopWatchRef.current) {
+      stopWatchRef.current();
+      stopWatchRef.current = null;
+    }
+
+    if (token) {
+      // start watching; on inactivity, perform a real logout
+      stopWatchRef.current = startInactivityWatch(() => {
+        logout();
+      });
+      // mark initial activity so we don't insta-timeout after login/rehydrate
+      markActivity();
+    }
+
+    return () => {
+      if (stopWatchRef.current) {
+        stopWatchRef.current();
+        stopWatchRef.current = null;
+      }
+    };
+  }, [token, logout]);
 
   const value = useMemo(
     () => ({ user, token, loading, login, signup, logout }),

@@ -483,18 +483,20 @@ export default function PurchasesPage() {
         activeTab === tab ? "text-gray-900" : "text-gray-500 hover:text-gray-700"
       }`}
     >
-      <div className="flex items-center justify-center space-x-2">
+      <div className="flex items-center justify-center gap-2">
         {icon}
-        <span>{label}</span>
-        {count > 0 && (
-          <span
-            className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
-              activeTab === tab ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
-            }`}
-          >
-            {count}
-          </span>
-        )}
+        <span className="flex items-center gap-0.5">
+          <span>{label}</span>
+          {count > 0 && (
+            <span
+              className={`px-1.5 py-0.5 text-[10px] sm:text-xs rounded-full ${
+                activeTab === tab ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"
+              }`}
+            >
+              {count}
+            </span>
+          )}
+        </span>
       </div>
       {activeTab === tab && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-600" />}
     </button>
