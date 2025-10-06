@@ -5,6 +5,8 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
+
+# Build the application (with linting/type checking disabled in next.config.ts)
 RUN npm run build
 
 FROM node:18-alpine AS runner

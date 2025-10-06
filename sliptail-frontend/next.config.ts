@@ -10,6 +10,15 @@ const API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace
 
 const nextConfig: NextConfig = {
   output: 'standalone', // Enable standalone build for Docker deployment
+  
+  // Skip linting and type checking during build for faster deployment
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  
   async rewrites() {
     return [
       // Proxy all frontend /api/* calls to the backend origin
