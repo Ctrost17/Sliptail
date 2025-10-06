@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "@/app/globals.css";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -17,7 +18,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Wrap the entire app with AuthProvider so useAuth works anywhere */}
         <AuthProvider>
           <Navbar />
-          <main className="flex-1">{children}</main>
+          <main className="flex-1">
+            <Suspense fallback={null}>{children}</Suspense>
+          </main>
           <Toast />
           <Footer />
         </AuthProvider>

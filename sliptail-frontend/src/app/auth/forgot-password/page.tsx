@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-export default function ForgotPasswordPage() {
+function ForgotPasswordClient() {
   const search = useSearchParams();
   const prefill = search.get("email") || "";
 
@@ -92,5 +92,13 @@ export default function ForgotPasswordPage() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function ForgotPasswordPage() {
+  return (
+    <Suspense fallback={<main className="mx-auto max-w-sm px-4 py-10">Loading…</main>}>
+      <ForgotPasswordClient />
+    </Suspense>
   );
 }
