@@ -4,46 +4,17 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import useSWR, { mutate } from "swr";
-import { setAuthToken } from "@/lib/api";
-import { saveAuth, loadAuth } from "@/lib/auth";
+import { useAuth } from "@/components/auth/AuthProvider"; // ⬅️ use context instead of SWR
 import { useCreatorStatus } from "@/hooks/useCreatorStatus";
 import useUnreadNotifications from "@/hooks/useUnreadNotifications";
-
-/* ----------------------------- Types ----------------------------- */
-
-interface AuthUser {
-  id: number;
-  email: string;
-  role: "user" | "creator" | "admin" | (string & {});
-  email_verified_at?: string | null;
-}
-
-/* --------------------------- Fetcher --------------------------- */
-
-const fetcher = async <T,>(url: string): Promise<T> => {
-  let token: string | null = null;
-  try {
-    token = typeof loadAuth === "function" ? loadAuth()?.token ?? null : null;
-  } catch {
-    token = null;
-  }
-
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(url, { credentials: "include", headers });
-  if (!res.ok) throw new Error(String(res.status));
-  return (await res.json()) as T;
-};
 
 /* ---------------------------- Component --------------------------- */
 
 export default function Navbar() {
   const router = useRouter();
 
-  // Auth (server truth)
-  const { data: user, error: meErr } = useSWR<AuthUser>("/api/auth/me", fetcher);
+  // Auth from context (updates immediately when idle logout fires)
+  const { user, logout } = useAuth();
 
   // Creator status via your hook
   const { isCreator } = useCreatorStatus();
@@ -60,7 +31,7 @@ export default function Navbar() {
     void refresh();
   }, [refresh]);
 
-  // re-fetch when user session becomes available
+  // re-fetch when user session becomes available/changes
   useEffect(() => {
     if (user) void refresh();
   }, [user, refresh]);
@@ -81,20 +52,6 @@ export default function Navbar() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [menuOpen]);
 
-  // If /api/auth/me 401s, clear any local token
-  useEffect(() => {
-    if (!meErr) return;
-    try {
-      const stored = typeof loadAuth === "function" ? loadAuth() : undefined;
-      if (stored?.token) {
-        saveAuth({ token: null, user: null });
-        setAuthToken(null);
-      }
-    } catch {
-      /* no-op */
-    }
-  }, [meErr]);
-
   // Keep badge fresh when opening the menu
   useEffect(() => {
     if (menuOpen) void refresh();
@@ -105,25 +62,8 @@ export default function Navbar() {
     router.push(path);
   }
 
-  async function logout() {
-    try {
-      await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-    } catch {
-      /* ignore transport errors */
-    }
-
-    try {
-      saveAuth({ token: null, user: null });
-      setAuthToken(null);
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("creatorSetupDone");
-        localStorage.setItem("auth:logout", String(Date.now()));
-      }
-    } catch {
-      /* noop */
-    }
-
-    await mutate(() => true, undefined, { revalidate: false });
+  async function onLogoutClick() {
+    await logout();               // context handles server + local clear
     setMenuOpen(false);
     router.replace("/");
     router.refresh();
@@ -149,22 +89,22 @@ export default function Navbar() {
         <nav className="hidden md:flex" aria-hidden />
 
         {/* Right: auth area */}
-{!user ? (
-  <div className="flex items-center gap-2 sm:gap-2 md:gap-3">
-    <Link
-      href="/auth/login"
-      className="rounded-2xl border border-black px-3 py-1.5 text-xs font-semibold text-black hover:bg-neutral-100 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
-    >
-      Sign in
-    </Link>
-    <Link
-      href="/auth/signup?next=%2Fcreator%2Fsetup"
-      className="rounded-2xl bg-black px-3 py-1.5 text-xs font-semibold text-white hover:bg-black/90 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
-    >
-      Become a creator
-    </Link>
-  </div>
-) : (
+        {!user ? (
+          <div className="flex items-center gap-2 sm:gap-2 md:gap-3">
+            <Link
+              href="/auth/login"
+              className="rounded-2xl border border-black px-3 py-1.5 text-xs font-semibold text-black hover:bg-neutral-100 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
+            >
+              Sign in
+            </Link>
+            <Link
+              href="/auth/signup?next=%2Fcreator%2Fsetup"
+              className="rounded-2xl bg-black px-3 py-1.5 text-xs font-semibold text-white hover:bg-black/90 sm:px-4 sm:py-2 sm:text-sm shrink-0 whitespace-nowrap"
+            >
+              Become a creator
+            </Link>
+          </div>
+        ) : (
           <div className="relative" ref={menuRef}>
             <button
               type="button"
@@ -198,7 +138,7 @@ export default function Navbar() {
                       Notifications
                     </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
-                    <MenuItem onClick={logout}>Log out</MenuItem>
+                    <MenuItem onClick={onLogoutClick}>Log out</MenuItem>
                   </>
                 ) : (
                   <>
@@ -208,7 +148,7 @@ export default function Navbar() {
                     </MenuItem>
                     <MenuItem onClick={() => go("/settings")}>Settings</MenuItem>
                     <MenuItem onClick={() => go("/creator/setup")}>Become a Creator</MenuItem>
-                    <MenuItem onClick={logout}>Log out</MenuItem>
+                    <MenuItem onClick={onLogoutClick}>Log out</MenuItem>
                   </>
                 )}
               </div>
