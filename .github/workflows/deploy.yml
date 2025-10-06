@@ -1,0 +1,139 @@
+name: Deploy to AWS Lightsail (Single Instance)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Deploy to Lightsail Single Instance
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.LIGHTSAIL_HOST }}
+        username: ${{ secrets.LIGHTSAIL_USERNAME }}
+        key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+        script: |
+          # Set environment variables
+          export REPO_URL="https://github.com/Ctrost17/Sliptail.git"
+          export DEPLOY_DIR="/opt/sliptail"
+          export BACKUP_DIR="/opt/sliptail-backup"
+          
+          echo "🚀 Starting automated deployment (Single Instance)..."
+          
+          # Create deployment directory
+          sudo mkdir -p $DEPLOY_DIR
+          
+          # Backup existing deployment
+          if [ -d "$DEPLOY_DIR/.git" ]; then
+            echo "📦 Creating backup..."
+            sudo rm -rf $BACKUP_DIR
+            sudo cp -r $DEPLOY_DIR $BACKUP_DIR
+          fi
+          
+          # Clone or update repository
+          cd $DEPLOY_DIR
+          if [ ! -d ".git" ]; then
+            echo "📥 Cloning repository..."
+            sudo git clone $REPO_URL .
+            sudo chown -R ubuntu:ubuntu .
+          else
+            echo "🔄 Pulling latest changes..."
+            git fetch origin
+            git reset --hard origin/main
+          fi
+          
+          # Stop existing containers
+          echo "🛑 Stopping existing containers..."
+          sudo docker stop sliptail-backend sliptail-frontend 2>/dev/null || true
+          sudo docker rm sliptail-backend sliptail-frontend 2>/dev/null || true
+          
+          # Backend deployment
+          echo "🔧 Deploying backend..."
+          cd sliptail-backend
+          
+          # Create environment file from secrets
+          cat > .env.production << EOF
+          NODE_ENV=production
+          PORT=5000
+          DB_HOST=${{ secrets.DB_HOST }}
+          DB_USER=${{ secrets.DB_USER }}
+          DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+          DB_NAME=${{ secrets.DB_NAME }}
+          DB_PORT=${{ secrets.DB_PORT }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
+          FRONTEND_URL=${{ secrets.FRONTEND_URL }}
+          APP_ORIGIN=${{ secrets.APP_ORIGIN }}
+          STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SLIPTAIL_MAIL_FROM=${{ secrets.SLIPTAIL_MAIL_FROM }}
+          ENABLE_CRON=1
+          CRON_TZ=UTC
+          EOF
+          
+          # Build and deploy backend
+          sudo docker build -t sliptail-backend .
+          sudo mkdir -p /var/uploads
+          sudo chown 1000:1000 /var/uploads
+          sudo docker run -d \
+            --name sliptail-backend \
+            --env-file .env.production \
+            -p 5000:5000 \
+            -v /var/uploads:/app/public/uploads \
+            --restart unless-stopped \
+            sliptail-backend
+          
+          # Frontend deployment
+          echo "🎨 Deploying frontend..."
+          cd ../sliptail-frontend
+          
+          # Create frontend environment for single instance
+          cat > .env.production << EOF
+          NEXT_PUBLIC_API_URL=${{ secrets.FRONTEND_URL }}
+          EOF
+          
+          # Build and deploy frontend
+          sudo docker build -t sliptail-frontend .
+          sudo docker run -d \
+            --name sliptail-frontend \
+            --env-file .env.production \
+            -p 3000:3000 \
+            --restart unless-stopped \
+            sliptail-frontend
+          
+          # Health check
+          echo "🔍 Health check..."
+          sleep 10
+          
+          BACKEND_STATUS="stopped"
+          FRONTEND_STATUS="stopped"
+          
+          if sudo docker ps | grep -q sliptail-backend; then
+            BACKEND_STATUS="running"
+          fi
+          
+          if sudo docker ps | grep -q sliptail-frontend; then
+            FRONTEND_STATUS="running"
+          fi
+          
+          echo "📊 Single Instance Status:"
+          echo "   Backend: $BACKEND_STATUS"
+          echo "   Frontend: $FRONTEND_STATUS"
+          
+          if [ "$BACKEND_STATUS" = "running" ] && [ "$FRONTEND_STATUS" = "running" ]; then
+            echo "✅ Single instance deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+            echo "Backend logs:"
+            sudo docker logs sliptail-backend --tail 10
+            echo "Frontend logs:"
+            sudo docker logs sliptail-frontend --tail 10
+            exit 1
+          fi

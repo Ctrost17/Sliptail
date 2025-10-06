@@ -9,6 +9,7 @@ import type { NextConfig } from "next";
 const API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  output: 'standalone', // Enable standalone build for Docker deployment
   async rewrites() {
     return [
       // Proxy all frontend /api/* calls to the backend origin
