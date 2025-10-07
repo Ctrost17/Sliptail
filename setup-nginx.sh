@@ -14,14 +14,15 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo tee /etc/nginx/sites-available/sliptail << 'EOF'
 server {
     listen 80;
-    server_name yourdomain.com www.yourdomain.com;
+    # Use '_' for any host/IP. Replace with your domain when DNS is ready.
+    server_name www.sliptail.com;
 
     # Increase client max body size for file uploads
     client_max_body_size 100M;
 
     # API routes - proxy to backend (port 5000)
     location /api/ {
-        proxy_pass http://localhost:5000;
+        proxy_pass http://127.0.0.1:5000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -36,7 +37,7 @@ server {
 
     # Uploads and static files from backend
     location /uploads/ {
-        proxy_pass http://localhost:5000;
+        proxy_pass http://127.0.0.1:5000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -45,7 +46,7 @@ server {
 
     # All other routes - proxy to frontend (port 3000)
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -75,10 +76,10 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "📝 Next steps:"
     echo "1. Update your domain DNS to point to this server"
-    echo "2. Replace 'yourdomain.com' in /etc/nginx/sites-available/sliptail with your actual domain"
-    echo "3. Set up SSL with: sudo certbot --nginx -d yourdomain.com"
+    echo "2. Replace 'sliptail.com' in /etc/nginx/sites-available/sliptail with your actual domain"
+    echo "3. Set up SSL with: sudo certbot --nginx -d sliptail.com"
     echo ""
-    echo "🌐 Your app will be available at: http://yourdomain.com"
+    echo "🌐 Your app will be available at: http://sliptail.com"
 else
     echo "❌ Nginx configuration has errors. Please check and fix."
     exit 1
