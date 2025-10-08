@@ -1,151 +1,133 @@
-name: Deploy to AWS Lightsail (Single Instance)
+name: Deploy to AWS Lightsail
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    name: Deploy mono-repo to single instance
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to Lightsail Single Instance
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Checkout repository (for future use)
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH to Lightsail
+        uses: appleboy/ssh-action@v0.1.10
+        env:
+          # Database
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          # App
+          NODE_ENV: ${{ secrets.NODE_ENV }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          EMAIL_LINK_SECRET: ${{ secrets.EMAIL_LINK_SECRET }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          APP_ORIGIN: ${{ secrets.APP_ORIGIN }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          # Stripe
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_CONNECT_WEBHOOK_SECRET: ${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}
+          # AWS
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SLIPTAIL_MAIL_FROM: ${{ secrets.SLIPTAIL_MAIL_FROM }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
-          username: ${{ secrets.LIGHTSAIL_USERNAME }}   # usually "ubuntu"
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}         # your PRIVATE key text
+          username: ${{ secrets.LIGHTSAIL_USERNAME }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          # Port omitted to default to 22; change here if you use a custom SSH port
           script_stop: true
+          envs: >-
+            DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,DB_PORT,
+            NODE_ENV,JWT_SECRET,EMAIL_LINK_SECRET,FRONTEND_URL,APP_ORIGIN,NEXT_PUBLIC_API_URL,
+            STRIPE_SECRET_KEY,STRIPE_PUBLISHABLE_KEY,STRIPE_WEBHOOK_SECRET,STRIPE_CONNECT_WEBHOOK_SECRET,
+            AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,SLIPTAIL_MAIL_FROM
           script: |
             set -euo pipefail
 
-            # --- config ---
-            export REPO_URL="https://github.com/Ctrost17/Sliptail.git"
-            export DEPLOY_DIR="/opt/sliptail"
-            # ---------------
+            REPO_URL="https://github.com/Ctrost17/Sliptail.git"
+            REPO_DIR="/opt/sliptail"
 
-            echo "🚀 Starting automated deployment (Single Instance)..."
+            echo "==> Ensure repo directory exists"
+            sudo mkdir -p "$REPO_DIR"
 
-            # Ensure app directory exists and is up to date
-            sudo mkdir -p "$DEPLOY_DIR"
-            cd "$DEPLOY_DIR"
-
-            if [ ! -d ".git" ]; then
-              echo "📥 Cloning repository..."
-              sudo rm -rf ./* .[^.]* || true
+            echo "==> Clone or update repository"
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              cd "$REPO_DIR"
               sudo git clone "$REPO_URL" .
-              sudo chown -R $USER:$USER .
+              sudo chown -R "$USER":"$USER" .
             else
-              echo "🔄 Pulling latest changes..."
+              cd "$REPO_DIR"
               git fetch origin
               git reset --hard origin/main
               git clean -fd
             fi
 
-            # Ensure env storage path exists (outside repo)
-            echo "🔐 Preparing /srv/sliptail env directory..."
-            sudo mkdir -p /srv/sliptail
-            sudo chown $USER:$USER /srv/sliptail
-            sudo chmod 700 /srv/sliptail
-
-            echo "🔧 Writing backend.env..."
-            cat > /srv/sliptail/backend.env <<'ENVBACK'
-            NODE_ENV=production
+            echo "==> Write backend .env.production from GitHub secrets"
+            cd "$REPO_DIR/sliptail-backend"
+            cat > .env.production << EOF
+            NODE_ENV=${NODE_ENV:-production}
             PORT=5000
 
-            DB_HOST=${{ secrets.DB_HOST }}
-            DB_PORT=${{ secrets.DB_PORT }}
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            DB_NAME=${{ secrets.DB_NAME }}
+            # Database
+            DB_HOST=${DB_HOST}
+            DB_USER=${DB_USER}
+            DB_PASSWORD=${DB_PASSWORD}
+            DB_NAME=${DB_NAME}
+            DB_PORT=${DB_PORT:-5432}
 
-            # node-postgres defaults (alias the DB_* values)
-            PGHOST=${{ secrets.DB_HOST }}
-            PGPORT=${{ secrets.DB_PORT }}
-            PGUSER=${{ secrets.DB_USER }}
-            PGPASSWORD=${{ secrets.DB_PASSWORD }}
-            PGDATABASE=${{ secrets.DB_NAME }}
+            # Secrets
+            JWT_SECRET=${JWT_SECRET}
+            EMAIL_LINK_SECRET=${EMAIL_LINK_SECRET}
 
-            APP_ORIGIN=https://sliptail.com
-            FRONTEND_URL=https://sliptail.com
+            # URLs
+            FRONTEND_URL=${FRONTEND_URL}
+            APP_ORIGIN=${APP_ORIGIN}
 
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
+            # Stripe
+            STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+            STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
 
-            STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
-            STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
-            STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+            # AWS SES
+            AWS_REGION=${AWS_REGION}
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+            AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+            SLIPTAIL_MAIL_FROM=${SLIPTAIL_MAIL_FROM}
 
-            AWS_REGION=${{ secrets.AWS_REGION }}
-            AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-            AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-            SLIPTAIL_MAIL_FROM=Sliptail <info@sliptail.com>
-
+            # Cron
             ENABLE_CRON=1
-            CRON_TZ=UTC
-            PLATFORM_FEE_BPS=400
-            STORAGE_DRIVER=local
-            FFMPEG_DISABLE=1
-            ENVBACK
+            EOF
 
-                        # Trim accidental trailing spaces
-                        sed -i 's/[ \t]*$//' /srv/sliptail/backend.env
+            # Append optional webhook secrets if provided
+            if [ -n "${STRIPE_WEBHOOK_SECRET:-}" ]; then
+              echo "STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}" >> .env.production
+            fi
+            if [ -n "${STRIPE_CONNECT_WEBHOOK_SECRET:-}" ]; then
+              echo "STRIPE_CONNECT_WEBHOOK_SECRET=${STRIPE_CONNECT_WEBHOOK_SECRET}" >> .env.production
+            fi
 
-                        echo "🎨 Writing frontend.env..."
-                        cat > /srv/sliptail/frontend.env <<'ENVFRONT'
-            NODE_ENV=production
-            PORT=3000
-            HOSTNAME=0.0.0.0
-            # Use same-origin API via Nginx proxy to backend
-            NEXT_PUBLIC_API_URL=/api
-            ENVFRONT
+            echo "==> Write frontend .env.production from GitHub secrets"
+            cd "$REPO_DIR/sliptail-frontend"
+            cat > .env.production << EOF
+            NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+            EOF
 
-            sed -i 's/[ \t]*$//' /srv/sliptail/frontend.env
+            echo "==> Run deployment script"
+            cd "$REPO_DIR"
+            chmod +x deploy.sh
+            sudo bash ./deploy.sh
 
-            echo "🛑 Replacing containers..."
-            sudo docker rm -f sliptail-backend sliptail-frontend 2>/dev/null || true
-            sudo docker image prune -f >/dev/null 2>&1 || true
-
-            echo "🏗️ Build backend image (no .env files baked)..."
-            cd "$DEPLOY_DIR/sliptail-backend"
-            # Make sure your repo has a .dockerignore that excludes .env* files
-            sudo docker build --pull -t sliptail-backend .
-
-            echo "📁 Ensure uploads dir..."
-            sudo mkdir -p /var/uploads
-            sudo chown 1000:1000 /var/uploads
-
-            echo "🚀 Run backend with /srv/sliptail/backend.env..."
-            sudo docker run -d \
-              --name sliptail-backend \
-              --env-file /srv/sliptail/backend.env \
-              -p 5000:5000 \
-              -v /var/uploads:/app/public/uploads \
-              --restart unless-stopped \
-              sliptail-backend
-
-            echo "🏗️ Build frontend image..."
-            cd "$DEPLOY_DIR/sliptail-frontend"
-            sudo docker build --pull -t sliptail-frontend .
-
-            echo "🚀 Run frontend with /srv/sliptail/frontend.env..."
-            sudo docker run -d \
-              --name sliptail-frontend \
-              --env-file /srv/sliptail/frontend.env \
-              -p 3000:3000 \
-              --restart unless-stopped \
-              sliptail-frontend
-
-            echo "🔍 Health check..."
-            sleep 8
-            sudo docker ps
-            curl -fsSI http://127.0.0.1:3000 | head -n1 || true
-            curl -fsSI http://127.0.0.1:5000 | head -n1 || true
-            curl -fsSI https://sliptail.com/api/health | head -n1 || echo "no /api/health route"
-
-            echo "🔄 Reload nginx (if config changed)"
-            sudo nginx -t && sudo systemctl reload nginx || true
-
-            echo "✅ Deployment complete."
+            echo "==> Deployment finished"
