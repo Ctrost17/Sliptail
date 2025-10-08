@@ -18,12 +18,35 @@ jobs:
       - name: Checkout repository (for future use)
         uses: actions/checkout@v4
 
+      - name: Prepare SSH key (supports base64 or raw)
+        shell: bash
+        env:
+          LIGHTSAIL_SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          LIGHTSAIL_SSH_KEY_B64: ${{ secrets.LIGHTSAIL_SSH_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          KEY_PATH="$HOME/.ssh/sliptail_ci"
+          if [ -n "${LIGHTSAIL_SSH_KEY_B64:-}" ]; then
+            echo "Decoding SSH key from base64"
+            echo "$LIGHTSAIL_SSH_KEY_B64" | base64 -d > "$KEY_PATH"
+          elif [ -n "${LIGHTSAIL_SSH_KEY:-}" ]; then
+            echo "Writing SSH key from raw secret"
+            # Write and strip possible CR characters to avoid parse errors
+            printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' > "$KEY_PATH"
+          else
+            echo "ERROR: Neither LIGHTSAIL_SSH_KEY_B64 nor LIGHTSAIL_SSH_KEY is set"
+            exit 1
+          fi
+          chmod 600 "$KEY_PATH"
+          echo "SSH_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Preflight SSH check (whoami/uname)
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          key_path: ${{ env.SSH_KEY_PATH }}
           passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; change here if you use a custom SSH port
           script_stop: true
@@ -61,7 +84,7 @@ jobs:
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          key_path: ${{ env.SSH_KEY_PATH }}
           passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; set explicitly if you use a custom port
           script_stop: true
