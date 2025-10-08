@@ -364,3 +364,12 @@ else
     echo "   4. Check if ports 3000 and 5000 are available"
     echo "   5. Try restarting containers: sudo docker restart sliptail-backend sliptail-frontend"
 fi
+
+echo ""
+echo "💡 Single Instance Benefits:"
+echo "   ✅ Lower cost (~$10-20/month total)"
+echo "   ✅ Simpler management"
+echo "   ✅ Faster internal communication"
+echo "   ✅ Shared resources"
+echo ""
+echo "📖 For troubleshooting help, see: https://github.com/Ctrost17/Sliptail/blob/main/TROUBLESHOOTING.md"
