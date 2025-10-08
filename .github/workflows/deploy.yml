@@ -65,8 +65,8 @@ jobs:
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
 
-            FRONTEND_URL=${{ secrets.FRONTEND_URL }}       # e.g. https://sliptail.com
-            APP_ORIGIN=${{ secrets.APP_ORIGIN }}           # e.g. https://sliptail.com
+            FRONTEND_URL=${{ secrets.FRONTEND_URL }}
+            APP_ORIGIN=${{ secrets.APP_ORIGIN }}
 
             STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
             STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
