@@ -28,16 +28,15 @@ jobs:
 
             echo "🚀 Starting automated deployment (Single Instance)..."
 
-            # Ensure folder exists then make sure it's clean for clone/pull
+            # Ensure app directory exists and is up to date
             sudo mkdir -p "$DEPLOY_DIR"
             cd "$DEPLOY_DIR"
 
-            # Option A: ensure clean directory before clone
             if [ ! -d ".git" ]; then
-              echo "📥 Cloning repository into a clean dir..."
-              sudo rm -rf ./* .[^.]* || true   # clear everything (incl dotfiles) except . and ..
+              echo "📥 Cloning repository..."
+              sudo rm -rf ./* .[^.]* || true
               sudo git clone "$REPO_URL" .
-              sudo chown -R ubuntu:ubuntu .
+              sudo chown -R $USER:$USER .
             else
               echo "🔄 Pulling latest changes..."
               git fetch origin
@@ -45,28 +44,35 @@ jobs:
               git clean -fd
             fi
 
-            echo "🛑 Replacing containers..."
-            sudo docker rm -f sliptail-backend sliptail-frontend 2>/dev/null || true
-            sudo docker image prune -f >/dev/null 2>&1 || true
+            # Ensure env storage path exists (outside repo)
+            echo "🔐 Preparing /srv/sliptail env directory..."
+            sudo mkdir -p /srv/sliptail
+            sudo chown $USER:$USER /srv/sliptail
+            sudo chmod 700 /srv/sliptail
 
-            echo "🔧 Backend env..."
-            cd sliptail-backend
-            cat > .env.production << 'EOF'
-            NODE_ENV=${{ secrets.NODE_ENV }}
-            PORT=${{ secrets.PORT }}
+            echo "🔧 Writing backend.env..."
+            cat > /srv/sliptail/backend.env <<'ENVBACK'
+            NODE_ENV=production
+            PORT=5000
 
             DB_HOST=${{ secrets.DB_HOST }}
+            DB_PORT=${{ secrets.DB_PORT }}
             DB_USER=${{ secrets.DB_USER }}
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             DB_NAME=${{ secrets.DB_NAME }}
-            DB_PORT=${{ secrets.DB_PORT }}
-            PGSSLMODE=require
+
+            # node-postgres defaults (alias the DB_* values)
+            PGHOST=${{ secrets.DB_HOST }}
+            PGPORT=${{ secrets.DB_PORT }}
+            PGUSER=${{ secrets.DB_USER }}
+            PGPASSWORD=${{ secrets.DB_PASSWORD }}
+            PGDATABASE=${{ secrets.DB_NAME }}
+
+            APP_ORIGIN=https://sliptail.com
+            FRONTEND_URL=https://sliptail.com
 
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
-
-            FRONTEND_URL=${{ secrets.FRONTEND_URL }}
-            APP_ORIGIN=${{ secrets.APP_ORIGIN }}
 
             STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
             STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
@@ -75,51 +81,59 @@ jobs:
             AWS_REGION=${{ secrets.AWS_REGION }}
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-            SLIPTAIL_MAIL_FROM=${{ secrets.SLIPTAIL_MAIL_FROM }}
+            SLIPTAIL_MAIL_FROM=Sliptail <info@sliptail.com>
 
-            GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
-            GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
-            GOOGLE_CALLBACK_URL=${{ secrets.GOOGLE_CALLBACK_URL }}
+            ENABLE_CRON=1
+            CRON_TZ=UTC
+            PLATFORM_FEE_BPS=400
+            STORAGE_DRIVER=local
+            FFMPEG_DISABLE=1
+            ENVBACK
 
-            ENABLE_CRON=${{ secrets.ENABLE_CRON }}
-            CRON_TZ=${{ secrets.CRON_TZ }}
-            PLATFORM_FEE_BPS=${{ secrets.PLATFORM_FEE_BPS }}
-            STORAGE_DRIVER=${{ secrets.STORAGE_DRIVER }}
-            FFMPEG_DISABLE=${{ secrets.FFMPEG_DISABLE }}
-            EOF
+                        # Trim accidental trailing spaces
+                        sed -i 's/[ \t]*$//' /srv/sliptail/backend.env
 
-            echo "🏗️ Build backend..."
+                        echo "🎨 Writing frontend.env..."
+                        cat > /srv/sliptail/frontend.env <<'ENVFRONT'
+            NODE_ENV=production
+            PORT=3000
+            HOSTNAME=0.0.0.0
+            # Use same-origin API via Nginx proxy to backend
+            NEXT_PUBLIC_API_URL=/api
+            ENVFRONT
+
+            sed -i 's/[ \t]*$//' /srv/sliptail/frontend.env
+
+            echo "🛑 Replacing containers..."
+            sudo docker rm -f sliptail-backend sliptail-frontend 2>/dev/null || true
+            sudo docker image prune -f >/dev/null 2>&1 || true
+
+            echo "🏗️ Build backend image (no .env files baked)..."
+            cd "$DEPLOY_DIR/sliptail-backend"
+            # Make sure your repo has a .dockerignore that excludes .env* files
             sudo docker build --pull -t sliptail-backend .
 
             echo "📁 Ensure uploads dir..."
             sudo mkdir -p /var/uploads
             sudo chown 1000:1000 /var/uploads
 
-            echo "🚀 Run backend..."
+            echo "🚀 Run backend with /srv/sliptail/backend.env..."
             sudo docker run -d \
               --name sliptail-backend \
-              --env-file .env.production \
+              --env-file /srv/sliptail/backend.env \
               -p 5000:5000 \
               -v /var/uploads:/app/public/uploads \
               --restart unless-stopped \
               sliptail-backend
 
-            echo "🎨 Frontend env..."
-            cd ../sliptail-frontend
-            cat > .env.production << 'EOF'
-            # Frontend talks to backend via Nginx /api proxy
-            # Both vars point to the same base for safety.
-            NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_BASE }}
-            NEXT_PUBLIC_API_BASE=${{ secrets.NEXT_PUBLIC_API_BASE }}
-            EOF
-
-            echo "🏗️ Build frontend..."
+            echo "🏗️ Build frontend image..."
+            cd "$DEPLOY_DIR/sliptail-frontend"
             sudo docker build --pull -t sliptail-frontend .
 
-            echo "🚀 Run frontend..."
+            echo "🚀 Run frontend with /srv/sliptail/frontend.env..."
             sudo docker run -d \
               --name sliptail-frontend \
-              --env-file .env.production \
+              --env-file /srv/sliptail/frontend.env \
               -p 3000:3000 \
               --restart unless-stopped \
               sliptail-frontend
@@ -127,9 +141,11 @@ jobs:
             echo "🔍 Health check..."
             sleep 8
             sudo docker ps
-            curl -sS https://sliptail.com/api/health || true
+            curl -fsSI http://127.0.0.1:3000 | head -n1 || true
+            curl -fsSI http://127.0.0.1:5000 | head -n1 || true
+            curl -fsSI https://sliptail.com/api/health | head -n1 || echo "no /api/health route"
 
             echo "🔄 Reload nginx (if config changed)"
-            sudo systemctl reload nginx || true
+            sudo nginx -t && sudo systemctl reload nginx || true
 
             echo "✅ Deployment complete."
