@@ -25,21 +25,22 @@ jobs:
           LIGHTSAIL_SSH_KEY_B64: ${{ secrets.LIGHTSAIL_SSH_KEY_B64 }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.ssh"
-          KEY_PATH="$HOME/.ssh/sliptail_ci"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh"
+          KEY_PATH_HOST="$GITHUB_WORKSPACE/.ssh/sliptail_ci"
           if [ -n "${LIGHTSAIL_SSH_KEY_B64:-}" ]; then
             echo "Decoding SSH key from base64"
-            echo "$LIGHTSAIL_SSH_KEY_B64" | base64 -d > "$KEY_PATH"
+            echo "$LIGHTSAIL_SSH_KEY_B64" | base64 -d > "$KEY_PATH_HOST"
           elif [ -n "${LIGHTSAIL_SSH_KEY:-}" ]; then
             echo "Writing SSH key from raw secret"
             # Write and strip possible CR characters to avoid parse errors
-            printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' > "$KEY_PATH"
+            printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' > "$KEY_PATH_HOST"
           else
             echo "ERROR: Neither LIGHTSAIL_SSH_KEY_B64 nor LIGHTSAIL_SSH_KEY is set"
             exit 1
           fi
-          chmod 600 "$KEY_PATH"
-          echo "SSH_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          chmod 600 "$KEY_PATH_HOST"
+          # The container mounts workspace at /github/workspace, so set a container-visible path
+          echo "SSH_KEY_PATH=/github/workspace/.ssh/sliptail_ci" >> "$GITHUB_ENV"
 
       - name: Preflight SSH check (whoami/uname)
         uses: appleboy/ssh-action@v0.1.10
