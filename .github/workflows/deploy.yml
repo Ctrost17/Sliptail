@@ -18,6 +18,20 @@ jobs:
       - name: Checkout repository (for future use)
         uses: actions/checkout@v4
 
+      - name: Preflight SSH check (whoami/uname)
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
+          # Port omitted to default to 22; set explicitly if you use a custom port
+          script_stop: true
+          script: |
+            set -e
+            whoami
+            uname -a
+
       - name: Deploy over SSH to Lightsail
         uses: appleboy/ssh-action@v0.1.10
         env:
@@ -49,7 +63,7 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
-          # Port omitted to default to 22; change here if you use a custom SSH port
+          # Port omitted to default to 22; set explicitly if you use a custom port
           script_stop: true
           envs: >-
             DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,DB_PORT,
