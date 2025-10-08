@@ -18,43 +18,15 @@ jobs:
       - name: Checkout repository (for future use)
         uses: actions/checkout@v4
 
-      - name: Deploy over SSH to Lightsail
+      - name: Preflight SSH check (whoami/uname)
         uses: appleboy/ssh-action@v0.1.10
-        env:
-          # Database
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          # App
-          NODE_ENV: ${{ secrets.NODE_ENV }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          EMAIL_LINK_SECRET: ${{ secrets.EMAIL_LINK_SECRET }}
-          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-          APP_ORIGIN: ${{ secrets.APP_ORIGIN }}
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
-          # Stripe
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-          STRIPE_CONNECT_WEBHOOK_SECRET: ${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}
-          # AWS
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SLIPTAIL_MAIL_FROM: ${{ secrets.SLIPTAIL_MAIL_FROM }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; change here if you use a custom SSH port
           script_stop: true
-          envs: >-
-            DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,DB_PORT,
-            NODE_ENV,JWT_SECRET,EMAIL_LINK_SECRET,FRONTEND_URL,APP_ORIGIN,NEXT_PUBLIC_API_URL,
-            STRIPE_SECRET_KEY,STRIPE_PUBLISHABLE_KEY,STRIPE_WEBHOOK_SECRET,STRIPE_CONNECT_WEBHOOK_SECRET,
-            AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,SLIPTAIL_MAIL_FROM
           script: |
             set -e
             whoami
@@ -90,6 +62,7 @@ jobs:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; set explicitly if you use a custom port
           script_stop: true
           envs: >-
