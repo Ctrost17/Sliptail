@@ -1,3 +1,11 @@
+name: Deploy to AWS Lightsail (Single Instance)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -50,20 +58,18 @@ jobs:
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             DB_NAME=${{ secrets.DB_NAME }}
             DB_PORT=${{ secrets.DB_PORT }}
-            # If you need SSL-forced connections uncomment:
             # PGSSLMODE=require
 
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
 
-            # Use your real domain (no trailing slash)
-            FRONTEND_URL=${{ secrets.FRONTEND_URL }}     # e.g. https://sliptail.com
-            APP_ORIGIN=${{ secrets.APP_ORIGIN }}         # e.g. https://sliptail.com
+            FRONTEND_URL=${{ secrets.FRONTEND_URL }}     
+            APP_ORIGIN=${{ secrets.APP_ORIGIN }}         
 
             STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
             STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
 
-            AWS_REGION=${{ secrets.AWS_REGION }}         # us-east-2 for Ohio
+            AWS_REGION=${{ secrets.AWS_REGION }}        
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
             SLIPTAIL_MAIL_FROM=${{ secrets.SLIPTAIL_MAIL_FROM }}
@@ -91,8 +97,7 @@ jobs:
             echo "🎨 Frontend env..."
             cd ../sliptail-frontend
             cat > .env.production << 'EOF'
-            # Must be your public site base (no /api, no trailing slash)
-            NEXT_PUBLIC_API_URL=${{ secrets.FRONTEND_URL }}   # e.g. https://sliptail.com
+            NEXT_PUBLIC_API_URL=${{ secrets.FRONTEND_URL }}
             EOF
 
             echo "🏗️ Build frontend..."
