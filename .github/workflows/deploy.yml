@@ -37,6 +37,8 @@ jobs:
           # Stripe
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_CONNECT_WEBHOOK_SECRET: ${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}
           # AWS
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -51,7 +53,7 @@ jobs:
           envs: >-
             DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,DB_PORT,
             NODE_ENV,JWT_SECRET,EMAIL_LINK_SECRET,FRONTEND_URL,APP_ORIGIN,NEXT_PUBLIC_API_URL,
-            STRIPE_SECRET_KEY,STRIPE_PUBLISHABLE_KEY,
+            STRIPE_SECRET_KEY,STRIPE_PUBLISHABLE_KEY,STRIPE_WEBHOOK_SECRET,STRIPE_CONNECT_WEBHOOK_SECRET,
             AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,SLIPTAIL_MAIL_FROM
           script: |
             set -euo pipefail
@@ -108,6 +110,14 @@ jobs:
             # Cron
             ENABLE_CRON=1
             EOF
+
+            # Append optional webhook secrets if provided
+            if [ -n "${STRIPE_WEBHOOK_SECRET:-}" ]; then
+              echo "STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}" >> .env.production
+            fi
+            if [ -n "${STRIPE_CONNECT_WEBHOOK_SECRET:-}" ]; then
+              echo "STRIPE_CONNECT_WEBHOOK_SECRET=${STRIPE_CONNECT_WEBHOOK_SECRET}" >> .env.production
+            fi
 
             echo "==> Write frontend .env.production from GitHub secrets"
             cd "$REPO_DIR/sliptail-frontend"
