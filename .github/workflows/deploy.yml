@@ -65,27 +65,22 @@ jobs:
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             EMAIL_LINK_SECRET=${{ secrets.EMAIL_LINK_SECRET }}
 
-            # Use the secrets you created:
-            FRONTEND_URL=${{ secrets.FRONTEND_URL }}         # e.g. https://sliptail.com
-            APP_ORIGIN=${{ secrets.APP_ORIGIN }}          # e.g. https://sliptail.com
+            FRONTEND_URL=${{ secrets.FRONTEND_URL }}       # e.g. https://sliptail.com
+            APP_ORIGIN=${{ secrets.APP_ORIGIN }}           # e.g. https://sliptail.com
 
-            # Stripe
             STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
             STRIPE_PUBLISHABLE_KEY=${{ secrets.STRIPE_PUBLISHABLE_KEY }}
             STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
-            # AWS SES
             AWS_REGION=${{ secrets.AWS_REGION }}
             AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
             SLIPTAIL_MAIL_FROM=${{ secrets.SLIPTAIL_MAIL_FROM }}
 
-            # Google OAuth
             GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
             GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
             GOOGLE_CALLBACK_URL=${{ secrets.GOOGLE_CALLBACK_URL }}
 
-            # Misc app toggles
             ENABLE_CRON=${{ secrets.ENABLE_CRON }}
             CRON_TZ=${{ secrets.CRON_TZ }}
             PLATFORM_FEE_BPS=${{ secrets.PLATFORM_FEE_BPS }}
@@ -113,8 +108,9 @@ jobs:
             cd ../sliptail-frontend
             cat > .env.production << 'EOF'
             # Frontend talks to backend via Nginx /api proxy
-            # APP_URL should be https://sliptail.com/api
-            NEXT_PUBLIC_API_URL=${{ secrets.APP_URL }}
+            # Both vars point to the same base for safety.
+            NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_BASE }}
+            NEXT_PUBLIC_API_BASE=${{ secrets.NEXT_PUBLIC_API_BASE }}
             EOF
 
             echo "🏗️ Build frontend..."
