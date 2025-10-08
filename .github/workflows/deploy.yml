@@ -31,9 +31,14 @@ jobs:
             echo "Decoding SSH key from base64"
             echo "$LIGHTSAIL_SSH_KEY_B64" | base64 -d > "$KEY_PATH_HOST"
           elif [ -n "${LIGHTSAIL_SSH_KEY:-}" ]; then
-            echo "Writing SSH key from raw secret"
-            # Write and strip possible CR characters to avoid parse errors
-            printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' > "$KEY_PATH_HOST"
+            # Decide if raw secret is actually base64 or proper PEM
+            if printf "%s" "$LIGHTSAIL_SSH_KEY" | head -n1 | grep -q '-----BEGIN'; then
+              echo "Writing SSH key from raw secret (PEM/OpenSSH)"
+              printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' > "$KEY_PATH_HOST"
+            else
+              echo "Raw secret does not look like PEM header; attempting base64 decode"
+              printf "%s" "$LIGHTSAIL_SSH_KEY" | tr -d '\r' | base64 -d > "$KEY_PATH_HOST"
+            fi
           else
             echo "ERROR: Neither LIGHTSAIL_SSH_KEY_B64 nor LIGHTSAIL_SSH_KEY is set"
             exit 1
@@ -41,6 +46,13 @@ jobs:
           chmod 600 "$KEY_PATH_HOST"
           # The container mounts workspace at /github/workspace, so set a container-visible path
           echo "SSH_KEY_PATH=/github/workspace/.ssh/sliptail_ci" >> "$GITHUB_ENV"
+          echo -n "Key header: "; head -n 1 "$KEY_PATH_HOST" || true
+          # Optional quick parse check if no passphrase is set
+          if [ -z "${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}" ]; then
+            if ! ssh-keygen -y -f "$KEY_PATH_HOST" >/dev/null 2>&1; then
+              echo "WARNING: ssh-keygen could not parse the key (it may be encrypted or invalid). Proceeding; SSH step will confirm."
+            fi
+          fi
 
       - name: Preflight SSH check (whoami/uname)
         uses: appleboy/ssh-action@v0.1.10
@@ -51,6 +63,7 @@ jobs:
           passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; change here if you use a custom SSH port
           script_stop: true
+          debug: true
           script: |
             set -e
             whoami
@@ -89,6 +102,7 @@ jobs:
           passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; set explicitly if you use a custom port
           script_stop: true
+          debug: true
           envs: >-
             DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,DB_PORT,
             NODE_ENV,JWT_SECRET,EMAIL_LINK_SECRET,FRONTEND_URL,APP_ORIGIN,NEXT_PUBLIC_API_URL,
