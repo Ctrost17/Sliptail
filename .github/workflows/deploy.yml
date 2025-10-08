@@ -62,7 +62,6 @@ jobs:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          passphrase: ${{ secrets.LIGHTSAIL_SSH_PASSPHRASE }}
           # Port omitted to default to 22; set explicitly if you use a custom port
           script_stop: true
           envs: >-
