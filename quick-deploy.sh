@@ -3,6 +3,7 @@
 
 REPO_URL="https://github.com/Ctrost17/Sliptail.git"
 BRANCH="main"
+WORKDIR="$HOME/sliptail-deploy"
 
 echo "🚀 Quick Deploy: Sliptail from GitHub (Single Instance)"
 echo "📍 Repository: $REPO_URL"
@@ -28,20 +29,30 @@ sudo docker rm sliptail-backend sliptail-frontend 2>/dev/null || true
 # Clean up any failed images
 sudo docker image prune -f 2>/dev/null || true
 
-# Clone or update repository
-if [ -d "sliptail-deploy" ]; then
-    echo "🔄 Updating existing repository..."
-    cd sliptail-deploy
-    git fetch origin
-    git reset --hard origin/$BRANCH
-    git clean -fd
+# Clone or update repository (idempotent, no nesting)
+cd "$HOME"  # operate from home so relative paths don't re-nest
+
+if [ -d "$WORKDIR/.git" ]; then
+    echo "🔄 Updating existing repository at $WORKDIR ..."
+    git -C "$WORKDIR" fetch --all --prune
+    git -C "$WORKDIR" checkout "$BRANCH"
+    git -C "$WORKDIR" reset --hard "origin/$BRANCH"
+    git -C "$WORKDIR" clean -fd
 else
-    echo "📥 Cloning repository..."
-    git clone -b $BRANCH $REPO_URL sliptail-deploy
-    cd sliptail-deploy
+    echo "📥 Cloning repository into $WORKDIR ..."
+    git clone -b "$BRANCH" "$REPO_URL" "$WORKDIR"
 fi
 
-echo "✅ Code ready!"
+# One-time auto-fix if a nested sliptail-deploy exists (from past runs)
+if [ -d "$WORKDIR/sliptail-deploy/.git" ]; then
+    echo "🧹 Fixing previous nested repo: moving inner to $WORKDIR ..."
+    mv "$WORKDIR/sliptail-deploy" "${WORKDIR}.__inner"
+    rm -rf "$WORKDIR"
+    mv "${WORKDIR}.__inner" "$WORKDIR"
+fi
+
+cd "$WORKDIR"
+echo "✅ Code ready at: $(pwd)"
 
 # Check for environment files
 echo "🔧 Checking environment configuration..."
