@@ -9,16 +9,12 @@ import type { NextConfig } from "next";
 const API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
-  output: 'standalone', // Enable standalone build for Docker deployment
-  
+  output: "standalone",
+
   // Skip linting and type checking during build for faster deployment
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: true },
+
   async rewrites() {
     return [
       // Proxy all frontend /api/* calls to the backend origin
@@ -28,15 +24,18 @@ const nextConfig: NextConfig = {
 
   images: {
     remotePatterns: [
+      // existing allowances
       { protocol: "https", hostname: "images.unsplash.com" },
       { protocol: "https", hostname: "i.pravatar.cc" },
       { protocol: "https", hostname: "picsum.photos" },
-
-      // If your backend serves images in dev:
       { protocol: "http", hostname: "localhost", port: "5000" },
       { protocol: "http", hostname: "127.0.0.1", port: "5000" },
+
+      // ⬇️ Add your production host so /_next/image can fetch /uploads/*
+      { protocol: "https", hostname: "sliptail.com", pathname: "/uploads/**" },
+      { protocol: "https", hostname: "www.sliptail.com", pathname: "/uploads/**" }, // optional, if www might be used
     ],
-    // or: domains: ["images.unsplash.com", "i.pravatar.cc", "picsum.photos"]
+    // or: domains: ["images.unsplash.com", "i.pravatar.cc", "picsum.photos", "sliptail.com", "www.sliptail.com"]
   },
 };
 

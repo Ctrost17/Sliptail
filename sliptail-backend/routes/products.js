@@ -264,6 +264,36 @@ async function setActiveFromPublished(userId) {
   return anyPub;
 }
 
+// NEW: force-activate creator as soon as they have ≥1 active product
+async function activateCreatorNow(userId) {
+  const uid = String(userId);
+  const hasActive = await hasColumn("products", "active");
+
+  // Make sure the profile row exists
+  await ensureCreatorProfileRow(uid);
+
+  const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
+  const sets = ["is_active = TRUE"];
+  if (hasUpdatedAt) sets.push("updated_at = NOW()");
+
+  // If products.active exists, require active=TRUE; otherwise, “has any product”
+  await db.query(
+    `
+    UPDATE creator_profiles cp
+       SET ${sets.join(", ")}
+     WHERE cp.user_id::text = $1
+       AND COALESCE(cp.is_active, FALSE) = FALSE
+       AND EXISTS (
+         SELECT 1
+           FROM products p
+          WHERE p.user_id::text = $1
+            ${hasActive ? "AND p.active = TRUE" : ""}
+       )
+    `,
+    [uid]
+  );
+}
+
 // ⬇️ Promote role to creator, refresh JWT cookie, and sync creator_profiles.is_active.
 //    Errors are swallowed (don’t break the create flow).
 async function promoteAndRefreshAuth(userId, res) {
@@ -428,6 +458,9 @@ router.post(
           filename,
         });
 
+        // ➜ ADD THIS:
+        await activateCreatorNow(user_id);
+
         // ⬅️ do auth promotion + cookie + is_active sync BEFORE responding,
         //     so the navbar can flip instantly without a hard refresh.
         await promoteAndRefreshAuth(req.user.id, res);
@@ -506,6 +539,9 @@ router.post(
         price_cents: priceNum,
         filename: null,
       });
+
+      // ➜ ADD THIS:
+      await activateCreatorNow(user_id);
 
       // ⬅️ same: set role/cookie + is_active before responding
       await promoteAndRefreshAuth(req.user.id, res);
