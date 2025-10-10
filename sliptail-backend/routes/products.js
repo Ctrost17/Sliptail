@@ -551,7 +551,7 @@ router.post(
           // set role/cookie + is_active before responding
           await promoteAndRefreshAuth(req.user.id, res);
 
-          res.status(201).json({ product: linkify(created) });
+          res.status(201).json({ success: true, product: linkify(created) });
     } catch (err) {
       console.error("Create product error:", err.message || err, err.detail || "");
       res.status(500).json({ error: "Could not create product" });
