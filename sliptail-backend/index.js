@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require("cors");
 const cookieParser = require("cookie-parser");              // <-- add
-require("dotenv").config();
+const path = require("path");               // <-- creator-status etc.
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const db = require('./db');
 
 const authRoutes = require('./routes/auth');
@@ -28,7 +29,6 @@ const stripeCheckoutRoutes = require("./routes/stripeCheckout");
 const stripeWebhook = require("./routes/stripeWebhook");
 const meRoutes = require('./routes/me'); 
 const FRONTEND = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");    
-const path = require("path");               // <-- creator-status etc.
 
 const passport = require("passport");
 const cron = require("node-cron");

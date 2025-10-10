@@ -2,13 +2,21 @@
 const express = require("express");
 const Stripe = require("stripe");
 const db = require("../db");
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const { requireAuth } = require("../middleware/auth");
 const { validate } = require("../middleware/validate");
 const { checkoutSession } = require("../validators/schemas");
 const { strictLimiter } = require("../middleware/rateLimit");
 
 const router = express.Router();
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("Stripe not configured: missing STRIPE_SECRET_KEY");
+  }
+  return Stripe(key);
+}
 
 // 4% fee in basis points (default 400 bps)
 const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "400", 10);
@@ -113,7 +121,8 @@ router.post(
 
     let session;
 
-    if (mode === "payment") {
+  const stripe = getStripe();
+  if (mode === "payment") {
       // ONE-TIME: Do NOT create DB order yet. We'll create it in finalize after success.
       const payload = {
         mode: "payment",
@@ -200,7 +209,8 @@ router.get("/finalize", requireAuth, async (req, res) => {
 
   try {
     // Retrieve checkout session + expand to reduce round-trips
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+  const stripe = getStripe();
+  const session = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ["payment_intent", "subscription"],
     });
 
@@ -265,7 +275,7 @@ router.get("/finalize", requireAuth, async (req, res) => {
       const subscription = session.subscription && typeof session.subscription === "object" ? session.subscription : null;
       let subObj = subscription;
       if (!subObj && typeof session.subscription === "string") {
-        try { subObj = await stripe.subscriptions.retrieve(session.subscription); } catch (_) { }
+  try { subObj = await stripe.subscriptions.retrieve(session.subscription); } catch (_) { }
       }
       if (subObj && subObj.metadata) {
         const m = subObj.metadata;

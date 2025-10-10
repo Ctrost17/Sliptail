@@ -2,9 +2,16 @@ const express = require("express");
 const router = express.Router();
 const Stripe = require("stripe");
 const db = require("../db");
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("Stripe not configured: missing STRIPE_SECRET_KEY");
+  }
+  return Stripe(key);
+}
 
 // Create or reuse a creator’s Stripe Connect account
 router.post("/connect", async (req, res) => {
@@ -21,7 +28,8 @@ router.post("/connect", async (req, res) => {
     }
 
     // 3. Create new Stripe Connect account
-    const account = await stripe.accounts.create({
+  const stripe = getStripe();
+  const account = await stripe.accounts.create({
       type: "standard",
     });
 
@@ -32,7 +40,7 @@ router.post("/connect", async (req, res) => {
     ]);
 
     // 5. Generate the onboarding link
-    const accountLink = await stripe.accountLinks.create({
+  const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: "http://localhost:5000/stripe-refresh",
       return_url: "http://localhost:5000/stripe-success",

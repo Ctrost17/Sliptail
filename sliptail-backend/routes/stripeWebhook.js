@@ -1,10 +1,18 @@
 const Stripe = require("stripe");
 const db = require("../db");
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const { notifyPurchase } = require("../utils/notify");
 const { recomputeCreatorActive } = require("../services/creatorStatus");
 const { notify } = require("../services/notifications"); // NEW: in-app notifications for creators
 
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("Stripe not configured: missing STRIPE_SECRET_KEY");
+  }
+  return Stripe(key);
+}
 
 // If you use ONE webhook endpoint for everything, keep STRIPE_WEBHOOK_SECRET.
 // If you created a *separate* Connect webhook endpoint in Stripe Dashboard, you can
@@ -292,7 +300,8 @@ module.exports = async function stripeWebhook(req, res) {
         ? connectEndpointSecret
         : endpointSecret;
 
-    event = stripe.webhooks.constructEvent(req.body, sig, secretToUse);
+  const stripe = getStripe();
+  event = stripe.webhooks.constructEvent(req.body, sig, secretToUse);
   } catch (err) {
     console.error("⚠️  Webhook signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);

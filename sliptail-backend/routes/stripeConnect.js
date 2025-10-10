@@ -2,15 +2,20 @@
 const express = require("express");
 const Stripe = require("stripe");
 const db = require("../db");
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const { requireAuth } = require("../middleware/auth");
 const { recomputeCreatorActive } = require("../services/creatorStatus");
 
 const router = express.Router();
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  console.warn("[stripeconnect] STRIPE_SECRET_KEY is not set. Stripe endpoints will fail.");
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("Stripe not configured: missing STRIPE_SECRET_KEY");
+  }
+  return Stripe(key);
 }
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "");
 
 // Prefer FRONTEND_URL; fall back to APP_URL; default to local Next dev URL
 const FRONTEND_BASE = (
@@ -196,7 +201,8 @@ router.post("/create-link", requireAuth, async (req, res) => {
 
     // 2) Create Express account if missing
     if (!accountId) {
-      const account = await stripe.accounts.create({
+  const stripe = getStripe();
+  const account = await stripe.accounts.create({
         type: "express",
         email: me.email || undefined,
         capabilities: {
@@ -242,6 +248,7 @@ router.post("/create-link", requireAuth, async (req, res) => {
     }
 
     // 3) Retrieve the account to decide the flow
+    const stripe = getStripe();
     const acct = await stripe.accounts.retrieve(accountId);
     const needsOnboarding = !acct.details_submitted;
 
@@ -285,6 +292,7 @@ router.post("/sync", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "No connected account on file" });
     }
 
+    const stripe = getStripe();
     const acct = await stripe.accounts.retrieve(accountId);
 
     const snapshot = await upsertStripeState(userId, acct);
