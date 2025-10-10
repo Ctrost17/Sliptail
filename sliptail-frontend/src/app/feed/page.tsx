@@ -148,19 +148,16 @@ export default function MembershipFeedPage() {
     setLoading(true);
     setError(null);
     try {
-      // determine role
-      if (token) {
-        try {
-          const me = await fetchApi<MeResponse>("/api/me", { method: "GET", token, cache: "no-store" });
-          const role = me.user?.role?.toLowerCase();
-          setIsCreator(role === "creator");
-          // if not creator ensure tab = others
-          if (role !== "creator") setTab("others");
-        } catch { }
-      } else {
-        setIsCreator(false);
-        setTab("others");
-      }
+        // determine role (works with cookie or Bearer)
+            try {
+              const me = await fetchApi<MeResponse>("/api/me", { method: "GET", token, cache: "no-store" });
+              const role = me.user?.role?.toLowerCase();
+              setIsCreator(role === "creator");
+              if (role !== "creator") setTab("others");
+            } catch {
+              setIsCreator(false);
+              setTab("others");
+            }
       const prods = await fetchApi<{ products: Product[] }>("/api/memberships/feed", { method: "GET", token, cache: "no-store" })
         .then(r => r.products || []);
       setProducts(prods);
