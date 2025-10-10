@@ -85,42 +85,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * Read from localStorage, attach token, fetch /auth/me if needed,
    * and normalize through applyAuthState — but only if changed.
    */
-  const rehydrateFromLocal = useCallback(async () => {
-    const stored = loadAuth();
-    let tok = stored.token || null;
+const rehydrateFromLocal = useCallback(async () => {
+  const stored = loadAuth();
 
-    // If a bare token was stashed by some flow, pick it up
-    if (!tok) {
-      const strayToken =
-        typeof window !== "undefined"
-          ? window.localStorage.getItem("token")
-          : null;
-      if (strayToken) tok = strayToken;
-    }
+  // 1) Try to pick up a stored/bare token first
+  let tok = stored.token || null;
+  if (!tok) {
+    const strayToken =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("token")
+        : null;
+    if (strayToken) tok = strayToken;
+  }
 
-    // If nothing to hydrate, clear and bail
-    if (!tok) {
-      clearAllAuth();
-      return;
-    }
-
-    // If we already *have* token+user in storage, trust and apply (if different)
+  // 2) If we *do* have a token, use it as before
+  if (tok) {
     if (stored.user) {
       const next: AuthState = { token: tok, user: stored.user };
       applyAuthState(next);
       return;
     }
-
-    // Otherwise fetch /auth/me to populate user
+    // fetch user with bearer if we only have token
     setAuthToken(tok);
     try {
       const me = await fetchMe();
       applyAuthState({ token: tok, user: me });
     } catch {
-      // bad/expired token
       clearAllAuth();
     }
-  }, [applyAuthState, clearAllAuth, fetchMe]);
+    return;
+  }
+
+  // 3) NEW: No token? Try cookie-based session (Google OAuth flow)
+  try {
+    // axios/fetch in our helpers send cookies (withCredentials / credentials:'include')
+    const me = await fetchMe();
+    // We have a server session via cookie; keep token null (we don't need a bearer)
+    applyAuthState({ token: null, user: me });
+    return;
+  } catch {
+    // no cookie-based session either -> logged out
+    clearAllAuth();
+    return;
+  }
+}, [applyAuthState, clearAllAuth, fetchMe]);
+
 
   // Hydrate on mount; set up cross-tab sync via native storage event only
   useEffect(() => {
