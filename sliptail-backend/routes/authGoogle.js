@@ -6,6 +6,8 @@ const db = require("../db");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const { notify } = require("../services/notifications");
+
 
 const router = express.Router();
 
@@ -124,6 +126,19 @@ if (OAUTH_CONFIGURED) {
           );
 
           const user = insertRes.rows[0];
+
+          // 🔔 First-time Google signup — send welcome notification (non-blocking)
+            try {
+              await notify(
+                user.id,
+                "welcome",
+                "Welcome aboard!",
+                "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
+                {}
+              );
+            } catch (e) {
+              console.warn("[Google OAuth] welcome notify failed:", e?.message || e);
+            }
 
           return done(null, user);
         } catch (err) {
