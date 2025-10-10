@@ -106,7 +106,7 @@ export async function fetchApi<T>(
 
 // ---------- Axios client (for Client Components) ----------
 export const api = axios.create({
-  baseURL: `/api`,
+  baseURL: `${API_BASE}/api`,
   withCredentials: true, // send cookies with requests
   headers: {
     Accept: "application/json",
