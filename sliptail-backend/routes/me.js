@@ -1,3 +1,4 @@
+// routes/me.js
 const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
@@ -8,15 +9,50 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "");
 
 const router = express.Router();
 
+/* ----------------------------- helpers ----------------------------- */
+function toSafeUser(u) {
+  return {
+    id: u.id,
+    email: u.email,
+    username: u.username || null,
+    role: u.role, // rely on users.role exactly as you want
+    email_verified_at: u.email_verified_at || null,
+    created_at: u.created_at,
+  };
+}
+
+/* ----------------------- GET /api/me (NEW) ------------------------ */
 /**
- * Helper: fetch Stripe flags from DB (stripe_connect), falling back to Stripe API if needed.
+ * Returns the authenticated user record (including `role`).
+ * Frontend uses this to decide if the user is a creator.
  */
-async function getStripeConnectionState(db, userId) {
+router.get("/", requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, email, username, role, email_verified_at, created_at
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ ok: false, error: "User not found" });
+    return res.json({ ok: true, user: toSafeUser(rows[0]) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* --------------- GET /api/me/creator-status (existing) --------------- */
+/**
+ * Returns creator readiness flags (optional in your flow).
+ * You’re still free to rely only on users.role on the frontend.
+ */
+async function getStripeConnectionState(dbConn, userId) {
   const uid = String(userId);
 
-  // 1) Try DB first (authoritative snapshot written by /api/stripe-connect/sync & webhook)
+  // 1) Try DB snapshot first
   try {
-    const r = await db.query(
+    const r = await dbConn.query(
       `
       SELECT details_submitted, charges_enabled, payouts_enabled
       FROM stripe_connect
@@ -26,7 +62,11 @@ async function getStripeConnectionState(db, userId) {
       [uid]
     );
     if (r.rows[0]) {
-      const { details_submitted = false, charges_enabled = false, payouts_enabled = false } = r.rows[0];
+      const {
+        details_submitted = false,
+        charges_enabled = false,
+        payouts_enabled = false,
+      } = r.rows[0];
       return {
         details_submitted: !!details_submitted,
         charges_enabled: !!charges_enabled,
@@ -34,14 +74,13 @@ async function getStripeConnectionState(db, userId) {
         present: true,
       };
     }
-  } catch (e) {
-    // table may not exist yet in some envs; ignore and fall back
-    // console.warn("[creator-status] stripe_connect read warn:", e.message || e);
+  } catch (_) {
+    // ignore; fallback to Stripe
   }
 
-  // 2) Fallback: try live Stripe (only if we have an account id)
+  // 2) Fallback to live Stripe
   try {
-    const { rows: [u] = [] } = await db.query(
+    const { rows: [u] = [] } = await dbConn.query(
       `SELECT stripe_account_id FROM users WHERE id::text = $1 LIMIT 1`,
       [uid]
     );
@@ -57,35 +96,23 @@ async function getStripeConnectionState(db, userId) {
       present: true,
     };
   } catch (e) {
-    // Stripe failure shouldn't break the endpoint
     console.warn("[creator-status] Stripe retrieve failed:", e.message || e);
     return { details_submitted: false, charges_enabled: false, payouts_enabled: false, present: false };
   }
 }
 
-/**
- * GET /api/me/creator-status
- * Returns:
- *  {
- *    profileComplete: boolean,
- *    stripeConnected: boolean,
- *    hasPublishedProduct: boolean,
- *    isActive: boolean
- *  }
- */
 router.get("/creator-status", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const uid = String(userId);
 
   try {
-    // Profile status (be tolerant about schema)
+    // Profile flags (best-effort)
     let profileComplete = false;
     let isActive = false;
     try {
       const { rows: [cp] = [] } = await db.query(
         `
         SELECT
-          -- prefer explicit flags if you have them
           COALESCE(is_profile_complete, FALSE) AS is_profile_complete,
           COALESCE(is_active, FALSE)           AS is_active
         FROM creator_profiles
@@ -98,12 +125,9 @@ router.get("/creator-status", requireAuth, async (req, res) => {
         profileComplete = !!cp.is_profile_complete;
         isActive = !!cp.is_active;
       }
-    } catch (e) {
-      // creator_profiles might not exist yet; leave defaults
-      // console.warn("[creator-status] creator_profiles read warn:", e.message || e);
-    }
+    } catch (_) {}
 
-    // Products: count published/active
+    // Any active product published?
     let hasPublishedProduct = false;
     try {
       const { rows: [row] = [] } = await db.query(
@@ -115,26 +139,22 @@ router.get("/creator-status", requireAuth, async (req, res) => {
         [uid]
       );
       hasPublishedProduct = (row?.cnt || 0) > 0;
-    } catch (e) {
-      // products table might not be present in some envs
-      // console.warn("[creator-status] products read warn:", e.message || e);
-    }
+    } catch (_) {}
 
-    // Stripe connection (DB first, Stripe fallback)
+    // Stripe connection snapshot/fallback
     const s = await getStripeConnectionState(db, uid);
     const stripeConnected = !!(s.details_submitted && s.charges_enabled && s.payouts_enabled);
 
-    // Respond with your existing shape
     return res.json({
       profileComplete,
       stripeConnected,
       hasPublishedProduct,
-      isActive, // if you prefer a computed status: (profileComplete && stripeConnected && hasPublishedProduct)
+      isActive,
     });
   } catch (e) {
-  console.error("creator/setup error:", e); // 👈 Will show the real error in console
-  return res.status(500).json({ error: "Failed to save profile", details: e.message });
-}
+    console.error("creator-status error:", e);
+    return res.status(500).json({ error: "Failed to load creator status", details: e.message });
+  }
 });
 
 module.exports = router;
