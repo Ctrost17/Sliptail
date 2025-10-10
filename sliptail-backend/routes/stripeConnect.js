@@ -332,6 +332,7 @@ router.get("/status", requireAuth, async (req, res) => {
       return res.json({ has_account: false });
     }
 
+    const stripe = getStripe(); // ← you forgot this line here
     const acct = await stripe.accounts.retrieve(accountId);
     try { await upsertStripeState(userId, acct); } catch (_) {}
 
