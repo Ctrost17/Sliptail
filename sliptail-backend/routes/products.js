@@ -449,25 +449,37 @@ router.post(
 
     const finalizeCreate = async (filename) => {
       try {
-        const created = await insertProduct({
-          userIdText: user_id,
-          title,
-          description,
-          product_type,
-          price_cents: priceNum,
-          filename,
-        });
+            const created = await insertProduct({
+              userIdText: user_id,
+              title,
+              description,
+              product_type,
+              price_cents: priceNum,
+              filename,
+            });
 
-       try {
-            await activateCreatorNow(user_id);
-          } catch (e) {
-            console.warn("activateCreatorNow failed:", e?.message || e);
-          }
+            // 1) make sure a profile row exists
+            await ensureCreatorProfileRow(user_id).catch(() => {});
 
-          // do auth promotion + cookie + is_active BEFORE responding
-          await promoteAndRefreshAuth(req.user.id, res);
+            // 2) flip is_active = TRUE immediately if at least one product exists (works with/without products.active)
+            await db.query(
+              `
+              UPDATE creator_profiles cp
+                SET is_active = TRUE,
+                    ${await hasColumn("creator_profiles", "updated_at") ? "updated_at = NOW()" : "user_id = user_id"}
+              WHERE cp.user_id::text = $1
+                AND COALESCE(cp.is_active, FALSE) = FALSE
+                AND EXISTS (SELECT 1 FROM products p WHERE p.user_id::text = $1)
+              `,
+              [String(user_id)]
+            ).catch((e) => console.warn("force-activate creator failed:", e?.message || e));
 
-          res.status(201).json({ success: true, product: linkify(created) });
+            // 3) still run helper flows (redundant but safe)
+            try { await activateCreatorNow(user_id); } catch (e) { console.warn("activateCreatorNow failed:", e?.message || e); }
+            // do auth promotion + cookie + is_active BEFORE responding
+            await promoteAndRefreshAuth(req.user.id, res);
+
+            res.status(201).json({ success: true, product: linkify(created) });
       } catch (err) {
         console.error("DB insert error (upload):", err.message || err, err.detail || "");
         res.status(500).json({ error: "Database insert failed" });
@@ -534,24 +546,35 @@ router.post(
 
     try {
       const created = await insertProduct({
-        userIdText: user_id,
-        title,
-        description,
-        product_type,
-        price_cents: priceNum,
-        filename: null,
-      });
+          userIdText: user_id,
+          title,
+          description,
+          product_type,
+          price_cents: priceNum,
+          filename: null,
+        });
 
-      try {
-            await activateCreatorNow(user_id);
-          } catch (e) {
-            console.warn("activateCreatorNow failed:", e?.message || e);
-          }
+        // 1) ensure profile row
+        await ensureCreatorProfileRow(user_id).catch(() => {});
 
-          // set role/cookie + is_active before responding
-          await promoteAndRefreshAuth(req.user.id, res);
+        // 2) force-activate now that a product exists
+        await db.query(
+          `
+          UPDATE creator_profiles cp
+            SET is_active = TRUE,
+                ${await hasColumn("creator_profiles", "updated_at") ? "updated_at = NOW()" : "user_id = user_id"}
+          WHERE cp.user_id::text = $1
+            AND COALESCE(cp.is_active, FALSE) = FALSE
+            AND EXISTS (SELECT 1 FROM products p WHERE p.user_id::text = $1)
+          `,
+          [String(user_id)]
+        ).catch((e) => console.warn("force-activate creator failed:", e?.message || e));
 
-          res.status(201).json({ success: true, product: linkify(created) });
+        try { await activateCreatorNow(user_id); } catch (e) { console.warn("activateCreatorNow failed:", e?.message || e); }
+        // set role/cookie + is_active before responding
+        await promoteAndRefreshAuth(req.user.id, res);
+
+        res.status(201).json({ success: true, product: linkify(created) });
     } catch (err) {
       console.error("Create product error:", err.message || err, err.detail || "");
       res.status(500).json({ error: "Could not create product" });
