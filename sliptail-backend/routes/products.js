@@ -458,14 +458,16 @@ router.post(
           filename,
         });
 
-        // ➜ ADD THIS:
-        await activateCreatorNow(user_id);
+       try {
+            await activateCreatorNow(user_id);
+          } catch (e) {
+            console.warn("activateCreatorNow failed:", e?.message || e);
+          }
 
-        // ⬅️ do auth promotion + cookie + is_active sync BEFORE responding,
-        //     so the navbar can flip instantly without a hard refresh.
-        await promoteAndRefreshAuth(req.user.id, res);
+          // do auth promotion + cookie + is_active BEFORE responding
+          await promoteAndRefreshAuth(req.user.id, res);
 
-        res.json({ success: true, product: linkify(created) });
+          res.status(201).json({ success: true, product: linkify(created) });
       } catch (err) {
         console.error("DB insert error (upload):", err.message || err, err.detail || "");
         res.status(500).json({ error: "Database insert failed" });
@@ -540,13 +542,16 @@ router.post(
         filename: null,
       });
 
-      // ➜ ADD THIS:
-      await activateCreatorNow(user_id);
+      try {
+            await activateCreatorNow(user_id);
+          } catch (e) {
+            console.warn("activateCreatorNow failed:", e?.message || e);
+          }
 
-      // ⬅️ same: set role/cookie + is_active before responding
-      await promoteAndRefreshAuth(req.user.id, res);
+          // set role/cookie + is_active before responding
+          await promoteAndRefreshAuth(req.user.id, res);
 
-      res.status(201).json({ product: linkify(created) });
+          res.status(201).json({ product: linkify(created) });
     } catch (err) {
       console.error("Create product error:", err.message || err, err.detail || "");
       res.status(500).json({ error: "Could not create product" });
