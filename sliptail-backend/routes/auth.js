@@ -274,14 +274,40 @@ router.get("/verify", async (req, res) => {
       [token]
     );
 
+    // pull fresh user and issue a session JWT
+    const { rows: urows } = await db.query(
+      `SELECT id, email, role, email_verified_at FROM users WHERE id=$1 LIMIT 1`,
+      [userId]
+    );
     await db.query("COMMIT");
 
-    return res.redirect(`${FRONTEND_BASE}/auth/verified`);
+    const u = urows[0];
+    const session = jwt.sign(
+      {
+        id: u.id,
+        email: u.email,
+        role: u.role || "user",
+        email_verified_at: u.email_verified_at,
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    // HttpOnly cookie so the app is logged in immediately
+    res.cookie("token", session, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV !== "development",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    // land on a tiny page that immediately forwards to home (and can show a toast)
+    return res.redirect(`${FRONTEND_BASE}/auth/verified?ok=1`);
   } catch (e) {
     try { await db.query("ROLLBACK"); } catch {}
-    // eslint-disable-next-line no-console
-    console.error("verify error:", e);
-    return res.status(500).json({ error: "Verification failed" });
+    console.error("verify error:", e?.message || e);
+    return res.redirect(`${FRONTEND_BASE}/auth/login?verify_error=1`);
   }
 });
 

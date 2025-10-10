@@ -181,18 +181,27 @@ if (OAUTH_CONFIGURED) {
           return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
         }
 
+        // fresh JWT (same shape as normal login)
         const token = jwt.sign(
-          { id: user.id, email: user.email },
+          { id: user.id, email: user.email, role: user.role || "user", email_verified_at: user.email_verified_at ?? null },
           JWT_SECRET,
           { expiresIn: "7d" }
         );
 
-        // Forward ?next=... if we got one in state.
-        const nextParam = typeof req.query.state === "string" ? req.query.state : "/";
-        const base = FRONTEND_URL.replace(/\/$/, "");
-        const url = `${base}/oauth-complete?next=${encodeURIComponent(nextParam)}#token=${encodeURIComponent(token)}`;
+        // ✅ HttpOnly cookie so subsequent /api/* calls are authenticated
+        res.cookie("token", token, {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: process.env.NODE_ENV !== "development", // true in prod behind HTTPS
+          path: "/",
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
 
-        return res.redirect(url);
+        // Preserve ?next via state, but keep it on-site
+        const state = typeof req.query.state === "string" ? req.query.state : "/";
+        const nextPath = state.startsWith("/") ? state : "/";
+        const base = FRONTEND_URL.replace(/\/$/, "");
+        return res.redirect(base + nextPath);
       } catch (e) {
         console.error("[Google OAuth] callback handler error:", e);
         return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
@@ -201,7 +210,6 @@ if (OAUTH_CONFIGURED) {
   );
 } else {
   router.get("/google/callback", (_req, res) => {
-    // Gracefully redirect to login with a message when not configured
     return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
   });
 }

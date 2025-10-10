@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require("cors");
-const cookieParser = require('cookie-parser');              // <-- add
+const cookieParser = require("cookie-parser");              // <-- add
 require("dotenv").config();
 const db = require('./db');
 
@@ -39,7 +39,7 @@ const { requireAuth } = require("./middleware/auth"); // <-- correct path
 const app = express();
 
 // If deploying behind a proxy/load balancer (Railway/Render/Heroku/Nginx/Cloudflare)
-app.set('trust proxy', 1); // so secure cookies work
+app.set("trust proxy", 1); // so secure cookies work
 
 // Webhook MUST come before json parser (raw body)
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
