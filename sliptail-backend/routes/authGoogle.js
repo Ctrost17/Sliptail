@@ -111,36 +111,26 @@ if (OAUTH_CONFIGURED) {
           }
 
           // New Google user → create a row (password_hash is required by your schema)
-          const username = await makeUniqueUsername(
-            baseUsernameFromProfile(profile, email)
-          );
-          const password_hash = await randomPasswordHash();
+            const username = await makeUniqueUsername(
+              baseUsernameFromProfile(profile, email)
+            );
+            const password_hash = await randomPasswordHash();
 
-          const insertRes = await db.query(
-            `INSERT INTO users
-               (email, password_hash, role, username, email_verified, email_verified_at)
-             VALUES
-               ($1,    $2,            'user', $3,       TRUE,          NOW())
-             RETURNING id, email, username, role, email_verified, email_verified_at, created_at`,
-            [email, password_hash, username]
-          );
+            const insertRes = await db.query(
+              `INSERT INTO users
+                (email, password_hash, role, username, email_verified, email_verified_at)
+              VALUES
+                ($1,    $2,            'user', $3,       TRUE,          NOW())
+              RETURNING id, email, username, role, email_verified, email_verified_at, created_at`,
+              [email, password_hash, username]
+            );
 
-          const user = insertRes.rows[0];
+            const user = insertRes.rows[0];
 
-          // 🔔 First-time Google signup — send welcome notification (non-blocking)
-            try {
-              await notify(
-                user.id,
-                "welcome",
-                "Welcome aboard!",
-                "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
-                {}
-              );
-            } catch (e) {
-              console.warn("[Google OAuth] welcome notify failed:", e?.message || e);
-            }
+            // mark as freshly created (in-memory only; not stored in DB)
+            user.__just_created = true;
 
-          return done(null, user);
+            return done(null, user);
         } catch (err) {
           console.error("[Google OAuth] verify error:", err);
           return done(err, null);
@@ -188,40 +178,55 @@ if (OAUTH_CONFIGURED) {
       session: false,
       failureRedirect: FRONTEND_URL + "/auth/login?oauth_error=1",
     }),
-    async (req, res) => {
-      try {
-        const user = req.user;
-        if (!user) {
-          console.error("[Google OAuth] No user on req after authenticate()");
-          return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
-        }
+          async (req, res) => {
+            try {
+              const user = req.user;
+              if (!user) {
+                console.error("[Google OAuth] No user on req after authenticate()");
+                return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
+              }
 
-        // fresh JWT (same shape as normal login)
-        const token = jwt.sign(
-          { id: user.id, email: user.email, role: user.role || "user", email_verified_at: user.email_verified_at ?? null },
-          JWT_SECRET,
-          { expiresIn: "7d" }
-        );
+              // fresh JWT
+              const token = jwt.sign(
+                { id: user.id, email: user.email, role: user.role || "user", email_verified_at: user.email_verified_at ?? null },
+                JWT_SECRET,
+                { expiresIn: "7d" }
+              );
 
-        // ✅ HttpOnly cookie so subsequent /api/* calls are authenticated
-        res.cookie("token", token, {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV !== "development", // true in prod behind HTTPS
-          path: "/",
-          maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+              // Set session cookie
+              res.cookie("token", token, {
+                httpOnly: true,
+                sameSite: "lax",
+                secure: process.env.NODE_ENV !== "development",
+                path: "/",
+                maxAge: 7 * 24 * 60 * 60 * 1000,
+              });
 
-        // Preserve ?next via state, but keep it on-site
-        const state = typeof req.query.state === "string" ? req.query.state : "/";
-        const nextPath = state.startsWith("/") ? state : "/";
-       const base = FRONTEND_URL.replace(/\/$/, "");
-        return res.redirect(`${base}/auth/complete?next=${encodeURIComponent(nextPath)}`);
-      } catch (e) {
-        console.error("[Google OAuth] callback handler error:", e);
-        return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
-      }
-    }
+              // 🔔 Fire welcome notify here only if the account was created right now via Google
+              if (user.__just_created) {
+                try {
+                  await notify(
+                    user.id,
+                    "welcome",
+                    "Welcome aboard!",
+                    "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
+                    { source: "google_oauth" }
+                  );
+                } catch (e) {
+                  console.warn("[Google OAuth] welcome notify (callback) failed:", e?.message || e);
+                }
+              }
+
+              // Redirect
+              const state = typeof req.query.state === "string" ? req.query.state : "/";
+              const nextPath = state.startsWith("/") ? state : "/";
+              const base = FRONTEND_URL.replace(/\/$/, "");
+              return res.redirect(`${base}/auth/complete?next=${encodeURIComponent(nextPath)}`);
+            } catch (e) {
+              console.error("[Google OAuth] callback handler error:", e);
+              return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
+            }
+          }
   );
 } else {
   router.get("/google/callback", (_req, res) => {
