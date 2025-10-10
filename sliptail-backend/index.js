@@ -101,10 +101,6 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
-app.get("/api/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
-});
-
 // 404 + error handlers LAST
 app.use(notFound);
 app.use(errorHandler);
