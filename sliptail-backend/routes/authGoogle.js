@@ -200,8 +200,8 @@ if (OAUTH_CONFIGURED) {
         // Preserve ?next via state, but keep it on-site
         const state = typeof req.query.state === "string" ? req.query.state : "/";
         const nextPath = state.startsWith("/") ? state : "/";
-        const base = FRONTEND_URL.replace(/\/$/, "");
-        return res.redirect(base + nextPath);
+       const base = FRONTEND_URL.replace(/\/$/, "");
+        return res.redirect(`${base}/auth/complete?next=${encodeURIComponent(nextPath)}`);
       } catch (e) {
         console.error("[Google OAuth] callback handler error:", e);
         return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
