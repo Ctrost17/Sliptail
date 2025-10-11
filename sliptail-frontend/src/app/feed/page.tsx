@@ -21,59 +21,59 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
 function PostMedia({
   src,
   file = null,
+  bleed = false, // NEW: make audio span to card edges on mobile when true
 }: {
   src: string;
   file?: File | null;
+  bleed?: boolean;
 }) {
-  const [ratio, setRatio] = useState<number | null>(null);
+  const isAudio =
+    (file?.type?.startsWith("audio/") ||
+      /\.mp3$/i.test((src || "").split("?")[0])) as boolean;
+  const isVideo =
+    (file?.type?.startsWith("video/") ||
+      /\.(mp4|webm|ogg|m4v|mov)$/i.test((src || "").split("?")[0])) as boolean;
 
-  const isAudio = (file?.type?.startsWith("audio/") ||
-   /\.mp3$/i.test((src || "").split("?")[0])) as boolean;
-  const isVideo = (file?.type?.startsWith("video/") ||
-    /\.(mp4|webm|ogg|m4v|mov)$/i.test((src || "").split("?")[0])) as boolean;
-
-  // Once metadata loads, record the natural aspect to avoid cropping
-  const handleVideoMeta = (e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const el = e.currentTarget;
-    if (el.videoWidth && el.videoHeight) setRatio(el.videoWidth / el.videoHeight);
-  };
-  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const el = e.currentTarget;
-    if (el.naturalWidth && el.naturalHeight) setRatio(el.naturalWidth / el.naturalHeight);
-  };
-
-  return (
-    <div
-      className="relative mt-3 rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
-      style={!isVideo && ratio ? { aspectRatio: String(ratio) } : undefined}
-    >
-        {isAudio ? (
+  if (isAudio) {
+    return (
+      <div className="mt-3">
+        {/* On mobile, cancel the post row’s horizontal padding so audio can span
+           the whole card; on sm+ keep it centered/capped. */}
+        <div className={`${bleed ? "-mx-4 sm:mx-0" : ""} sm:mx-auto sm:max-w-2xl`}>
           <audio
             src={src}
             controls
             preload="metadata"
-            className="block w-full bg-black"
+            controlsList="nodownload"
+            className="block w-full"
           />
-        ) : isVideo ? (
+        </div>
+      </div>
+    );
+  }
+
+  // ---- IMAGE / VIDEO (unchanged) ----
+  return (
+    <div className="mt-3 flex justify-center">
+      <div className="w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200">
+        {isVideo ? (
           <video
             src={src}
             controls
             playsInline
             preload="metadata"
             controlsList="nodownload"
-            className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
-            onLoadedMetadata={handleVideoMeta}
+            className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
           />
         ) : (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={src}
             alt="post media"
             loading="lazy"
-            className="block w-full h-auto object-contain bg-black"
-            onLoad={handleImageLoad}
+            className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] mx-auto"
           />
         )}
+      </div>
     </div>
   );
 }
@@ -350,14 +350,16 @@ export default function MembershipFeedPage() {
             const expanded = expandedProductId === prod.id;
             const isHighlighted = highlightProductId === prod.id;
             return (
-              <div key={prod.id} className={`rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50 border border-green-200 shadow-lg' : 'bg-white ring-1 ring-black/5'} transition-all duration-300`}>
+              <div key={prod.id}
+                  className={`rounded-2xl overflow-hidden ${isHighlighted ? 'bg-green-50 border border-green-200 shadow-lg' : 'bg-white ring-1 ring-black/5'} transition-all duration-300`}
+                >
                 <div className={`flex items-center gap-3 px-4 py-3 ${isHighlighted ? 'bg-green-100/70' : 'bg-neutral-50/70'} border-b`}>
               <button
                   aria-expanded={expanded}
                   onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
                   className="cursor-pointer relative flex-1 min-w-0 text-left"
                 >
-                  <h2 className="font-semibold text-sm leading-tight truncate">
+                  <h2 className="font-bold text-base md:text-lg leading-tight truncate">
                     {prod.title || `Product #${prod.id}`}
                   </h2>
                   <p className="text-xs text-neutral-500">
@@ -393,10 +395,10 @@ export default function MembershipFeedPage() {
                               <div className="flex items-center gap-2 text-xs text-neutral-500 flex-wrap">
                                 <span>{new Date(post.created_at).toLocaleString()}</span>
                               </div>
-                              {post.title && <h3 className="font-medium text-sm mt-0.5 leading-snug break-words">Title: {post.title}</h3>}
+                              {post.title && <h3 className="font-bold text-base md:text-lg mt-1 leading-snug break-words">Title: {post.title}</h3>}
                             </div>
                             {isCreator && (
-                              <div className="flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
+                              <div className="flex gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100 transition">
                                 <button onClick={() => handleEdit(post)} className="text-[10px] px-2 py-1 border rounded hover:bg-neutral-100">Edit</button>
                                 <button onClick={() => handleDelete(post)} className="text-[10px] px-2 py-1 border rounded hover:bg-red-50 text-red-600">Delete</button>
                               </div>
@@ -434,11 +436,11 @@ export default function MembershipFeedPage() {
                     onClick={() => setExpandedProductId(prev => prev === prod.id ? null : prod.id)}
                     className="cursor-pointer relative flex-1 min-w-0 text-left"
                   >
-                    <h1 className="font-semibold text-sm leading-tight truncate">
+                    <h1 className="font-bold text-base md:text-lg leading-tight truncate">
                       Creator: {prod.display_name}
                     </h1>
-                    <h2 className="font-semibold text-sm leading-tight truncate">
-                      Title: {prod.title || `Product #${prod.id}`}
+                    <h2 className="font-bold text-base md:text-lg leading-tight truncate">
+                       {prod.title || `Product #${prod.id}`}
                     </h2>
                     <p className="text-xs text-neutral-500">
                       Date: {prod.created_at && new Date(prod.created_at).toLocaleDateString()}
@@ -465,7 +467,9 @@ export default function MembershipFeedPage() {
                       </div>
                     )}
                       {postsForProd.map(post => (
-                        <div key={post.id} className="p-4 border-t flex gap-3 hover:bg-neutral-50 transition">
+                       <div key={post.id} className="border-t hover:bg-neutral-50 transition">
+                        {/* Row with avatar + text only */}
+                        <div className="p-4 flex gap-3">
                           {/* Avatar */}
                           <img
                             src={resolveImageUrl(post.profile_image, apiBase) || post.profile_image}
@@ -473,30 +477,41 @@ export default function MembershipFeedPage() {
                             className="h-full w-[50px] rounded-full object-cover"
                           />
 
-                          {/* Content */}
+                          {/* Content (no audio here) */}
                           <div className="flex-1 min-w-0">
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 text-xs text-neutral-500 flex-wrap">
                                 <span>{new Date(post.created_at).toLocaleString()}</span>
                               </div>
                               {post.title && (
-                                <h3 className="font-medium text-sm mt-0.5 leading-snug break-words">
+                                <h3 className="font-bold text-base md:text-lg mt-1 leading-snug break-words">
                                   {post.title}
                                 </h3>
                               )}
+                              {post.body && (
+                                <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">
+                                  {post.body}
+                                </p>
+                              )}
                             </div>
 
-                            {post.media_path && (
+                            {/* Keep images/videos inside the text column */}
+                            {post.media_path && !isAudioMedia(null, post.media_path) && (
                               <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} />
-                            )}
-
-                            {post.body && (
-                              <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">
-                                {post.body}
-                              </p>
                             )}
                           </div>
                         </div>
+
+                        {/* AUDIO ONLY: put it in its own row under the avatar, with a touch more space */}
+                        {post.media_path && isAudioMedia(null, post.media_path) && (
+                          <div className="px-4 pb-4"> {/* aligns with card padding; prevents overlap */}
+                            <PostMedia
+                              src={resolveMediaUrl(post.media_path) || post.media_path}
+                              bleed
+                            />
+                          </div>
+                        )}
+                      </div>
                       ))}
                   </div>
                 )}

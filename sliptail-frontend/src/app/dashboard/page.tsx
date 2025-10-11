@@ -1479,7 +1479,10 @@ useEffect(() => {
         {/* Request details modal */}
         {activeRequest && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6">
+            <div
+                  className="w-full max-w-lg rounded-xl bg-white p-6 max-h-[85vh] overflow-y-auto"
+                  style={{ WebkitOverflowScrolling: "touch" }} // smooth iOS scroll
+                >
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">
                   {activeRequest.product_title || `Request #${activeRequest.id}`}
@@ -1532,7 +1535,10 @@ useEffect(() => {
         {/* Complete request modal */}
         {activeCompleteRequest && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg space-y-4 rounded-xl bg-white p-6">
+            <div
+                  className="w-full max-w-lg rounded-xl bg-white p-6 max-h-[85vh] overflow-y-auto"
+                  style={{ WebkitOverflowScrolling: "touch" }} // smooth iOS scroll
+                >
               <div className="flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Complete Request</h3>
                 <button onClick={closeComplete} className="cursor-pointer text-sm rounded-md px-2 py-1 font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95">Close</button>
