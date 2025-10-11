@@ -28,12 +28,21 @@ html {
   /* color shown on iOS when you overscroll past the edges */
   background: hsl(156, 100%, 61%);   /* pick any edge/bounce color you like */
   overflow-x: hidden;    /* prevent sideways white gutter on mobile */
+  height: 100%;
 }
 
 body {
-  background: #ffffff;
+  background: transparent;
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  min-height: 100%;
+}
+
+/* Ensure the app root is white and fills the screen */
+#__next, /* Next.js root */
+body > div:first-child {
+  min-height: 100%;
+  background: #ffffff;      /* your page surfaces stay white */
 }
 
 
