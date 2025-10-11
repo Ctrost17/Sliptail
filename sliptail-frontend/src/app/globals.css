@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  --background: hwb(0 100% 0%);
+  --background: hwb(165 2% 1%);
   --foreground: #171717;
 }
 
@@ -24,18 +24,11 @@
   }
 }
 
-html {
-  background: linear-gradient(to right, #34d399, #22d3ee, #38bdf8); /* emerald→cyan→sky */
-}
-
 body {
-  background: var(--background);
+  background: #ffffff;
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
-
-/* make sure body fills viewport so content looks normal */
-html, body { min-height: 100%; }
 
 
 @keyframes fade-in-up {
