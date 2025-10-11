@@ -24,6 +24,12 @@
   }
 }
 
+html {
+  /* color shown on iOS when you overscroll past the edges */
+  background: hsl(156, 100%, 61%);   /* pick any edge/bounce color you like */
+  overflow-x: hidden;    /* prevent sideways white gutter on mobile */
+}
+
 body {
   background: #ffffff;
   color: var(--foreground);
