@@ -5,6 +5,8 @@ const multer = require("multer");
 const ffmpeg = require("fluent-ffmpeg");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
+const storage = require("../storage"); // S3 or local
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth"); // no requireCreator
 const { validate } = require("../middleware/validate");
@@ -41,18 +43,19 @@ function toProductDTO(row) {
   };
 }
 
-// 📁 Ensure upload folder exists
+// 📁 Ensure upload folder exists (local mode only)
 const uploadDir = path.join(__dirname, "..", "public", "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// 📦 Multer config
-const storage = multer.diskStorage({
+// 📦 Multer config — memory for S3, disk for local
+const diskStore = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
+   const ext = path.extname(file.originalname);
     cb(null, "raw-" + Date.now() + ext);
   },
 });
+const baseStore = storage.isS3 ? multer.memoryStorage() : diskStore;
 
 const allowed = new Set([
   "application/pdf",
@@ -73,7 +76,7 @@ const allowed = new Set([
 ]);
 
 const upload = multer({
-  storage,
+  storage: baseStore,
   limits: { fileSize: 2500 * 1024 * 1024 }, // 2.5GB
   fileFilter: (req, file, cb) =>
     allowed.has(file.mimetype) ? cb(null, true) : cb(new Error("Unsupported file type")),
@@ -98,6 +101,11 @@ let syncStripeForUser = null;
 try {
   ({ syncStripeForUser } = require("../services/stripeConnect"));
 } catch (_) {}
+
+function s3KeyForProduct(userId, ext = ".bin") {
+  const safeExt = ext && ext.trim() ? ext.toLowerCase() : ".bin";
+  return `products/${userId}/${Date.now()}${safeExt}`;
+}
 
 /* ---------------- DB introspection helpers (avoid schema mismatches) --------------- */
 
@@ -424,11 +432,13 @@ router.post(
   upload.single("file"),
   validate(productCreateFile),
   async (req, res) => {
-    const inputPath = req.file.path;
-    const mimeType = req.file.mimetype;
+        const user_id = String(req.user.id || "").trim(); // must come first
+        const mimeType = req.file.mimetype;
+        const ext = path.extname(req.file.originalname || "");
+        const inputPath = storage.isS3 ? null : req.file.path;
+        // (compute S3 keys later per-branch)
 
-    const user_id = String(req.user.id || "").trim();
-    const { title, description, product_type } = req.body;
+        const { title, description, product_type } = req.body;
 
     const priceRaw = req.body.price ?? req.body.price_cents ?? 0;
     const priceNum = Number(priceRaw);
@@ -488,15 +498,51 @@ router.post(
 
     if (isVideo(mimeType)) {
       const outputFilename = `video-${Date.now()}.mp4`;
-      const outputPath = path.join(uploadDir, outputFilename);
+      const outputPath = storage.isS3
+        ? path.join(os.tmpdir(), outputFilename)
+        : path.join(uploadDir, outputFilename);
 
-      ffmpeg(inputPath)
+      // For S3 uploads, ffmpeg needs a real file path, so write a temp input file
+      const tmpInPath = storage.isS3
+        ? path.join(os.tmpdir(), `in-${Date.now()}${ext || ".bin"}`)
+        : null;
+      if (storage.isS3) {
+        await fs.promises.writeFile(tmpInPath, req.file.buffer);
+      }
+
+      ffmpeg(storage.isS3 ? tmpInPath : inputPath)
         .output(outputPath)
-        .on("end", () => {
+        .on("end", async () => {
           try {
-            fs.unlinkSync(inputPath);
-          } catch {}
-          finalizeCreate(outputFilename);
+            // cleanup original input
+            if (!storage.isS3) {
+              try { fs.unlinkSync(inputPath); } catch {}
+            } else {
+              try { await fs.promises.unlink(tmpInPath).catch(() => {}); } catch {}
+            }
+
+            if (storage.isS3) {
+              const key = s3KeyForProduct(user_id, ".mp4");
+              try {
+                const data = await fs.promises.readFile(outputPath);
+                await storage.uploadPrivate({
+                  key,
+                  contentType: "video/mp4",
+                  body: data,
+                });
+                await fs.promises.unlink(outputPath).catch(() => {});
+                return finalizeCreate(outputFilename); // store S3 key in products.filename
+              } catch (e) {
+                console.error("S3 upload (video) failed:", e);
+                return res.status(500).json({ error: "Video upload failed" });
+              }
+            } else {
+              return finalizeCreate(outputFilename);
+            }
+          } catch (e) {
+            console.error("video finalize error:", e);
+            return res.status(500).json({ error: "Video processing failed" });
+          }
         })
         .on("error", (err) => {
           console.error("FFmpeg error:", err.message || err);
@@ -504,15 +550,30 @@ router.post(
         })
         .run();
     } else {
-      const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
-      const finalPath = path.join(uploadDir, finalName);
-      fs.rename(inputPath, finalPath, (err) => {
+      if (storage.isS3) {
+        const key = s3KeyForProduct(user_id, ext || ".bin");
+        try {
+          await storage.uploadPrivate({
+            key,
+            contentType: mimeType || "application/octet-stream",
+            body: req.file.buffer,
+          });
+          return finalizeCreate(outputFilename); // store S3 key in products.filename
+        } catch (e) {
+          console.error("S3 upload (non-video) failed:", e);
+          return res.status(500).json({ error: "File upload failed" });
+        }
+      } else {
+        const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
+        const finalPath = path.join(uploadDir, finalName);
+        fs.rename(inputPath, finalPath, (err) => {
         if (err) {
           console.error("Rename error:", err.message || err);
           return res.status(500).json({ error: "File save failed" });
         }
-        finalizeCreate(finalName);
+        return finalizeCreate(finalName);
       });
+      }
     }
   }
 );
@@ -833,7 +894,7 @@ router.put(
 
     const oldName = prodRows[0].filename || null;
 
-    const inputPath = req.file.path;
+    const inputPath = storage.isS3 ? null : req.file.path;
     const mimeType = req.file.mimetype;
 
     const saveNewFilename = async (newName) => {
@@ -861,48 +922,103 @@ router.put(
       }
     };
 
-    try {
-      // videos -> transcode if ffmpeg available; otherwise store as-is
-      if (!FFMPEG_DISABLE && mimeType.startsWith("video/")) {
-        const outputFilename = `video-${Date.now()}.mp4`;
-        const outputPath = path.join(uploadDir, outputFilename);
+      try {
+        // videos -> transcode if ffmpeg available; otherwise store as-is
+        if (!FFMPEG_DISABLE && mimeType.startsWith("video/")) {
+          const outputFilename = `video-${Date.now()}.mp4`;
+          const outputPath = storage.isS3
+            ? path.join(os.tmpdir(), outputFilename)
+            : path.join(uploadDir, outputFilename);
 
-        ffmpeg(inputPath)
-          .output(outputPath)
-          .on("end", () => {
-            try { fs.unlinkSync(inputPath); } catch {}
-            saveNewFilename(outputFilename);
-          })
-          .on("error", (err) => {
-            console.error("FFmpeg error:", err?.message || err);
-            // Fallback: store original file so the user isn’t blocked
+          // Prepare input for ffmpeg
+          let inPath = inputPath;
+          if (storage.isS3) {
+            inPath = path.join(os.tmpdir(), `in-${Date.now()}${path.extname(req.file.originalname) || ".bin"}`);
+            await fs.promises.writeFile(inPath, req.file.buffer);
+          }
+
+          ffmpeg(inPath)
+            .output(outputPath)
+            .on("end", async () => {
+              try {
+                if (storage.isS3) {
+                  const key = s3KeyForProduct(req.user.id, ".mp4");
+                  const data = await fs.promises.readFile(outputPath);
+                  await storage.uploadPrivate({ key, contentType: "video/mp4", body: data });
+                  await fs.promises.unlink(outputPath).catch(() => {});
+                  await fs.promises.unlink(inPath).catch(() => {});
+                  await saveNewFilename(key);
+                } else {
+                  try { fs.unlinkSync(inputPath); } catch {}
+                  await saveNewFilename(outputFilename);
+                }
+              } catch (e) {
+                console.error("replace video finalize error:", e);
+                return res.status(500).json({ error: "Video processing failed" });
+              }
+            })
+            .on("error", (err) => {
+              console.error("FFmpeg error:", err?.message || err);
+              // Fallback: store original file so the user isn’t blocked
+              if (storage.isS3) {
+                (async () => {
+                  try {
+                    const key = s3KeyForProduct(req.user.id, path.extname(req.file.originalname) || ".bin");
+                    await storage.uploadPrivate({
+                      key,
+                      contentType: mimeType || "application/octet-stream",
+                      body: req.file.buffer,
+                    });
+                    await saveNewFilename(key);
+                  } catch (e2) {
+                    console.error("Fallback S3 upload failed:", e2);
+                    return res.status(500).json({ error: "Video conversion failed" });
+                  }
+                })();
+              } else {
+                const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
+                const finalPath = path.join(uploadDir, finalName);
+                fs.rename(inputPath, finalPath, (renameErr) => {
+                  if (renameErr) {
+                    console.error("Rename after ffmpeg fail:", renameErr);
+                    return res.status(500).json({ error: "Video conversion failed" });
+                  }
+                  saveNewFilename(finalName);
+                });
+              }
+            })
+            .run();
+        } else {
+          // non-video
+          if (storage.isS3) {
+            const key = s3KeyForProduct(req.user.id, path.extname(req.file.originalname) || ".bin");
+            try {
+              await storage.uploadPrivate({
+                key,
+                contentType: mimeType || "application/octet-stream",
+                body: req.file.buffer,
+              });
+              await saveNewFilename(key);
+            } catch (e) {
+              console.error("S3 upload (non-video replace) failed:", e);
+              return res.status(500).json({ error: "File upload failed" });
+            }
+          } else {
             const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
             const finalPath = path.join(uploadDir, finalName);
-            fs.rename(inputPath, finalPath, (renameErr) => {
-              if (renameErr) {
-                console.error("Rename after ffmpeg fail:", renameErr);
-                return res.status(500).json({ error: "Video conversion failed" });
+            fs.rename(inputPath, finalPath, (err) => {
+              if (err) {
+                console.error("Rename error:", err.message || err);
+                return res.status(500).json({ error: "File save failed" });
               }
-              saveNewFilename(finalName);
+              return finalizeCreate(finalName);
             });
-          })
-          .run();
-      } else {
-        // non-video (or ffmpeg disabled) → just save the file
-        const finalName = `file-${Date.now()}${path.extname(req.file.originalname)}`;
-        const finalPath = path.join(uploadDir, finalName);
-        fs.rename(inputPath, finalPath, (err) => {
-          if (err) {
-            console.error("File save error:", err);
-            return res.status(500).json({ error: "File save failed" });
           }
-          saveNewFilename(finalName);
-        });
-      }
-    } catch (e) {
-      console.error("Replace file unexpected error:", e);
-      return res.status(500).json({ error: "Unexpected error while replacing file" });
-    }
+        }
+      } catch (e) {
+        console.error("Replace file unexpected error:", e);
+        return res.status(500).json({ error: "Unexpected error while replacing file" });
+      } 
   }
 );
 

@@ -1,0 +1,47 @@
+// storage/index.js
+const assert = require('assert');
+
+const DRIVER = (process.env.STORAGE_DRIVER || 'local').toLowerCase();
+
+let driver;
+if (DRIVER === 's3') {
+  driver = require('./s3');
+} else {
+  driver = require('./local');
+}
+
+function required(name, when = true) {
+  if (!when) return;
+  const v = process.env[name];
+  assert(v && String(v).trim() !== '', `Missing required env: ${name}`);
+  return v;
+}
+
+// On startup, do light validation for S3 mode:
+if (DRIVER === 's3') {
+  // Keep your original env names
+  required('PUBLIC_BUCKET');
+  required('PRIVATE_BUCKET');
+  required('S3_REGION');
+  required('S3_ACCESS_KEY_ID');
+  required('S3_SECRET_ACCESS_KEY');
+  // S3_ENDPOINT is optional (AWS default). Lightsail often works fine without it,
+  // but you can set it to the exact HTTPS endpoint printed in your bucket page.
+}
+
+/**
+ * The driver (./s3 or ./local) should export, as applicable:
+ * - uploadPublic({ key, contentType, body }) -> { key, url? }
+ * - publicUrl(key) -> string      (for s3 driver; local may no-op)
+ * - keyFromPublicUrl(url) -> key  (optional, helpful for delete)
+ * - deletePublic(key)
+ * - uploadPrivate({ key, contentType, body }) -> { key }
+ * - getPrivateUrl(key, { expiresIn })
+ * - deletePrivate(key)
+ *
+ * Local driver can implement a compatible surface or simple no-ops where it makes sense.
+ */
+module.exports = {
+  ...driver,
+  isS3: DRIVER === 's3',
+};

@@ -10,6 +10,7 @@ const { requestCreate, requestDecision, requestDeliver } = require("../validator
 const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
 const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/notify");
 const { needsTranscode, transcodeToMp4 } = require("../utils/video");
+const storage = require("../storage");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -28,22 +29,6 @@ function normalizeStatus(row) {
 
 /* ---------- Upload setup (must be defined before routes use it) ---------- */
 
-// store attachments in the same uploads folder you already use
-const uploadDir = path.join(__dirname, "..", "public", "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-// Dedicated subfolder for creator-delivered/request media
-const uploadDirRequests = path.join(uploadDir, "requests");
-if (!fs.existsSync(uploadDirRequests)) fs.mkdirSync(uploadDirRequests, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "");
-    cb(null, `req-${Date.now()}${ext}`);
-  },
-});
-
 const allowed = new Set([
   "application/pdf",
   "application/epub+zip",
@@ -59,8 +44,8 @@ const allowed = new Set([
   "application/csv",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "audio/mpeg",       // mp3
-  "audio/mp3",        // some browsers use this
+  "audio/mpeg",
+  "audio/mp3",
   "audio/aac",
   "audio/m4a",
   "audio/x-m4a",
@@ -70,37 +55,29 @@ const allowed = new Set([
   "audio/webm",
 ]);
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 2500 * 1024 * 1024 }, // 2.5GB max
+const baseMulter = {
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2500 * 1024 * 1024 }, // 2.5GB
   fileFilter: (req, file, cb) => {
-    if (!allowed.has(file.mimetype)) {
-      return cb(new Error("Unsupported file type"));
-    }
+    if (!allowed.has(file.mimetype)) return cb(new Error("Unsupported file type"));
     cb(null, true);
   },
-});
+};
 
-// Multer instance for creator media: saves to /public/uploads/requests with random filenames
-const creatorStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDirRequests),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "");
-    const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString("hex");
-    cb(null, `${id}${ext}`);
-  },
-});
+// Buyers attach to request (private)
+const upload = multer(baseMulter);
 
-const uploadCreator = multer({
-  storage: creatorStorage,
-  limits: { fileSize: 2500 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!allowed.has(file.mimetype)) {
-      return cb(new Error("Unsupported file type"));
-    }
-    cb(null, true);
-  },
-});
+// Creator delivers/complete (also private)
+const uploadCreator = multer(baseMulter);
+
+// small helper to make S3 keys
+function newKey(prefix, original) {
+  const id =
+    (crypto.randomUUID && crypto.randomUUID()) ||
+    crypto.randomBytes(16).toString("hex");
+  const ext = path.extname(original || "");
+  return `${prefix}/${id}${ext}`;
+}
 
 /* --------------------------- Helper functions --------------------------- */
 
@@ -171,7 +148,16 @@ router.post(
     }
 
     // attachment path if provided (store only basename)
-    const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
+    let attachment_path = null;
+        if (req.file) {
+          const key = newKey("requests", req.file.originalname);
+          const uploaded = await storage.uploadPrivate({
+            key,
+            contentType: req.file.mimetype || "application/octet-stream",
+            body: req.file.buffer,
+          });
+          attachment_path = uploaded.key; // store S3 key in DB
+}
 
     try {
       // 1) validate that product_id is a request product of this creator
@@ -257,7 +243,16 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
     if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
     if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
 
-    const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
+    let attachment_path = null;
+      if (req.file) {
+        const key = newKey("requests", req.file.originalname);
+        const uploaded = await storage.uploadPrivate({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+          body: req.file.buffer,
+        });
+        attachment_path = uploaded.key;
+      }
 
     const { rows: existing } = await db.query(
       `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
@@ -455,30 +450,44 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-        let deliveredFile = path.basename(req.file.path); // default: original upload
+          const mime = req.file?.mimetype || "";
+          const isAudio = mime.startsWith("audio/");
+          let key;
 
-        // If it's not already mp4 (e.g. .mov) and needs transcoding, convert to mp4
-        const isAudio = req.file.mimetype && req.file.mimetype.startsWith("audio/");
-       if (!isAudio && needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
-          const base = path.parse(deliveredFile).name;                 // filename without extension
-          const mp4Name = `${base}.mp4`;
-          const inPath = req.file.path;                                // /public/uploads/requests/<rand>.<ext>
-          const outPath = path.join(uploadDirRequests, mp4Name);       // /public/uploads/requests/<rand>.mp4
+          // If it’s NOT audio and our utility says we should transcode, do it.
+          if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
+            // Write the incoming buffer to a temp file
+            const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
+            const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
+            fs.writeFileSync(inTmp, req.file.buffer);
 
-          await transcodeToMp4(inPath, outPath);
-          try { fs.unlinkSync(inPath); } catch {}                      // remove the original source after success
-          deliveredFile = mp4Name;
-        }
+            // Convert to MP4 (uses your utils/video.js)
+            await transcodeToMp4(inTmp, outTmp);
 
-const webPath = `/uploads/requests/${deliveredFile}`;
-const { rows: upd } = await db.query(
-  `UPDATE custom_requests
-      SET creator_attachment_path = $1,
-          status = 'delivered'
-    WHERE id = $2
-    RETURNING *`,
-  [webPath, requestId]
-);
+            // Upload the transcoded file to S3 under .mp4 key
+            const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, ""); // drop original ext
+            key = `${baseKey}.mp4`;
+
+            const outBuf = fs.readFileSync(outTmp);
+            await storage.uploadPrivate({
+              key,
+              contentType: "video/mp4",
+              body: outBuf,
+            });
+
+            // cleanup temp files
+            try { fs.unlinkSync(inTmp); } catch {}
+            try { fs.unlinkSync(outTmp); } catch {}
+          } else {
+            // Audio or no-transcode-needed → upload as-is
+            key = newKey("requests", req.file.originalname);
+            await storage.uploadPrivate({
+              key,
+              contentType: mime || "application/octet-stream",
+              body: req.file.buffer,
+            });
+          }
+
 
       res.json({ success: true, request: normalizeStatus(upd[0]) });
 
@@ -547,19 +556,41 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-      let newAttachment = null;
-          if (req.file) {
-            let fname = path.basename(req.file.path);
-             const isAudio = req.file.mimetype && req.file.mimetype.startsWith("audio/");
-             if (!isAudio && needsTranscode(req.file.mimetype, path.extname(req.file.originalname))) {
-              const base = path.parse(fname).name;
-              const mp4Name = `${base}.mp4`;
-              await transcodeToMp4(req.file.path, path.join(uploadDirRequests, mp4Name));
-              try { fs.unlinkSync(req.file.path); } catch {}
-              fname = mp4Name;
-            }
-            newAttachment = `/uploads/requests/${fname}`;
+        let newAttachment = null;
+        if (req.file) {
+          const mime = req.file?.mimetype || "";
+          const isAudio = mime.startsWith("audio/");
+
+          if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
+            const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
+            const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
+            fs.writeFileSync(inTmp, req.file.buffer);
+
+            await transcodeToMp4(inTmp, outTmp);
+
+            const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, "");
+            const key = `${baseKey}.mp4`;
+
+            const outBuf = fs.readFileSync(outTmp);
+            await storage.uploadPrivate({
+              key,
+              contentType: "video/mp4",
+              body: outBuf,
+            });
+
+            newAttachment = key;
+            try { fs.unlinkSync(inTmp); } catch {}
+            try { fs.unlinkSync(outTmp); } catch {}
+          } else {
+            const key = newKey("requests", req.file.originalname);
+            await storage.uploadPrivate({
+              key,
+              contentType: mime || "application/octet-stream",
+              body: req.file.buffer,
+            });
+            newAttachment = key;
           }
+        }
 
       let updatedRow;
       try {
@@ -668,17 +699,29 @@ router.get("/:id/download", requireAuth, async (req, res) => {
     if (!mediaPath) return res.status(404).json({ error: "No delivery file" });
 
     // Resolve absolute filesystem path
-    let fullPath;
-    if (mediaPath.startsWith("/uploads/")) {
-      const relative = mediaPath.replace(/^\/+/, ""); // strip leading slash
-      fullPath = path.join(__dirname, "..", "public", relative);
-    } else {
-      // legacy: stored as basename under uploads root
-      fullPath = path.join(uploadDir, mediaPath);
-    }
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: "File missing on disk" });
+          // Legacy local files still work:
+          if (mediaPath.startsWith("/uploads/")) {
+            const relative = mediaPath.replace(/^\/+/, ""); // strip leading slash
+            const fullPath = path.join(__dirname, "..", "public", relative);
+            try {
+              fs.accessSync(fullPath); // legacy safety
+              return res.download(fullPath, path.basename(mediaPath));
+            } catch {
+              return res.status(404).json({ error: "File missing on disk" });
+            }
+          }
 
-    return res.download(fullPath, path.basename(mediaPath));
+          // New S3 flow: mediaPath is an S3 key like "requests/abcd1234.mp3"
+          try {
+            const url = await storage.getPrivateUrl(mediaPath, {
+              expiresIn: Number(process.env.S3_PRESIGN_EXPIRES || 900),
+            });
+            // Either redirect to the signed URL (browser download), or send JSON { url }
+            return res.redirect(url);
+          } catch (e) {
+            console.error("presign error", e);
+            return res.status(500).json({ error: "Could not generate download URL" });
+          }
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Download failed" });
@@ -727,7 +770,16 @@ router.post(
       if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
       if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
 
-      const attachment_path = req.file ? `/uploads/${path.basename(req.file.path)}` : null;
+      let attachment_path = null;
+          if (req.file) {
+            const key = newKey("requests", req.file.originalname);
+            const uploaded = await storage.uploadPrivate({
+              key,
+              contentType: req.file.mimetype || "application/octet-stream",
+              body: req.file.buffer,
+            });
+            attachment_path = uploaded.key;
+          }
 
       // Upsert custom_request for (order_id, buyer_id)
       const existing = await db.query(

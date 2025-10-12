@@ -7,6 +7,9 @@ const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
 
+// NEW: generic storage layer (local or S3 depending on env)
+const storage = require("../storage");
+
 const router = express.Router();
 
 /* ---------------------- file storage setup ---------------------- */
@@ -14,25 +17,46 @@ const uploadsRoot = path.join(__dirname, "..", "public", "uploads");
 const postUploadsDir = path.join(uploadsRoot, "posts");
 if (!fs.existsSync(postUploadsDir)) fs.mkdirSync(postUploadsDir, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, postUploadsDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "").slice(0, 10); // prevent very long ext
-    const name = crypto.randomBytes(16).toString("hex") + ext;
-    cb(null, name);
-  },
-});
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB cap for posts
+// In S3 mode we read file into memory and push to S3; in local mode we keep your disk storage
+let upload;
+if (storage.isS3) {
+  upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB cap for posts
+  });
+} else {
+    const diskStorage = multer.diskStorage({
+      destination: (req, file, cb) => cb(null, postUploadsDir),
+      filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname || "").slice(0, 10); // prevent very long ext
+        const name = crypto.randomBytes(16).toString("hex") + ext;
+        cb(null, name);
+      },
+    });
+    upload = multer({ storage: diskStorage, limits: { fileSize: 50 * 1024 * 1024 } });
+}
 
 function buildPublicUrl(filename) {
-  // served by express.static on /public
+  // served by express.static on /public (local-only)
   return `/uploads/posts/${filename}`;
+}
+
+// Helper to generate an S3 key for posts
+function newKeyForPost(originalName) {
+  const id =
+    (crypto.randomUUID && crypto.randomUUID()) ||
+    crypto.randomBytes(16).toString("hex");
+  const ext = path.extname(originalName || "");
+  return `posts/${id}${ext}`;
 }
 
 /**
  * POST /api/posts
  * Accepts multipart/form-data or JSON.
  * Fields: title, body, product_id, (optional media file under field name 'media')
+ *
+ * NOTE: In S3 mode we upload post media to the **public bucket** so existing
+ * frontend `<img src={media_path}>` keeps working without presigned URLs.
  */
 router.post("/", requireAuth, requireCreator, upload.single("media"), async (req, res) => {
   const creatorId = req.user.id;
@@ -45,7 +69,20 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
   }
 
   if (req.file) {
-    media_path = buildPublicUrl(req.file.filename);
+    if (storage.isS3) {
+      // Upload to PUBLIC bucket (simple to consume from the frontend)
+      const key = newKeyForPost(req.file.originalname);
+      const uploaded = await storage.uploadPublic({
+        key,
+        contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.buffer,
+      });
+      // Prefer a full URL if driver provides it; otherwise build from key
+      media_path = (storage.publicUrl && storage.publicUrl(uploaded.key)) || uploaded.url || uploaded.key;
+    } else {
+      // Local: keep your original disk behavior
+      media_path = buildPublicUrl(req.file.filename);
+    }
   } else if (req.body.media_path) {
     // allow direct media_path if already uploaded elsewhere
     media_path = req.body.media_path;
@@ -120,17 +157,48 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     }
 
     let media_path = existingRows[0].media_path;
-    let oldFilenameToDelete = null;
+    let oldLocalFilenameToDelete = null;
+    let oldS3KeyToDelete = null;
 
+    // If replacing or removing, mark old media for deletion
+    const isRemoving = media_remove === "1" || media_remove === "true";
+    const isReplacing = !!req.file;
+
+    if ((isReplacing || isRemoving) && media_path) {
+      if (String(media_path).startsWith("/uploads/posts/")) {
+        // legacy local
+        oldLocalFilenameToDelete = media_path.replace("/uploads/posts/", "");
+      } else if (storage.isS3) {
+        // S3: media_path might be a full URL or a key
+        if (storage.keyFromPublicUrl) {
+          oldS3KeyToDelete = storage.keyFromPublicUrl(media_path);
+        } else {
+          try {
+            // crude fallback: take URL path after bucket host
+            const u = new URL(media_path);
+            oldS3KeyToDelete = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+          } catch {
+            // or assume it was already a key
+            oldS3KeyToDelete = media_path;
+          }
+        }
+      }
+    }
+
+    // Apply changes for new media value
     if (req.file) {
-      if (media_path && media_path.startsWith("/uploads/posts/")) {
-        oldFilenameToDelete = media_path.replace("/uploads/posts/", "");
+      if (storage.isS3) {
+        const key = newKeyForPost(req.file.originalname);
+        const uploaded = await storage.uploadPublic({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+          body: req.file.buffer,
+        });
+        media_path = (storage.publicUrl && storage.publicUrl(uploaded.key)) || uploaded.url || uploaded.key;
+      } else {
+        media_path = buildPublicUrl(req.file.filename);
       }
-      media_path = buildPublicUrl(req.file.filename);
-    } else if (media_remove === "1" || media_remove === "true") {
-      if (media_path && media_path.startsWith("/uploads/posts/")) {
-        oldFilenameToDelete = media_path.replace("/uploads/posts/", "");
-      }
+    } else if (isRemoving) {
       media_path = null;
     }
 
@@ -145,7 +213,7 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       sets.push(`body = $${i++}`);
       vals.push(body || null);
     }
-    if (req.file || media_remove === "1" || media_remove === "true") {
+    if (isReplacing || isRemoving) {
       sets.push(`media_path = $${i++}`);
       vals.push(media_path);
     }
@@ -158,9 +226,17 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       vals
     );
 
-    if (oldFilenameToDelete) {
-      const oldPath = path.join(postUploadsDir, oldFilenameToDelete);
+    // Best-effort cleanup after DB update
+    if (oldLocalFilenameToDelete) {
+      const oldPath = path.join(postUploadsDir, oldLocalFilenameToDelete);
       fs.existsSync(oldPath) && fs.unlink(oldPath, () => {});
+    }
+    if (oldS3KeyToDelete) {
+      try {
+        await storage.deletePublic(oldS3KeyToDelete);
+      } catch (e) {
+        console.warn("Warning: failed to delete old S3 object", oldS3KeyToDelete, e?.message || e);
+      }
     }
 
     return res.json({ post: updated.rows[0] });
@@ -319,7 +395,9 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
 
 /**
  * DELETE /api/posts/:id
- * Remove a post owned by the creator. Also deletes media file if stored locally under /uploads/posts.
+ * Remove a post owned by the creator.
+ * - If media_path is a legacy local file (/uploads/posts/...), delete the file from disk.
+ * - If media_path is an S3/Lightsail public URL or key, delete the object via storage.
  */
 router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
   const creatorId = req.user.id;
@@ -334,13 +412,42 @@ router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
     if (String(existing[0].creator_id) !== String(creatorId)) {
       return res.status(403).json({ error: "Not your post" });
     }
+
     const media_path = existing[0].media_path;
+
+    // Delete DB row first (idempotent; storage cleanup is best-effort)
     await db.query(`DELETE FROM posts WHERE id=$1`, [postId]);
-    if (media_path && media_path.startsWith("/uploads/posts/")) {
-      const filename = media_path.replace("/uploads/posts/", "");
-      const fp = path.join(postUploadsDir, filename);
-      if (fs.existsSync(fp)) fs.unlink(fp, () => {});
+
+    // Clean up storage:
+    if (media_path) {
+      if (String(media_path).startsWith("/uploads/posts/")) {
+        // Legacy local file
+        const filename = media_path.replace("/uploads/posts/", "");
+        const fp = path.join(postUploadsDir, filename);
+        fs.existsSync(fp) && fs.unlink(fp, () => {});
+      } else if (storage.isS3) {
+        // S3/Lightsail object in public bucket
+        let key = null;
+        if (storage.keyFromPublicUrl) {
+          key = storage.keyFromPublicUrl(media_path);
+        } else {
+          try {
+            const u = new URL(media_path);
+            key = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+          } catch {
+            key = media_path; // assume it's already a key
+          }
+        }
+        if (key) {
+          try {
+            await storage.deletePublic(key);
+          } catch (e) {
+            console.warn("Warning: failed to delete S3 object", key, e?.message || e);
+          }
+        }
+      }
     }
+
     return res.status(204).end();
   } catch (e) {
     console.error("delete post error:", e);

@@ -84,8 +84,8 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/stripe-connect", stripeConnectRoutes);
 app.use("/api/stripe-checkout", stripeCheckoutRoutes);
-app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
 app.use("/api/checkout", checkoutRoutes);
+app.use("/uploads", express.static(path.join(__dirname, "public", "uploads")));
 
 // Mount /api/me BEFORE notFound/errorHandler
 app.use('/api/me', meRoutes);                               // <-- move up
