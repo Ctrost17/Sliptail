@@ -150,6 +150,11 @@ export default function SignupPage() {
           Log in
         </Link>
       </p>
+       <p className="mt-2 text-xs text-neutral-600">
+    By signing up, you are creating a Sliptail account and agree to Sliptail&apos;s{" "}
+    <Link href="/terms" className="underline">Terms</Link> and{" "}
+    <Link href="/privacy" className="underline">Privacy Policy</Link>.
+  </p>
     </main>
   );
 }

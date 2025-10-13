@@ -152,6 +152,12 @@ export default function LoginPage() {
         </Link>
       </div>
 
+             <p className="mt-2 text-xs text-neutral-600">
+              By logging in, you are logging into a Sliptail account and agree to Sliptail&apos;s{" "}
+              <Link href="/terms" className="underline">Terms</Link> and{" "}
+              <Link href="/privacy" className="underline">Privacy Policy</Link>.
+            </p>
+
       {/* Verify modal */}
       {verifyOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">

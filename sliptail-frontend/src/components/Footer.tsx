@@ -12,15 +12,21 @@ export default function Footer() {
         <div className="flex gap-8">
           <Link
             href="/support"
-            className="text-xl font-medium text-white transition-colors"
+            className="text-l font-medium text-white transition-colors"
           >
             Support
           </Link>
           <Link
             href="/about"
-            className="text-xl font-medium text-white transition-colors"
+            className="text-l font-medium text-white transition-colors"
           >
             About
+          </Link>
+          <Link
+            href="/terms"
+            className="text-l font-medium text-white transition-colors"
+          >
+            Terms of Use
           </Link>
         </div>
 

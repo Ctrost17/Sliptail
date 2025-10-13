@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  --background: hwb(165 2% 1%);
+  --background: lab(100% 0.01 -0.01);
   --foreground: #171717;
+ --footer-edge: #262626; /* Tailwind neutral-800 */
 }
 
 :root {
@@ -26,9 +27,18 @@
 
 html {
   /* color shown on iOS when you overscroll past the edges */
-  background: hsl(156, 100%, 61%);   /* pick any edge/bounce color you like */
-  overflow-x: hidden;    /* prevent sideways white gutter on mobile */
+ /* Overscroll “bounce” colors (iOS Safari uses html background) */
+  /* Top pull shows white; bottom pull shows footer color */
+  background: linear-gradient(
+    to bottom,
+    #ffffff 0%,
+    #ffffff calc(100% - 56px),
+    var(--footer-edge) 100%
+  );
+  overflow-x: hidden; /* prevent sideways gutter on mobile */
   height: 100%;
+ /* (optional) keep scroll chaining tame on modern browsers */
+  overscroll-behavior-x: none;
 }
 
 body {
