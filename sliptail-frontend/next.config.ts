@@ -31,11 +31,20 @@ const nextConfig: NextConfig = {
       { protocol: "http", hostname: "localhost", port: "5000" },
       { protocol: "http", hostname: "127.0.0.1", port: "5000" },
 
-      // ⬇️ Add your production host so /_next/image can fetch /uploads/*
+      // Your site (serving local /uploads/* in dev/prod if used)
       { protocol: "https", hostname: "sliptail.com", pathname: "/uploads/**" },
-      { protocol: "https", hostname: "www.sliptail.com", pathname: "/uploads/**" }, // optional, if www might be used
+      { protocol: "https", hostname: "www.sliptail.com", pathname: "/uploads/**" },
+
+      // ✅ Allow S3 public bucket (so /_next/image can fetch it)
+      {
+        protocol: "https",
+        hostname: "sliptail-public-01.s3.us-east-2.amazonaws.com",
+        pathname: "/**",
+      },
+      // (optional) if you later move to a CloudFront domain, add it here too
+      // { protocol: "https", hostname: "your-cdn.example.com", pathname: "/**" },
     ],
-    // or: domains: ["images.unsplash.com", "i.pravatar.cc", "picsum.photos", "sliptail.com", "www.sliptail.com"]
+    formats: ["image/avif", "image/webp"],
   },
 };
 
