@@ -1,120 +1,97 @@
-// storage.js (CommonJS)
+// storage.js (CommonJS) — standard S3 version
 const fs = require("fs");
 const path = require("path");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 
 const DRIVER = (process.env.STORAGE_DRIVER || "local").toLowerCase();
 const isS3 = DRIVER === "s3";
 
-// -------- Local (disk) impl: writes under /public/uploads --------
+/* ---------------- Local impl ---------------- */
 const localRoot = path.join(__dirname, "public", "uploads");
 function ensureDir(p) { if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true }); }
-
 async function localWritePublic({ key, body }) {
-  // key like "creators/123/profile.jpg" or "products/123/file.mp4"
   const abs = path.join(localRoot, key);
   ensureDir(path.dirname(abs));
   await fs.promises.writeFile(abs, body);
-  // public path served by Express static: /uploads/<key>
   return { key, url: `/uploads/${key.replace(/\\/g, "/")}` };
 }
 async function localWritePrivate({ key, body }) {
-  // store under uploads/private to keep paths simple in dev;
   const abs = path.join(localRoot, "private", key);
   ensureDir(path.dirname(abs));
   await fs.promises.writeFile(abs, body);
   return { key, url: null };
 }
-function localPublicUrl(key) {
-  return `/uploads/${String(key).replace(/\\/g, "/")}`;
-}
+function localPublicUrl(key) { return `/uploads/${String(key).replace(/\\/g, "/")}`; }
 
-// -------- S3 / Lightsail Object Storage impl --------
-let s3 = null;
-let PutObjectCommand = null;
+/* ---------------- S3 impl ---------------- */
+const S3_REGION = process.env.S3_REGION || "us-east-2";
 
-if (isS3) {
-  const { S3Client, PutObjectCommand: POC } = require("@aws-sdk/client-s3");
-  PutObjectCommand = POC;
+// Buckets
+const S3_PUBLIC_BUCKET  = process.env.S3_PUBLIC_BUCKET  || process.env.PUBLIC_BUCKET  || "";
+const S3_PRIVATE_BUCKET = process.env.S3_PRIVATE_BUCKET || process.env.PRIVATE_BUCKET || "";
 
-  s3 = new S3Client({
-    region: process.env.S3_REGION || "us-east-2",
-    endpoint: process.env.S3_ENDPOINT || undefined,          // Lightsail: set this
-    forcePathStyle: String(process.env.S3_FORCE_PATH_STYLE || "true") === "true", // Lightsail: true
-    credentials: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
-      ? {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        }
-      : undefined,
-  });
-}
+// Optional CDN/base for public URLs
+const S3_PUBLIC_URL_BASE =
+  process.env.S3_PUBLIC_URL_BASE ||
+  process.env.S3_PUBLIC_BASE_URL ||
+  process.env.S3_PUBLIC_CDN || "";
 
-const PUBLIC_BUCKET  = process.env.S3_PUBLIC_BUCKET  || "";
-const PRIVATE_BUCKET = process.env.S3_PRIVATE_BUCKET || "";
+// Use separate creds (recommended). If you only made one IAM user, set both pairs the same.
+const PUBLIC_CREDS = (process.env.S3_PUBLIC_ACCESS_KEY_ID && process.env.S3_PUBLIC_SECRET_ACCESS_KEY)
+  ? { accessKeyId: process.env.S3_PUBLIC_ACCESS_KEY_ID, secretAccessKey: process.env.S3_PUBLIC_SECRET_ACCESS_KEY }
+  : undefined;
 
-// Build a public URL for a key. Prefer a CDN/base override if provided.
+const PRIVATE_CREDS = (process.env.S3_PRIVATE_ACCESS_KEY_ID && process.env.S3_PRIVATE_SECRET_ACCESS_KEY)
+  ? { accessKeyId: process.env.S3_PRIVATE_ACCESS_KEY_ID, secretAccessKey: process.env.S3_PRIVATE_SECRET_ACCESS_KEY }
+  : PUBLIC_CREDS; // fall back to public creds if you intentionally use one user
+
+// IMPORTANT: No endpoint, no forcePathStyle for standard S3
+const s3Public  = isS3 ? new S3Client({ region: S3_REGION,  credentials: PUBLIC_CREDS  }) : null;
+const s3Private = isS3 ? new S3Client({ region: S3_REGION,  credentials: PRIVATE_CREDS }) : null;
+
 function s3PublicUrl(key) {
-  // If you set a CDN/base like https://cdn.example.com, we’ll use that.
-  const base =
-    process.env.S3_PUBLIC_BASE_URL ||
-    process.env.S3_PUBLIC_CDN ||
-    // fallback best-effort (works with path-style endpoints too)
-    (process.env.S3_ENDPOINT
-      ? `${process.env.S3_ENDPOINT.replace(/\/+$/, "")}/${PUBLIC_BUCKET}`
-      : `https://${PUBLIC_BUCKET}.s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com`);
-  return `${base}/${String(key).replace(/^\/+/, "")}`;
+  if (S3_PUBLIC_URL_BASE) {
+    return `${S3_PUBLIC_URL_BASE.replace(/\/+$/, "")}/${String(key).replace(/^\/+/, "")}`;
+  }
+  // Standard virtual-hosted style URL
+  return `https://${S3_PUBLIC_BUCKET}.s3.${S3_REGION}.amazonaws.com/${String(key).replace(/^\/+/, "")}`;
 }
 
-async function s3Put({ bucket, key, body, contentType, acl }) {
+async function s3Put(s3, { bucket, key, body, contentType }) {
   if (!s3) throw new Error("S3 client not initialized");
   const cmd = new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     Body: body,
     ContentType: contentType || "application/octet-stream",
-    ...(acl ? { ACL: acl } : {}), // For Lightsail public objects use "public-read"
+    // NOTE: No ACL here. Use bucket policy to allow public GETs.
   });
   await s3.send(cmd);
   return { key };
 }
 
-// ------------- Unified exported surface -------------
+/* ------------- Unified API ------------- */
 module.exports = {
   isS3,
 
-  /**
-   * Upload a file intended to be PRIVATE (downloads via signed route).
-   * In S3: uploads to PRIVATE_BUCKET with no public ACL.
-   * In local: writes under /public/uploads/private/<key>.
-   */
   async uploadPrivate({ key, body, contentType }) {
     if (isS3) {
-      if (!PRIVATE_BUCKET) throw new Error("S3_PRIVATE_BUCKET env is required");
-      await s3Put({ bucket: PRIVATE_BUCKET, key, body, contentType });
-      return { key };
+      if (!S3_PRIVATE_BUCKET) throw new Error("S3_PRIVATE_BUCKET env is required");
+      await s3Put(s3Private, { bucket: S3_PRIVATE_BUCKET, key, body, contentType });
+      return { key }; // private; fetch via presigned route elsewhere
     }
     return localWritePrivate({ key, body });
   },
 
-  /**
-   * Upload a file intended to be PUBLICLY VIEWABLE (images, avatars, etc).
-   * In S3: uploads to PUBLIC_BUCKET with ACL public-read (Lightsail allows this).
-   * In local: writes to /public/uploads/<key> and returns a public path.
-   */
   async uploadPublic({ key, body, contentType }) {
     if (isS3) {
-      if (!PUBLIC_BUCKET) throw new Error("S3_PUBLIC_BUCKET env is required");
-      await s3Put({ bucket: PUBLIC_BUCKET, key, body, contentType, acl: "public-read" });
-      const url = s3PublicUrl(key);
-      return { key, url };
+      if (!S3_PUBLIC_BUCKET) throw new Error("S3_PUBLIC_BUCKET env is required");
+      await s3Put(s3Public, { bucket: S3_PUBLIC_BUCKET, key, body, contentType });
+      return { key, url: s3PublicUrl(key) };
     }
     return localWritePublic({ key, body });
   },
 
-  /**
-   * Given a key (usually from uploadPublic), return a public URL.
-   * Local: returns /uploads/<key>.  S3: builds a URL (or CDN/base if provided).
-   */
   publicUrl(key) {
     return isS3 ? s3PublicUrl(key) : localPublicUrl(key);
   },
