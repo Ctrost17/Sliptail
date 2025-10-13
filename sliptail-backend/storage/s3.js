@@ -1,136 +1,149 @@
 // storage/s3.js
-const path = require('path');
-const crypto = require('crypto');
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const mime = require('mime-types');
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const mime = require("mime-types");
+const {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  GetObjectCommand,
+} = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
-const REGION = process.env.S3_REGION;
-const ENDPOINT = process.env.S3_ENDPOINT; // optional
-const FORCE_PATH_STYLE = String(process.env.S3_FORCE_PATH_STYLE || '').toLowerCase() === 'true';
-const ACCESS_KEY_ID = process.env.S3_ACCESS_KEY_ID;
-const SECRET_ACCESS_KEY = process.env.S3_SECRET_ACCESS_KEY;
+/* ---------- ENV ---------- */
+const REGION = process.env.S3_REGION || "us-east-2";
+// For standard S3 leave ENDPOINT undefined and path-style false
+const ENDPOINT = process.env.S3_ENDPOINT || undefined;
+const FORCE_PATH_STYLE =
+  String(process.env.S3_FORCE_PATH_STYLE || "").toLowerCase() === "true";
 
-const PUBLIC_BUCKET = process.env.PUBLIC_BUCKET;
-const PRIVATE_BUCKET = process.env.PRIVATE_BUCKET;
+// Buckets
+const PUBLIC_BUCKET = process.env.S3_PUBLIC_BUCKET;   // e.g. sliptail-public-01
+const PRIVATE_BUCKET = process.env.S3_PRIVATE_BUCKET; // e.g. sliptail-private-01
 
-const DEFAULT_PRESIGN = Number(process.env.S3_PRESIGN_EXPIRES || 900); // seconds
+// Optional: override the public URL base (useful for CDNs)
+const PUBLIC_URL_BASE = process.env.S3_PUBLIC_URL_BASE || "";
 
-const s3 = new S3Client({
-  region: REGION,
-  endpoint: ENDPOINT || undefined,
-  forcePathStyle: FORCE_PATH_STYLE || !!ENDPOINT, // path-style is safe for Lightsail
-  credentials: {
-    accessKeyId: ACCESS_KEY_ID,
-    secretAccessKey: SECRET_ACCESS_KEY,
-  },
-});
+// Credentials (separate users/keys is good practice)
+const PUB_KEY    = process.env.S3_PUBLIC_ACCESS_KEY_ID || "";
+const PUB_SECRET = process.env.S3_PUBLIC_SECRET_ACCESS_KEY || "";
+const PRI_KEY    = process.env.S3_PRIVATE_ACCESS_KEY_ID || "";
+const PRI_SECRET = process.env.S3_PRIVATE_SECRET_ACCESS_KEY || "";
 
+// Presign expiry (seconds)
+const DEFAULT_PRESIGN = Math.max(
+  30,
+  Number(process.env.S3_PRESIGN_EXPIRES || 900)
+);
+
+/* ---------- Clients ---------- */
+function makeClient({ key, secret }) {
+  const base = {
+    region: REGION,
+    credentials: key && secret ? { accessKeyId: key, secretAccessKey: secret } : undefined,
+  };
+  // Only set endpoint/path-style if you *really* need it (e.g., Lightsail MinIO).
+  if (ENDPOINT) {
+    base.endpoint = ENDPOINT;
+    base.forcePathStyle = FORCE_PATH_STYLE || true;
+  }
+  return new S3Client(base);
+}
+
+const publicS3  = makeClient({ key: PUB_KEY, secret: PUB_SECRET });
+const privateS3 = makeClient({ key: PRI_KEY, secret: PRI_SECRET });
+
+/* ---------- Helpers ---------- */
 function todayPrefix() {
   const d = new Date();
   const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}/${m}/${day}`;
 }
 
-function slugify(name = '') {
-  return name.toLowerCase().replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').slice(0, 120);
+function slugify(name = "") {
+  return name
+    .toLowerCase()
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 120);
 }
 
-function uniqueKey(original = 'file') {
-  const base = slugify(original) || 'file';
-  const id = crypto.randomBytes(6).toString('hex');
+function uniqueKey(original = "file") {
+  const base = slugify(original) || "file";
+  const id = crypto.randomBytes(6).toString("hex");
   const ext = path.extname(base);
   const stem = ext ? base.slice(0, -ext.length) : base;
   return `${todayPrefix()}/${stem}-${id}${ext}`;
 }
 
-async function putObject({ bucket, key, body, contentType }) {
-  await s3.send(new PutObjectCommand({
-    Bucket: bucket,
-    Key: key,
-    Body: body,
-    ContentType: contentType || 'application/octet-stream',
-    // For public objects, we rely on a BUCKET POLICY that grants public read,
-    // instead of per-object ACLs (keeps ACLs simple/off).
-  }));
+async function putObject({ s3, bucket, key, body, contentType }) {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType || "application/octet-stream",
+    })
+  );
 }
 
-async function uploadCommon(bucket, file, opts = {}) {
-  const key = opts.key || uniqueKey(file?.originalname || 'upload');
+async function uploadCommon(s3, bucket, file, opts = {}) {
+  const key = opts.key || uniqueKey(file?.originalname || "upload");
   const contentType =
-    file?.mimetype ||
-    mime.lookup(file?.originalname || '') ||
-    'application/octet-stream';
+    file?.mimetype || mime.lookup(file?.originalname || "") || "application/octet-stream";
 
-  // accept {buffer} or {path}
   let body;
-  if (file?.buffer) {
-    body = file.buffer;
-  } else if (file?.path) {
-    // read stream to avoid buffering large files in memory
-    body = require('fs').createReadStream(file.path);
-  } else {
-    throw new Error('upload: provide {buffer} or {path}');
-  }
+  if (file?.buffer) body = file.buffer;
+  else if (file?.path) body = fs.createReadStream(file.path);
+  else throw new Error("upload: provide {buffer} or {path}");
 
-  await putObject({ bucket, key, body, contentType });
-
+  await putObject({ s3, bucket, key, body, contentType });
   return { key, bucket };
 }
 
-// ---------- Public ----------
+/* ---------- Public ---------- */
 async function uploadPublic(file, opts = {}) {
-  const { key, bucket } = await uploadCommon(PUBLIC_BUCKET, file, opts);
+  if (!PUBLIC_BUCKET) throw new Error("S3_PUBLIC_BUCKET missing");
+  const { key, bucket } = await uploadCommon(publicS3, PUBLIC_BUCKET, file, opts);
   return { key, bucket, url: getPublicUrl(key) };
 }
 
 function getPublicUrl(key) {
-  // Use virtual-hosted–style URL if available
-  // If you set S3_ENDPOINT for Lightsail, we synthesize a URL from it.
-  // Otherwise, fall back to standard S3 pattern.
-  const endpoint = (process.env.S3_PUBLIC_BASE || process.env.S3_ENDPOINT || '').replace(/\/$/, '');
-  if (endpoint && endpoint.includes('http')) {
-    // If endpoint is like https://s3.us-east-2.amazonaws.com we can build: https://PUBLIC_BUCKET.s3.us-east-2.amazonaws.com/key
-    // But Lightsail/S3-compatible endpoints often also work with path-style; safer universal form:
-    return `${endpoint}/${PUBLIC_BUCKET}/${encodeURI(key)}`;
+  if (PUBLIC_URL_BASE) {
+    return `${PUBLIC_URL_BASE.replace(/\/$/, "")}/${encodeURI(key)}`;
   }
-  // AWS default virtual-hosted–style
+  // Standard S3 virtual-hosted style
   return `https://${PUBLIC_BUCKET}.s3.${REGION}.amazonaws.com/${encodeURI(key)}`;
 }
 
-// ---------- Private ----------
+/* ---------- Private ---------- */
 async function uploadPrivate(file, opts = {}) {
-  const { key, bucket } = await uploadCommon(PRIVATE_BUCKET, file, opts);
+  if (!PRIVATE_BUCKET) throw new Error("S3_PRIVATE_BUCKET missing");
+  const { key, bucket } = await uploadCommon(privateS3, PRIVATE_BUCKET, file, opts);
   const url = await getPrivateUrl(key, { expiresIn: opts.expiresIn });
   return { key, bucket, url };
 }
 
 async function getPrivateUrl(key, opts = {}) {
   const expiresIn = Math.max(30, Number(opts.expiresIn || DEFAULT_PRESIGN));
-  const cmd = new PutObjectCommand({}); // just to reuse type; we'll actually sign a GET
-  // Note: For GET you must use a GetObjectCommand (typo safety):
-  const { GetObjectCommand } = require('@aws-sdk/client-s3');
-  const command = new GetObjectCommand({
-    Bucket: PRIVATE_BUCKET,
-    Key: key,
-  });
-  const url = await getSignedUrl(s3, command, { expiresIn });
-  return url;
+  const command = new GetObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key });
+  return getSignedUrl(privateS3, command, { expiresIn });
 }
 
-// ---------- Delete ----------
+/* ---------- Delete ---------- */
 async function deletePublic(key) {
-  await s3.send(new DeleteObjectCommand({ Bucket: PUBLIC_BUCKET, Key: key }));
+  await publicS3.send(new DeleteObjectCommand({ Bucket: PUBLIC_BUCKET, Key: key }));
 }
 
 async function deletePrivate(key) {
-  await s3.send(new DeleteObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key }));
+  await privateS3.send(new DeleteObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key }));
 }
 
 module.exports = {
-  driver: 's3',
+  driver: "s3",
   uploadPublic,
   uploadPrivate,
   getPublicUrl,
