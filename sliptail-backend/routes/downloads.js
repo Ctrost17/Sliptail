@@ -1,17 +1,36 @@
 // routes/downloads.js
 const express = require("express");
-const path = require("path");
-const fs = require("fs");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
 
+const {
+  S3Client,
+  GetObjectCommand,
+} = require("@aws-sdk/client-s3");
+
 const router = express.Router();
-const uploadDir = path.join(__dirname, "..", "public", "uploads");
 
-// --- helpers -------------------------------------------------------------
+/* ---------- S3 (private bucket) ---------- */
+const REGION = process.env.S3_REGION || "us-east-2";
+const PRIVATE_BUCKET = process.env.S3_PRIVATE_BUCKET;
+if (!PRIVATE_BUCKET) {
+  throw new Error("S3_PRIVATE_BUCKET is required");
+}
 
+const s3 = new S3Client({
+  region: REGION,
+  credentials: (process.env.S3_PRIVATE_ACCESS_KEY_ID && process.env.S3_PRIVATE_SECRET_ACCESS_KEY)
+    ? {
+        accessKeyId: process.env.S3_PRIVATE_ACCESS_KEY_ID,
+        secretAccessKey: process.env.S3_PRIVATE_SECRET_ACCESS_KEY,
+      }
+    : undefined,
+});
+
+/* ---------- helpers ---------- */
+
+// Returns { orderId, key, filename } or { error, code }
 async function getPurchasedFile(userId, productId) {
-  // must be a 'purchase' product & the user must have a PAID order for it
   const { rows } = await db.query(
     `SELECT p.filename, p.product_type, o.id AS order_id
        FROM products p
@@ -23,18 +42,19 @@ async function getPurchasedFile(userId, productId) {
       LIMIT 1`,
     [productId, userId]
   );
+
   const row = rows[0];
   if (!row) return { error: "No access or not a purchase product", code: 403 };
-  if (!row.filename) return { error: "File not found on server", code: 404 };
+  if (!row.filename) return { error: "File not found", code: 404 };
 
-  const fullPath = path.join(uploadDir, row.filename);
-  if (!fs.existsSync(fullPath)) return { error: "File missing on disk", code: 404 };
+  // In S3 mode, p.filename is the S3 KEY (e.g. "products/123/file.zip")
+  const key = row.filename;
+  const filename = key.split("/").pop() || "download";
 
-  return { orderId: row.order_id, filename: row.filename, fullPath };
+  return { orderId: row.order_id, key, filename };
 }
 
 async function recordDownload(orderId, productId) {
-  // Keeps a counter & timestamp per (order, product). Safe to no-op if table absent.
   try {
     await db.query(
       `INSERT INTO download_access(order_id, product_id, downloads, last_download_at)
@@ -45,46 +65,107 @@ async function recordDownload(orderId, productId) {
       [orderId, productId]
     );
   } catch (e) {
-    // don't fail the response just because analytics failed
     console.warn("download_access update skipped:", e.message);
   }
 }
 
-// --- routes: purchases ---------------------------------------------------
+// Stream an S3 object to the response.
+// If "asAttachment" true, forces save dialog.
+async function streamS3Object({ key, res, asAttachment, filename, rangeHeader }) {
+  const params = {
+    Bucket: PRIVATE_BUCKET,
+    Key: key,
+    ...(rangeHeader ? { Range: rangeHeader } : {}),
+  };
 
-// 👀 View inline (PDF/image/video displayed in browser)
+  const cmd = new GetObjectCommand(params);
+  const data = await s3.send(cmd);
+
+  // Content headers from S3
+  const contentType = data.ContentType || "application/octet-stream";
+  const contentLength = data.ContentLength;
+  const contentRange = data.ContentRange; // present when Range used
+  const acceptRanges = data.AcceptRanges; // usually "bytes"
+
+  if (asAttachment) {
+    // force browser download (no navigation)
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  } else {
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+  }
+
+  res.setHeader("Content-Type", contentType);
+  if (acceptRanges) res.setHeader("Accept-Ranges", acceptRanges);
+  if (contentRange) {
+    res.status(206);
+    res.setHeader("Content-Range", contentRange);
+  } else if (typeof contentLength === "number") {
+    res.setHeader("Content-Length", String(contentLength));
+  }
+
+  // Stream the S3 body to the client
+  data.Body.on("error", (e) => {
+    console.error("S3 stream error:", e);
+    if (!res.headersSent) res.status(500);
+    res.end();
+  });
+  data.Body.pipe(res);
+}
+
+/* ---------- routes: purchases ---------- */
+
+// View inline (PDF/image/video). Still streamed; set asAttachment=false.
 router.get("/view/:productId", requireAuth, async (req, res) => {
-  const productId = parseInt(req.params.productId, 10);
+  const productId = Number(req.params.productId);
   const userId = req.user.id;
 
-  const result = await getPurchasedFile(userId, productId);
-  if (result.error) return res.status(result.code).json({ error: result.error });
+  try {
+    const result = await getPurchasedFile(userId, productId);
+    if (result.error) return res.status(result.code).json({ error: result.error });
 
-  await recordDownload(result.orderId, productId);
+    await recordDownload(result.orderId, productId);
 
-  // Let the browser try to display it inline
-  res.setHeader("Content-Disposition", `inline; filename="${result.filename}"`);
-  return res.sendFile(result.fullPath);
+    const range = req.headers.range; // support seeking
+    await streamS3Object({
+      key: result.key,
+      res,
+      asAttachment: false,
+      filename: result.filename,
+      rangeHeader: range,
+    });
+  } catch (e) {
+    console.error("download view error:", e);
+    res.status(500).json({ error: "Download failed" });
+  }
 });
 
-// ⬇️ Download as attachment (forces “Save As…”)
+// Download as attachment (Save As…)
 router.get("/file/:productId", requireAuth, async (req, res) => {
-  const productId = parseInt(req.params.productId, 10);
+  const productId = Number(req.params.productId);
   const userId = req.user.id;
 
-  const result = await getPurchasedFile(userId, productId);
-  if (result.error) return res.status(result.code).json({ error: result.error });
+  try {
+    const result = await getPurchasedFile(userId, productId);
+    if (result.error) return res.status(result.code).json({ error: result.error });
 
-  await recordDownload(result.orderId, productId);
+    await recordDownload(result.orderId, productId);
 
-  return res.download(result.fullPath, result.filename);
+    await streamS3Object({
+      key: result.key,
+      res,
+      asAttachment: true,
+      filename: result.filename,
+      rangeHeader: undefined, // downloads usually don’t need Range
+    });
+  } catch (e) {
+    console.error("download file error:", e);
+    res.status(500).json({ error: "Download failed" });
+  }
 });
 
-// --- routes: requests (delivered files) ---------------------------------
-// If your request flow stores the creator’s delivery on custom_requests.attachment_path
-// and sets status='delivered', the buyer can grab it here.
+/* ---------- routes: requests (delivered files) ---------- */
 router.get("/request/:requestId", requireAuth, async (req, res) => {
-  const requestId = parseInt(req.params.requestId, 10);
+  const requestId = Number(req.params.requestId);
   const userId = req.user.id;
 
   try {
@@ -96,20 +177,23 @@ router.get("/request/:requestId", requireAuth, async (req, res) => {
     );
     const r = rows[0];
     if (!r) return res.status(404).json({ error: "Request not found" });
-
-    // only the buyer can download, and only after delivered
     if (r.buyer_id !== userId) return res.status(403).json({ error: "Not your request" });
     if (r.status !== "delivered") return res.status(403).json({ error: "Not delivered yet" });
-
     if (!r.attachment_path) return res.status(404).json({ error: "No delivery file" });
 
-    const fullPath = path.join(uploadDir, r.attachment_path);
-    if (!fs.existsSync(fullPath)) return res.status(404).json({ error: "File missing on disk" });
+    const key = r.attachment_path; // stored as S3 key
+    const filename = key.split("/").pop() || "delivery";
 
-    return res.download(fullPath, path.basename(r.attachment_path));
+    await streamS3Object({
+      key,
+      res,
+      asAttachment: true,
+      filename,
+      rangeHeader: undefined,
+    });
   } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Download failed" });
+    console.error("request download error:", e);
+    res.status(500).json({ error: "Download failed" });
   }
 });
 
