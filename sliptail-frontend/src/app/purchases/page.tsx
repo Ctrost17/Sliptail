@@ -888,7 +888,7 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                     <h4 className="font-medium text-gray-700 mb-3">Creator’s Delivery</h4>
 
                     {/* Inline preview from protected route */}
-                    {selectedItem.request_id && (
+                    {selectedItem?.request_id && (
                       <AttachmentViewer
                         src={`${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id)}/delivery`}
                       />

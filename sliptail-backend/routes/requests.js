@@ -450,65 +450,64 @@ router.post(
         return res.status(400).json({ error: "Order is not paid yet" });
       }
 
-          const mime = req.file?.mimetype || "";
-          const isAudio = mime.startsWith("audio/");
-          let key;
+      const mime = req.file?.mimetype || "";
+      const isAudio = mime.startsWith("audio/");
+      let key;
 
-          // If it’s NOT audio and our utility says we should transcode, do it.
-          if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
-            // Write the incoming buffer to a temp file
-            const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
-            const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
-            fs.writeFileSync(inTmp, req.file.buffer);
+      if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
+        const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
+        const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
+        fs.writeFileSync(inTmp, req.file.buffer);
+        await transcodeToMp4(inTmp, outTmp);
 
-            // Convert to MP4 (uses your utils/video.js)
-            await transcodeToMp4(inTmp, outTmp);
+        const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, "");
+        key = `${baseKey}.mp4`;
 
-            // Upload the transcoded file to S3 under .mp4 key
-            const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, ""); // drop original ext
-            key = `${baseKey}.mp4`;
+        const outBuf = fs.readFileSync(outTmp);
+        await storage.uploadPrivate({ key, contentType: "video/mp4", body: outBuf });
 
-            const outBuf = fs.readFileSync(outTmp);
-            await storage.uploadPrivate({
-              key,
-              contentType: "video/mp4",
-              body: outBuf,
-            });
+        try { fs.unlinkSync(inTmp); } catch {}
+        try { fs.unlinkSync(outTmp); } catch {}
+      } else {
+        key = newKey("requests", req.file.originalname);
+        await storage.uploadPrivate({
+          key,
+          contentType: mime || "application/octet-stream",
+          body: req.file.buffer,
+        });
+      }
 
-            // cleanup temp files
-            try { fs.unlinkSync(inTmp); } catch {}
-            try { fs.unlinkSync(outTmp); } catch {}
-          } else {
-            // Audio or no-transcode-needed → upload as-is
-            key = newKey("requests", req.file.originalname);
-            await storage.uploadPrivate({
-              key,
-              contentType: mime || "application/octet-stream",
-              body: req.file.buffer,
-            });
-          }
+      // ⬇️ Persist delivery and mark COMPLETE (single terminal state)
+      await db.query("BEGIN");
+      const { rows: updated } = await db.query(
+        `UPDATE custom_requests
+            SET creator_attachment_path = $1,
+                status = 'complete'
+          WHERE id = $2
+          RETURNING *`,
+        [key, requestId]
+      );
+      await db.query(
+        `UPDATE orders SET status = 'complete' WHERE id = $1`,
+        [r.order_id]
+      );
+      await db.query("COMMIT");
 
+      res.json({ success: true, request: normalizeStatus(updated[0]) });
 
-      res.json({ success: true, request: normalizeStatus(upd[0]) });
-
-        // Only notify/email the first time we transition into delivered
-        if (r.status !== "delivered") {
-          // in-app (deduped)
-          if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
-            notify(
-              Number(r.buyer_id),
-              "request_ready",
-              "Your request is ready! 🎉",
-              "Check it out on your My Purchases page!",
-              { request_id: requestId }
-            ).catch(console.error);
-          }
-
-          // Email once (same condition)
-          notifyRequestDelivered({ requestId }).catch(console.error);
-        }
-    
-      } catch (err) {
+      // Notify buyer (deduped)
+      if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
+        notify(
+          Number(r.buyer_id),
+          "request_ready",
+          "Your request is ready! 🎉",
+          "Check it out on your My Purchases page!",
+          { request_id: requestId }
+        ).catch(console.error);
+        notifyRequestDelivered({ requestId }).catch(console.error);
+      }
+    } catch (err) {
+      try { await db.query("ROLLBACK"); } catch {}
       console.error("Deliver error:", err);
       res.status(500).json({ error: "Failed to deliver file" });
     }
@@ -769,6 +768,7 @@ router.get("/:id/attachment/file", requireAuth, requireCreator, async (req, res)
 });
 
 // BUYER downloads creator’s file (no fallback)
+// BUYER downloads creator’s file (only when complete)
 router.get("/:id/download", requireAuth, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const userId = req.user.id;
@@ -785,8 +785,7 @@ router.get("/:id/download", requireAuth, async (req, res) => {
     if (Number(r.buyer_id) !== Number(userId))
       return res.status(403).json({ error: "Not your request" });
 
-    const status = String(r.status || "").toLowerCase();
-    if (!(status === "delivered" || status === "complete"))
+    if (String(r.status || "").toLowerCase() !== "complete")
       return res.status(403).json({ error: "Not ready for download" });
 
     const key = (r.creator_attachment_path || "").trim();
@@ -808,6 +807,7 @@ router.get("/:id/download", requireAuth, async (req, res) => {
     return res.status(500).json({ error: "Download failed" });
   }
 });
+
 
 // BUYER: download their own submitted attachment
 router.get("/:id/my-attachment/file", requireAuth, async (req, res) => {
@@ -863,9 +863,9 @@ router.get("/:id/delivery", requireAuth, async (req, res) => {
     if (Number(r.buyer_id) !== Number(buyerId))
       return res.status(403).json({ error: "Not your request" });
 
-    const s = String(r.status || "").toLowerCase();
-    if (!(s === "delivered" || s === "complete"))
-      return res.status(403).json({ error: "Not ready yet" });
+      const s = String(r.status || "").toLowerCase();
+      if (s !== "complete")
+        return res.status(403).json({ error: "Not ready yet" });
 
     const key = (r.creator_attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No delivery file" });
