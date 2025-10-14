@@ -362,6 +362,23 @@ export default function PurchasesPage() {
     if (lastErr) throw lastErr;
   }
 
+const downloadRequestDelivery = async (requestId: number, filenameHint?: string) => {
+  const apiBase = toApiBase();
+  const url = `${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`;
+
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filenameHint || "delivery";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+};
+
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
   const handleSubmitReview = async () => {
     if (!showReviewModal || !reviewText.trim()) return;
@@ -415,33 +432,24 @@ export default function PurchasesPage() {
     }
   };
 
-  const handleDownload = async (item: Order) => {
-    try {
-      const candidate = item.product.filename ? `uploads/${item.product.filename}` : null;
-      if (!candidate) return showError("No file available to download.");
+ const handleDownload = async (item: Order) => {
+  if (!item.product_id) return;
 
-      const url = resolveImageUrl(candidate, apiBase);
-      if (!url) return showError("Invalid download URL.");
+  const apiBase = toApiBase();
+  const url = `${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`;
 
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error(String(res.status));
-      const blob = await res.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
+  const res = await fetch(url, { credentials: "include" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = item.product.filename || `${item.product.title || "download"}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(blobUrl);
-    } catch {
-      const fallback =
-        item.product.download_url ||
-        (item.product.filename ? resolveImageUrl(`uploads/${item.product.filename}`, apiBase) : null);
-      if (fallback) window.open(fallback, "_blank", "noopener");
-    }
-  };
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = item.product.filename || `${item.product.title || "download"}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 0);
+};
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
   try {
@@ -843,17 +851,27 @@ export default function PurchasesPage() {
                           </p>
                         </div>
                       )}
-
-                      {selectedItem.request_user_attachment_url && (
-                        <div>
+                      {selectedItem.request_id && selectedItem.request_user_attachment_url && (
+                        <div className="space-y-3">
                           <button
                             type="button"
-                            onClick={() => {
-                              const url =
-                                resolveImageUrl(selectedItem.request_user_attachment_url, apiBase) ||
-                                selectedItem.request_user_attachment_url!;
-                              const name = url.split("?")[0].split("/").pop() || "attachment";
-                              downloadByUrl(url, name);
+                            onClick={async () => {
+                              const url = `${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`;
+                              try {
+                                const res = await fetch(url, { credentials: "include" });
+                                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                                const blob = await res.blob();
+                                const name = "attachment";
+                                const a = document.createElement("a");
+                                a.href = URL.createObjectURL(blob);
+                                a.download = name;
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                setTimeout(() => URL.revokeObjectURL(a.href), 0);
+                              } catch (e) {
+                                console.warn(e);
+                              }
                             }}
                             className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
                           >
@@ -869,52 +887,32 @@ export default function PurchasesPage() {
                   <div>
                     <h4 className="font-medium text-gray-700 mb-3">Creator’s Delivery</h4>
 
-                    <AttachmentViewer
-                      src={
-                        resolveImageUrl(selectedItem.request_media_url, apiBase) ||
-                        selectedItem.request_media_url!
-                      }
-                    />
+                    {/* Inline preview from protected route */}
+                    {selectedItem.request_id && (
+                      <AttachmentViewer
+                        src={`${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id)}/delivery`}
+                      />
+                    )}
 
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {/* Direct file download */}
-                     <button
+                      {/* Download from protected route */}
+                      {selectedItem.request_id && (
+                        <button
                           type="button"
                           onClick={() => {
-                            const url =
-                              resolveImageUrl(selectedItem.request_media_url, apiBase) ||
-                              selectedItem.request_media_url!;
-                            const name = url.split("?")[0].split("/").pop() || "delivery";
-                            downloadByUrl(url, name);
+                            const name =
+                              (selectedItem.request_media_url || "").split("?")[0].split("/").pop() || "delivery";
+                            downloadRequestDelivery(selectedItem.request_id!, name);
                           }}
                           className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
                         >
                           <Download className="w-5 h-5 mr-2" />
                           Download Delivery
                         </button>
-
-                      {/* Protected download route (works when status is 'delivered') */}
-                      {selectedItem.request_id &&
-                        (selectedItem.request_status || "").toLowerCase() === "delivered" && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const url =
-                                resolveImageUrl(selectedItem.request_media_url, apiBase) ||
-                                selectedItem.request_media_url!;
-                              const name = url.split("?")[0].split("/").pop() || "delivery";
-                              downloadByUrl(url, name);
-                            }}
-                            className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
-                          >
-                            <Download className="w-5 h-5 mr-2" />
-                            Download Delivery
-                          </button>
-                        )}
+                      )}
                     </div>
                   </div>
                 )}
-
                 {/* Creator text notes (if they wrote something) */}
                 {selectedItem.request_response && (
                   <div>

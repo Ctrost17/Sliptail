@@ -675,56 +675,219 @@ router.post(
 );
 
 /**
- * BUYER downloads the delivered file
- * - only buyer can download
- * - only when status='delivered'
- * Note: purchases download is in routes/downloads.js
+ * CREATOR inline view of the BUYER's attachment (works for STORAGE_DRIVER=local|s3)
+ * - only the creator assigned to this request can view
+ * - streams with Content-Disposition:inline and supports Range for video/audio
  */
-router.get("/:id/download", requireAuth, async (req, res) => {
+router.get("/:id/attachment", requireAuth, requireCreator, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
-  const userId = req.user.id;
+  const creatorId = req.user.id;
 
   try {
     const { rows } = await db.query(
-      `SELECT attachment_path, creator_attachment_path, status, buyer_id
+      `SELECT creator_id, attachment_path
          FROM custom_requests
         WHERE id = $1`,
       [requestId]
     );
     const r = rows[0];
     if (!r) return res.status(404).json({ error: "Request not found" });
-    if (r.buyer_id !== userId) return res.status(403).json({ error: "Not your request" });
-    if (r.status !== "delivered") return res.status(403).json({ error: "Not delivered yet" });
-    const mediaPath = r.creator_attachment_path || r.attachment_path;
-    if (!mediaPath) return res.status(404).json({ error: "No delivery file" });
+    if (Number(r.creator_id) !== Number(creatorId)) {
+      return res.status(403).json({ error: "Not your request" });
+    }
+    const key = (r.attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No buyer attachment" });
 
-    // Resolve absolute filesystem path
-          // Legacy local files still work:
-          if (mediaPath.startsWith("/uploads/")) {
-            const relative = mediaPath.replace(/^\/+/, ""); // strip leading slash
-            const fullPath = path.join(__dirname, "..", "public", relative);
-            try {
-              fs.accessSync(fullPath); // legacy safety
-              return res.download(fullPath, path.basename(mediaPath));
-            } catch {
-              return res.status(404).json({ error: "File missing on disk" });
-            }
-          }
+    const range = req.headers.range;
+    const meta = await storage.getReadStreamAndMeta(key, range);
 
-          // New S3 flow: mediaPath is an S3 key like "requests/abcd1234.mp3"
-          try {
-            const url = await storage.getPrivateUrl(mediaPath, {
-              expiresIn: Number(process.env.S3_PRESIGN_EXPIRES || 900),
-            });
-            // Either redirect to the signed URL (browser download), or send JSON { url }
-            return res.redirect(url);
-          } catch (e) {
-            console.error("presign error", e);
-            return res.status(500).json({ error: "Could not generate download URL" });
-          }
+    const filename = key.split("/").pop() || "attachment";
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (meta.contentRange) {
+      res.status(206);
+      res.setHeader("Content-Range", meta.contentRange);
+    } else if (typeof meta.contentLength === "number") {
+      res.setHeader("Content-Length", String(meta.contentLength));
+    }
+
+    meta.stream.on("error", (e) => {
+      console.error("creator attachment stream error:", e);
+      if (!res.headersSent) res.status(500);
+      res.end();
+    });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Attachment view failed" });
+  }
+});
+
+/**
+ * CREATOR download of the BUYER's attachment (optional helper)
+ */
+router.get("/:id/attachment/file", requireAuth, requireCreator, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const creatorId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT creator_id, attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.creator_id) !== Number(creatorId)) {
+      return res.status(403).json({ error: "Not your request" });
+    }
+    const key = (r.attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No buyer attachment" });
+
+    const meta = await storage.getReadStreamAndMeta(key, undefined);
+    const filename = key.split("/").pop() || "attachment";
+
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (typeof meta.contentLength === "number") {
+      res.setHeader("Content-Length", String(meta.contentLength));
+    }
+
+    meta.stream.on("error", (e) => {
+      console.error("creator attachment download error:", e);
+      if (!res.headersSent) res.status(500);
+      res.end();
+    });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Attachment download failed" });
+  }
+});
+
+// BUYER downloads creator’s file (no fallback)
+router.get("/:id/download", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const userId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT creator_attachment_path, status, buyer_id
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(userId))
+      return res.status(403).json({ error: "Not your request" });
+
+    const status = String(r.status || "").toLowerCase();
+    if (!(status === "delivered" || status === "complete"))
+      return res.status(403).json({ error: "Not ready for download" });
+
+    const key = (r.creator_attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No delivery file" });
+
+    const filename = key.split("/").pop() || "delivery";
+    const meta = await storage.getReadStreamAndMeta(key, undefined);
+
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (typeof meta.contentLength === "number")
+      res.setHeader("Content-Length", String(meta.contentLength));
+
+    meta.stream.on("error", (e) => { console.error("request stream error:", e); if (!res.headersSent) res.status(500); res.end(); });
+    meta.stream.pipe(res);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Download failed" });
+  }
+});
+
+// BUYER: download their own submitted attachment
+router.get("/:id/my-attachment/file", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const buyerId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT buyer_id, attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(buyerId))
+      return res.status(403).json({ error: "Not your request" });
+
+    const key = (r.attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No attachment uploaded" });
+
+    const meta = await storage.getReadStreamAndMeta(key, undefined);
+    const filename = key.split("/").pop() || "attachment";
+
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (typeof meta.contentLength === "number")
+      res.setHeader("Content-Length", String(meta.contentLength));
+
+    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Attachment download failed" });
+  }
+});
+
+// BUYER: inline stream of creator’s delivery (status must be delivered|complete)
+router.get("/:id/delivery", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const buyerId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT buyer_id, status, creator_attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(buyerId))
+      return res.status(403).json({ error: "Not your request" });
+
+    const s = String(r.status || "").toLowerCase();
+    if (!(s === "delivered" || s === "complete"))
+      return res.status(403).json({ error: "Not ready yet" });
+
+    const key = (r.creator_attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No delivery file" });
+
+    const meta = await storage.getReadStreamAndMeta(key, req.headers.range);
+    const filename = key.split("/").pop() || "delivery";
+
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (meta.contentRange) {
+      res.status(206);
+      res.setHeader("Content-Range", meta.contentRange);
+    } else if (typeof meta.contentLength === "number") {
+      res.setHeader("Content-Length", String(meta.contentLength));
+    }
+
+    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Delivery view failed" });
   }
 });
 

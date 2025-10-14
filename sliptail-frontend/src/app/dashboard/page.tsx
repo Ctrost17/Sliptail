@@ -855,34 +855,21 @@ useEffect(() => {
   }
   useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
-  const buildAttachmentUrl = useCallback((p: string) => {
-    const clean = String(p || "");
-    const webPath = clean.startsWith("/uploads/") ? clean : `/uploads/${clean.replace(/^\/+/, "")}`;
-    return `${apiBase}${webPath}`;
-  }, [apiBase]);
+    const buildCreatorAttachmentUrl = useCallback((requestId: string | number) => {
+      return `${apiBase}/api/requests/${encodeURIComponent(requestId)}/attachment`;
+    }, [apiBase]);
 
-  const handleDownloadAttachment = useCallback(async () => {
-    try {
-      const p = (activeRequest as any)?.attachment_path as string | undefined;
-      if (!p) return;
-      const url = buildAttachmentUrl(p);
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error(`Download failed (${res.status})`);
-      const blob = await res.blob();
-      const filename = String(p).split(/[\\\/]/).pop() || "attachment";
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objectUrl);
-    } catch (e) {
-      console.error("download attachment error", e);
-      showToast("Download failed");
-    }
-  }, [activeRequest, buildAttachmentUrl]);
+        const handleDownloadAttachment = useCallback(async () => {
+          try {
+            if (!activeRequest?.id) return;
+            // Let the browser handle the file download directly
+            const url = `${apiBase}/api/requests/${encodeURIComponent(activeRequest.id)}/attachment/file`;
+            window.location.href = url;
+          } catch (e) {
+            console.error("download attachment error", e);
+            showToast("Download failed");
+          }
+        }, [activeRequest, apiBase]);
 
   const onCopyLink = async () => {
     try {
@@ -1499,10 +1486,10 @@ useEffect(() => {
                 <div className="text-xs text-neutral-500">
                   {new Date(activeRequest.created_at).toLocaleDateString()} · {new Date(activeRequest.created_at).toLocaleTimeString()}
                 </div>
-
                 {activeRequest.attachment_path ? (
                   <div className="pt-2 space-y-3">
-                    <AttachmentViewer src={buildAttachmentUrl(activeRequest.attachment_path)} />
+                    {/* Streamed inline from protected endpoint (works for S3/local) */}
+                    <AttachmentViewer src={buildCreatorAttachmentUrl(activeRequest.id)} />
                     <div className="flex gap-2">
                       <button
                         type="button"
