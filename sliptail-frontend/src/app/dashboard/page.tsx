@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { loadAuth } from "@/lib/auth";
+import React from "react";
 
 /* ----------------------------- Types ----------------------------- */
 type Product = {
@@ -140,26 +141,82 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
 }
-function isLikelyImage(url: string) {
+function guessFromExtension(url: string): "image" | "video" | "audio" | null {
   const clean = url.split("?")[0].toLowerCase();
-  return /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean);
+  if (/\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean)) return "image";
+  if (/\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean)) return "video";
+  if (/\.(mp3|wav|m4a|aac|ogg|webm)$/.test(clean)) return "audio";
+  return null;
 }
-function isLikelyVideo(url: string) {
-  const clean = url.split("?")[0].toLowerCase();
-  return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
+
+function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "other" {
+  if (!ct) return "other";
+  const low = ct.toLowerCase();
+  if (low.startsWith("image/")) return "image";
+  if (low.startsWith("video/")) return "video";
+  if (low.startsWith("audio/")) return "audio";
+  return "other";
 }
-function isLikelyAudio(url: string) {
-  const clean = url.split("?")[0].toLowerCase();
-  return /\.(mp3|wav|m4a|aac|ogg|webm)$/.test(clean);
+
+async function sniffContentType(url: string): Promise<"image"|"video"|"audio"|"other"> {
+  try {
+    // Try HEAD first (fast, no body)
+    const head = await fetch(url, { method: "HEAD", credentials: "include", cache: "no-store" });
+    const ct = head.headers.get("content-type");
+    if (ct) return typeFromContentType(ct);
+  } catch {/* ignore */}
+
+  try {
+    // Fallback: tiny ranged GET (many servers support this)
+    const tiny = await fetch(url, {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+      credentials: "include",
+      cache: "no-store",
+    });
+    const ct = tiny.headers.get("content-type");
+    if (ct) return typeFromContentType(ct);
+  } catch {/* ignore */}
+
+  return "other";
 }
+
 function AttachmentViewer({
   src,
   className = "w-full rounded-lg border overflow-hidden bg-black/5",
 }: { src: string; className?: string }) {
-  if (isLikelyImage(src)) {
-    return <img src={src} alt="attachment" className={`${className} object-contain`} />;
+  const [kind, setKind] = React.useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
+  const [errored, setErrored] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setErrored(false);
+
+    (async () => {
+      if (!kind) {
+        const k = await sniffContentType(src);
+        if (!cancelled) setKind(k);
+      } else {
+        setKind(kind);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+
+  if (errored) {
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+        Open attachment
+      </a>
+    );
   }
-  if (isLikelyVideo(src)) {
+
+  if (kind === "image") {
+    return <img src={src} alt="attachment" className={`${className} object-contain`} onError={() => setErrored(true)} />;
+  }
+  if (kind === "video") {
     return (
       <video
         src={src}
@@ -167,23 +224,32 @@ function AttachmentViewer({
         playsInline
         preload="metadata"
         className={`${className} aspect-video`}
+        onError={() => setErrored(true)}
       />
     );
   }
-    if (isLikelyAudio(src)) {
+  if (kind === "audio") {
     return (
       <audio
         src={src}
         controls
         preload="metadata"
         className={`${className} w-full`}
+        onError={() => setErrored(true)}
       />
     );
   }
+
+  // Unknown: optimistically try video; fallback becomes link via onError.
   return (
-    <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
-      Open attachment
-    </a>
+    <video
+      src={src}
+      controls
+      playsInline
+      preload="metadata"
+      className={`${className} aspect-video`}
+      onError={() => setErrored(true)}
+    />
   );
 }
 

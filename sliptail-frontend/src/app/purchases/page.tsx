@@ -67,27 +67,73 @@ function toApiBase(): string {
   return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 }
 
-function isLikelyImage(url: string) {
+function guessFromExtension(url: string): "image" | "video" | "audio" | null {
   const clean = url.split("?")[0].toLowerCase();
-  return /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean);
+  if (/\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean)) return "image";
+  if (/\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean)) return "video";
+  if (/\.(mp3|m4a|aac|wav|ogg|webm)$/.test(clean)) return "audio";
+  return null;
 }
-function isLikelyVideo(url: string) {
-  const clean = url.split("?")[0].toLowerCase();
-  return /\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean);
-}
-function isLikelyAudio(url: string) {
-  const clean = url.split("?")[0].toLowerCase();
-  return /\.(mp3|m4a|aac|wav|ogg|webm)$/.test(clean);
+
+function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "other" {
+  if (!ct) return "other";
+  const low = ct.toLowerCase();
+  if (low.startsWith("image/")) return "image";
+  if (low.startsWith("video/")) return "video";
+  if (low.startsWith("audio/")) return "audio";
+  return "other";
 }
 
 function AttachmentViewer({
   src,
   className = "w-full rounded-lg border overflow-hidden bg-black/5",
 }: { src: string; className?: string }) {
-  if (isLikelyImage(src)) {
-    return <img src={src} alt="attachment" className={`${className} object-contain`} />;
+  const [kind, setKind] = useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
+  const [errored, setErrored] = useState(false);
+
+  useEffect(() => {
+    let aborted = false;
+    setErrored(false);
+
+    // If extension didn’t tell us, do a quick HEAD to read Content-Type
+    if (!kind) {
+      (async () => {
+        try {
+          const res = await fetch(src, { method: "HEAD", credentials: "include" });
+          const ct = res.headers.get("content-type");
+          if (!aborted) setKind(typeFromContentType(ct));
+        } catch {
+          if (!aborted) setKind("other");
+        }
+      })();
+    } else {
+      setKind(kind);
+    }
+
+    return () => { aborted = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+
+  if (errored) {
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
+        Open attachment
+      </a>
+    );
   }
-  if (isLikelyVideo(src)) {
+
+  if (kind === "image") {
+    return (
+      <img
+        src={src}
+        alt="attachment"
+        className={`${className} object-contain`}
+        onError={() => setErrored(true)}
+      />
+    );
+  }
+
+  if (kind === "video") {
     return (
       <video
         src={src}
@@ -95,25 +141,36 @@ function AttachmentViewer({
         playsInline
         preload="metadata"
         className={`${className} aspect-video`}
+        onError={() => setErrored(true)}
       />
     );
   }
-    if (isLikelyAudio(src)) {
+
+  if (kind === "audio") {
     return (
       <audio
         src={src}
         controls
         preload="metadata"
-        className={`${className} block bg-black`}
+        className={`${className} block`}
+        onError={() => setErrored(true)}
       />
     );
   }
+
+  // Unknown? Try video first (your deliveries are usually video), fall back on error.
   return (
-    <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
-      Open attachment
-    </a>
+    <video
+      src={src}
+      controls
+      playsInline
+      preload="metadata"
+      className={`${className} aspect-video`}
+      onError={() => setErrored(true)}
+    />
   );
 }
+
 
 export default function PurchasesPage() {
   const [orders, setOrders] = useState<Order[] | null>(null);
