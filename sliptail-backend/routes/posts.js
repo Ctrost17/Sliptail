@@ -7,8 +7,10 @@ const db = require("../db");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const { notifyPostToMembers } = require("../utils/notify");
 
-// NEW: generic storage layer (local or S3 depending on env)
+// Generic storage layer (local or S3)
 const storage = require("../storage");
+// For signing private reads (only used in S3 mode)
+const s3storage = storage.isS3 ? require("../storage/s3") : null;
 
 const router = express.Router();
 
@@ -17,7 +19,7 @@ const uploadsRoot = path.join(__dirname, "..", "public", "uploads");
 const postUploadsDir = path.join(uploadsRoot, "posts");
 if (!fs.existsSync(postUploadsDir)) fs.mkdirSync(postUploadsDir, { recursive: true });
 
-// In S3 mode we read file into memory and push to S3; in local mode we keep your disk storage
+// In S3 mode we buffer in memory then push to S3; local mode keeps disk storage
 let upload;
 if (storage.isS3) {
   upload = multer({
@@ -25,38 +27,62 @@ if (storage.isS3) {
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB cap for posts
   });
 } else {
-    const diskStorage = multer.diskStorage({
-      destination: (req, file, cb) => cb(null, postUploadsDir),
-      filename: (req, file, cb) => {
-        const ext = path.extname(file.originalname || "").slice(0, 10); // prevent very long ext
-        const name = crypto.randomBytes(16).toString("hex") + ext;
-        cb(null, name);
-      },
-    });
-    upload = multer({ storage: diskStorage, limits: { fileSize: 50 * 1024 * 1024 } });
+  const diskStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, postUploadsDir),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || "").slice(0, 10);
+      const name = crypto.randomBytes(16).toString("hex") + ext;
+      cb(null, name);
+    },
+  });
+  upload = multer({ storage: diskStorage, limits: { fileSize: 50 * 1024 * 1024 } });
 }
 
-function buildPublicUrl(filename) {
-  // served by express.static on /public (local-only)
+function buildLocalPublicUrl(filename) {
   return `/uploads/posts/${filename}`;
 }
 
-// Helper to generate an S3 key for posts
+// Generate an S3 key for posts
 function newKeyForPost(originalName) {
-  const id =
-    (crypto.randomUUID && crypto.randomUUID()) ||
-    crypto.randomBytes(16).toString("hex");
+  const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString("hex");
   const ext = path.extname(originalName || "");
   return `posts/${id}${ext}`;
 }
+
+/* ---------------------- helpers: signed URLs --------------------- */
+
+async function addSignedUrl(post) {
+  if (!post) return post;
+  if (!post.media_path) return { ...post, media_url: null };
+
+  // Local/dev build: media_path is a public path we can return as-is
+  if (!storage.isS3) {
+    return { ...post, media_url: post.media_path };
+  }
+
+  // In S3 mode, media_path holds the PRIVATE S3 key
+  try {
+    const url = await s3storage.getPrivateUrl(post.media_path, { expiresIn: 60 }); // 60s is plenty for page load
+    return { ...post, media_url: url };
+  } catch (e) {
+    console.warn("sign media url failed:", e?.message || e);
+    return { ...post, media_url: null };
+  }
+}
+
+async function addSignedUrls(rows) {
+  return Promise.all(rows.map(addSignedUrl));
+}
+
+/* ------------------------------- routes ------------------------------- */
 
 /**
  * POST /api/posts
  * Accepts multipart/form-data or JSON.
  * Fields: title, body, product_id, (optional media file under field name 'media')
  *
- * NOTE: In S3 mode we upload post media to the **public bucket** so existing
- * frontend `<img src={media_path}>` keeps working without presigned URLs.
+ * S3 mode: upload to PRIVATE bucket, store S3 key in media_path.
+ * Local mode: keep legacy disk path.
  */
 router.post("/", requireAuth, requireCreator, upload.single("media"), async (req, res) => {
   const creatorId = req.user.id;
@@ -68,28 +94,28 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     return res.status(400).json({ error: "product_id required" });
   }
 
+  // Handle upload
   if (req.file) {
     if (storage.isS3) {
-      // Upload to PUBLIC bucket (simple to consume from the frontend)
+      // PRIVATE upload — save the KEY in DB
       const key = newKeyForPost(req.file.originalname);
-      const uploaded = await storage.uploadPublic({
+      await storage.uploadPrivate({
         key,
         contentType: req.file.mimetype || "application/octet-stream",
         body: req.file.buffer,
       });
-      // Prefer a full URL if driver provides it; otherwise build from key
-      media_path = (storage.publicUrl && storage.publicUrl(uploaded.key)) || uploaded.url || uploaded.key;
+      media_path = key; // store KEY (not URL)
     } else {
-      // Local: keep your original disk behavior
-      media_path = buildPublicUrl(req.file.filename);
+      // Local: keep on disk and store a public path
+      media_path = buildLocalPublicUrl(req.file.filename);
     }
   } else if (req.body.media_path) {
-    // allow direct media_path if already uploaded elsewhere
+    // If caller already provided a path/key (advanced use)
     media_path = req.body.media_path;
   }
 
   try {
-    // Ensure the product exists and belongs to this creator
+    // Ensure product exists and belongs to this creator
     const { rows: prodRows } = await db.query(
       `SELECT id, user_id AS creator_id, product_type, title, COALESCE(active, TRUE) AS active
          FROM products
@@ -104,30 +130,28 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
 
     const product = prodRows[0];
 
-    // ⛔️ Creators cannot post to an inactive membership product
     if (product.product_type === "membership" && !product.active) {
       return res.status(403).json({ error: "This membership is inactive; cannot add new posts." });
     }
 
-    // Create post
+    // Create post (store media_path: disk URL in local mode, S3 KEY in S3 mode)
     const { rows } = await db.query(
       `INSERT INTO posts (product_id, creator_id, title, body, media_path)
        VALUES ($1,$2,$3,$4,$5)
        RETURNING *`,
       [productId, creatorId, title || null, body || null, media_path || null]
     );
-    const post = rows[0];
 
-    // Respond to client first
-    res.status(201).json({ post });
+    const postWithUrl = await addSignedUrl(rows[0]);
+    res.status(201).json({ post: postWithUrl });
 
-    // NOTIFICATIONS (email + in-app) for members of THIS membership product
+    // Notify members for membership products
     if (product.product_type === "membership") {
       notifyPostToMembers({
         creatorId,
         productId,
-        postId: post.id,
-        title: post.title,
+        postId: rows[0].id,
+        title: rows[0].title,
       }).catch(console.error);
     }
   } catch (e) {
@@ -139,6 +163,7 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
 /**
  * PUT /api/posts/:id
  * Update title/body and optionally replace media (multipart with field 'media').
+ * S3 mode: replace/delete in PRIVATE bucket. Local: keep disk files.
  */
 router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (req, res) => {
   const creatorId = req.user.id;
@@ -160,43 +185,31 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     let oldLocalFilenameToDelete = null;
     let oldS3KeyToDelete = null;
 
-    // If replacing or removing, mark old media for deletion
     const isRemoving = media_remove === "1" || media_remove === "true";
     const isReplacing = !!req.file;
 
+    // mark old media for cleanup
     if ((isReplacing || isRemoving) && media_path) {
-      if (String(media_path).startsWith("/uploads/posts/")) {
-        // legacy local
+      if (!storage.isS3 && String(media_path).startsWith("/uploads/posts/")) {
         oldLocalFilenameToDelete = media_path.replace("/uploads/posts/", "");
       } else if (storage.isS3) {
-        // S3: media_path might be a full URL or a key
-        if (storage.keyFromPublicUrl) {
-          oldS3KeyToDelete = storage.keyFromPublicUrl(media_path);
-        } else {
-          try {
-            // crude fallback: take URL path after bucket host
-            const u = new URL(media_path);
-            oldS3KeyToDelete = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
-          } catch {
-            // or assume it was already a key
-            oldS3KeyToDelete = media_path;
-          }
-        }
+        // In S3 mode media_path stores the KEY
+        oldS3KeyToDelete = media_path;
       }
     }
 
-    // Apply changes for new media value
+    // apply new media
     if (req.file) {
       if (storage.isS3) {
         const key = newKeyForPost(req.file.originalname);
-        const uploaded = await storage.uploadPublic({
+        await storage.uploadPrivate({
           key,
           contentType: req.file.mimetype || "application/octet-stream",
           body: req.file.buffer,
         });
-        media_path = (storage.publicUrl && storage.publicUrl(uploaded.key)) || uploaded.url || uploaded.key;
+        media_path = key;
       } else {
-        media_path = buildPublicUrl(req.file.filename);
+        media_path = buildLocalPublicUrl(req.file.filename);
       }
     } else if (isRemoving) {
       media_path = null;
@@ -226,20 +239,21 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       vals
     );
 
-    // Best-effort cleanup after DB update
+    // cleanup best-effort
     if (oldLocalFilenameToDelete) {
       const oldPath = path.join(postUploadsDir, oldLocalFilenameToDelete);
       fs.existsSync(oldPath) && fs.unlink(oldPath, () => {});
     }
     if (oldS3KeyToDelete) {
       try {
-        await storage.deletePublic(oldS3KeyToDelete);
+        await storage.deletePrivate(oldS3KeyToDelete);
       } catch (e) {
-        console.warn("Warning: failed to delete old S3 object", oldS3KeyToDelete, e?.message || e);
+        console.warn("Warning: failed to delete old private S3 object", oldS3KeyToDelete, e?.message || e);
       }
     }
 
-    return res.json({ post: updated.rows[0] });
+    const postWithUrl = await addSignedUrl(updated.rows[0]);
+    return res.json({ post: postWithUrl });
   } catch (e) {
     console.error("update post error:", e);
     return res.status(500).json({ error: "Could not update post" });
@@ -248,19 +262,13 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
 
 /**
  * GET /api/posts/product/:productId
- * - Fetch posts that belong to a specific product (membership product)
- * - Access allowed if requester is the creator OR has a valid membership
- * - Robust access:
- *    1) If user has *product-level* access -> return posts for that product (+ legacy NULL posts)
- *    2) Else if user has *creator-level* access to any of the creator's membership products
- *       -> return all posts by that creator (covers product-ID migrations)
+ * Membership access logic unchanged, but we now attach a signed `media_url` when in S3 mode.
  */
 router.get("/product/:productId", requireAuth, async (req, res) => {
   const productId = parseInt(req.params.productId, 10);
   if (Number.isNaN(productId)) return res.status(400).json({ error: "Invalid product id" });
 
   try {
-    // Ensure product exists & get the owning creator
     const { rows: prod } = await db.query(
       `SELECT id, user_id, product_type, COALESCE(active, TRUE) AS active
          FROM products
@@ -273,7 +281,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
     const creatorId = prod[0].user_id;
     const userId = req.user.id;
 
-    // If requester is the creator, allow (regardless of product.active)
+    // creator sees all
     if (String(userId) === String(creatorId)) {
       const { rows } = await db.query(
         `SELECT p.*, cp.display_name, cp.profile_image
@@ -284,12 +292,11 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
           ORDER BY p.created_at DESC`,
         [productId, creatorId]
       );
-      return res.json({ posts: rows });
+      const withUrls = await addSignedUrls(rows);
+      return res.json({ posts: withUrls });
     }
 
-    // --- Non-creator: check access ---
-
-    // 1) Product-level access (user is subscribed to this specific membership product)
+    // product-level access?
     const { rows: prodAccess } = await db.query(
       `SELECT 1
          FROM memberships m
@@ -304,7 +311,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
       [userId, productId]
     );
 
-    // 2) Creator-level access: user has an active membership to *any* product from this creator
+    // creator-level access to any membership?
     const { rows: creatorAccess } = await db.query(
       `SELECT 1
          FROM memberships m
@@ -325,7 +332,6 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Membership required" });
     }
 
-    // If user has product-level access, show posts scoped to this product (+ legacy)
     if (prodAccess.length) {
       const { rows } = await db.query(
         `SELECT p.*, cp.display_name, cp.profile_image
@@ -336,11 +342,10 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
           ORDER BY p.created_at DESC`,
         [productId, creatorId]
       );
-      return res.json({ posts: rows });
+      const withUrls = await addSignedUrls(rows);
+      return res.json({ posts: withUrls });
     }
 
-    // Else user has creator-level access (e.g., creator migrated products):
-    // show *all* posts from this creator so the feed is not empty.
     const { rows } = await db.query(
       `SELECT p.*, cp.display_name, cp.profile_image
          FROM posts p
@@ -349,7 +354,8 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
         ORDER BY p.created_at DESC`,
       [creatorId]
     );
-    return res.json({ posts: rows });
+    const withUrls = await addSignedUrls(rows);
+    return res.json({ posts: withUrls });
   } catch (e) {
     console.error("get product posts error:", e);
     res.status(500).json({ error: "Could not fetch product posts" });
@@ -358,7 +364,7 @@ router.get("/product/:productId", requireAuth, async (req, res) => {
 
 /**
  * GET /api/posts/creator/:creatorId
- * - Members-only list of all posts for a creator (legacy endpoint moved to avoid route shadowing)
+ * Members-only list of all posts for a creator; attach signed URLs when needed.
  */
 router.get("/creator/:creatorId", requireAuth, async (req, res) => {
   const creatorId = parseInt(req.params.creatorId, 10);
@@ -386,7 +392,8 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
       `SELECT * FROM posts WHERE creator_id=$1 ORDER BY created_at DESC`,
       [creatorId]
     );
-    res.json({ posts: rows });
+    const withUrls = await addSignedUrls(rows);
+    res.json({ posts: withUrls });
   } catch (e) {
     console.error("get creator posts error:", e);
     res.status(500).json({ error: "Could not fetch posts" });
@@ -396,8 +403,8 @@ router.get("/creator/:creatorId", requireAuth, async (req, res) => {
 /**
  * DELETE /api/posts/:id
  * Remove a post owned by the creator.
- * - If media_path is a legacy local file (/uploads/posts/...), delete the file from disk.
- * - If media_path is an S3/Lightsail public URL or key, delete the object via storage.
+ * - Local: delete disk file
+ * - S3: delete from PRIVATE bucket (key stored in media_path)
  */
 router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
   const creatorId = req.user.id;
@@ -415,35 +422,20 @@ router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
 
     const media_path = existing[0].media_path;
 
-    // Delete DB row first (idempotent; storage cleanup is best-effort)
+    // Delete DB row first
     await db.query(`DELETE FROM posts WHERE id=$1`, [postId]);
 
-    // Clean up storage:
+    // Cleanup storage best-effort
     if (media_path) {
-      if (String(media_path).startsWith("/uploads/posts/")) {
-        // Legacy local file
+      if (!storage.isS3 && String(media_path).startsWith("/uploads/posts/")) {
         const filename = media_path.replace("/uploads/posts/", "");
         const fp = path.join(postUploadsDir, filename);
         fs.existsSync(fp) && fs.unlink(fp, () => {});
       } else if (storage.isS3) {
-        // S3/Lightsail object in public bucket
-        let key = null;
-        if (storage.keyFromPublicUrl) {
-          key = storage.keyFromPublicUrl(media_path);
-        } else {
-          try {
-            const u = new URL(media_path);
-            key = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
-          } catch {
-            key = media_path; // assume it's already a key
-          }
-        }
-        if (key) {
-          try {
-            await storage.deletePublic(key);
-          } catch (e) {
-            console.warn("Warning: failed to delete S3 object", key, e?.message || e);
-          }
+        try {
+          await storage.deletePrivate(media_path); // media_path is the KEY
+        } catch (e) {
+          console.warn("Warning: failed to delete private S3 object", media_path, e?.message || e);
         }
       }
     }
