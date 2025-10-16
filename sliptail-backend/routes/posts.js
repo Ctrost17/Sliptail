@@ -187,17 +187,21 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
           absInputPath = req.file.path; // multer's diskStorage gives us this
         }
 
-        // Store poster alongside post media: e.g. "posts/<postId>/poster.jpg"
-        const posterKey = `posts/${postRow.id}/poster.jpg`;
-        const storedPoster = await makeAndStorePoster(absInputPath, posterKey);
-        const posterValue = storedPoster?.key || storedPoster; // <— ensure plain string
+          // Store poster alongside post media: e.g. "posts/<postId>/poster.jpg"
+          const posterKey = `posts/${postRow.id}/poster.jpg`;
+          const posterResult = await makeAndStorePoster(absInputPath, posterKey);
+          // normalise to a string key/path
+          const posterValue =
+            typeof posterResult === "string"
+              ? posterResult
+              : (posterResult && (posterResult.key || posterResult.path)) || null;
 
-        // Save on the post
-        const { rows: upd } = await db.query(
-          `UPDATE posts SET media_poster = $1 WHERE id = $2 RETURNING *`,
-          [posterValue, postRow.id]
-        );
-        postRow = upd[0];
+          // Save on the post
+          const { rows: upd } = await db.query(
+            `UPDATE posts SET media_poster = $1 WHERE id = $2 RETURNING *`,
+            [posterValue, postRow.id]
+          );
+          postRow = upd[0];
 
         // Cleanup tmp file if we created one
         if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
