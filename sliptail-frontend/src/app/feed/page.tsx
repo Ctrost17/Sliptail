@@ -38,6 +38,26 @@ function PostMedia({
   const [bufferedFrac, setBufferedFrac] = useState(0);
   const [seeking, setSeeking] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const pointerIdRef = useRef<number | null>(null);
+  const [showPoster, setShowPoster] = useState<boolean>(() => Boolean(poster));
+
+  // Keep poster visibility in sync if prop changes
+  useEffect(() => {
+    setShowPoster(Boolean(poster));
+  }, [poster]);
+
+  // Ensure inline playback on iPhone Safari
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.setAttribute("playsinline", "true");
+      // iOS Safari specific
+      v.setAttribute("webkit-playsinline", "true");
+      // Some Android WebViews (optional, harmless elsewhere)
+      v.setAttribute("x5-playsinline", "true");
+    } catch {}
+  }, []);
 
   const isAudio =
     (file?.type?.startsWith("audio/") ||
@@ -166,7 +186,8 @@ function PostMedia({
               }
             }}
             onMouseLeave={() => isPlaying && setOverlayVisible(false)}
-            onTouchStart={() => {
+            onPointerDown={() => {
+              // On touch or pen/mouse down, reveal overlay briefly while playing
               if (isPlaying) {
                 setOverlayVisible(true);
                 scheduleOverlayAutoHide(1800);
@@ -185,6 +206,7 @@ function PostMedia({
               src={src}
               playsInline
               preload="metadata"
+              crossOrigin="anonymous"
               poster={poster}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
@@ -201,20 +223,36 @@ function PostMedia({
               onPlay={() => {
                 setIsPlaying(true);
                 setOverlayVisible(false);
+                setShowPoster(false);
                 scheduleOverlayAutoHide(1200);
               }}
               onPause={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
+                const v = videoRef.current;
+                if (v && (v.currentTime ?? 0) <= 0.01) {
+                  setShowPoster(Boolean(poster));
+                }
               }}
               onEnded={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
+                setCurrentTime(0);
+                setShowPoster(Boolean(poster));
               }}
-              className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
+              className={`${showPoster ? "hidden" : "block"} w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black`}
             />
+            {/* Poster fallback (iPhone fix): show image preview until playback starts */}
+            {showPoster && poster && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={poster}
+                alt="video preview"
+                className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
+              />
+            )}
             {/* Centered Play/Pause overlay */}
             {(overlayVisible || !isPlaying) && (
               <button
@@ -224,7 +262,7 @@ function PostMedia({
                   e.stopPropagation();
                   toggleVideoPlayback();
                 }}
-                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center h-14 w-14 rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
+                className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center h-14 w-14 rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
               >
                 {/* Icon */}
                 {isPlaying ? (
@@ -243,7 +281,7 @@ function PostMedia({
             )}
 
             {/* Bottom time control (timeline) */}
-            <div className="absolute inset-x-0 bottom-0 p-3 select-none">
+            <div className="absolute inset-x-0 bottom-0 p-3 select-none z-10">
               <div
                 className={`rounded-md px-2 py-1.5 bg-black/45 backdrop-blur-sm text-white shadow transition-opacity ${
                   overlayVisible || !isPlaying ? "opacity-100" : "opacity-0"
@@ -256,14 +294,26 @@ function PostMedia({
                   {/* Track */}
                   <div
                     ref={trackRef}
-                    className="relative h-2 flex-1 cursor-pointer"
-                    onMouseDown={(e) => handleScrubStart(e.clientX)}
-                    onMouseMove={(e) => handleScrubMove(e.clientX)}
-                    onMouseUp={handleScrubEnd}
-                    onMouseLeave={() => seeking && handleScrubEnd()}
-                    onTouchStart={(e) => handleScrubStart(e.touches[0].clientX)}
-                    onTouchMove={(e) => handleScrubMove(e.touches[0].clientX)}
-                    onTouchEnd={handleScrubEnd}
+                    className="relative h-2 flex-1 cursor-pointer touch-none"
+                    onPointerDown={(e) => {
+                      pointerIdRef.current = e.pointerId;
+                      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                      handleScrubStart(e.clientX);
+                    }}
+                    onPointerMove={(e) => {
+                      if (pointerIdRef.current !== null) {
+                        e.preventDefault();
+                        handleScrubMove(e.clientX);
+                      }
+                    }}
+                    onPointerUp={() => {
+                      pointerIdRef.current = null;
+                      handleScrubEnd();
+                    }}
+                    onPointerCancel={() => {
+                      pointerIdRef.current = null;
+                      handleScrubEnd();
+                    }}
                   >
                     <div className="absolute inset-0 rounded-full bg-white/20" />
                     {/* Buffered */}
