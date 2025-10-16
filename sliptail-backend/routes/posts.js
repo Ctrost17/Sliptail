@@ -75,7 +75,7 @@ async function addSignedUrl(post) {
     const v = post[field];
     if (!v) return null;
     try {
-      return await storage.getPrivateUrl(v, { expiresIn: 60 });
+      return await storage.getPrivateUrl(v, { expiresIn: 3600 }); // 1 hour
     } catch (e) {
       console.warn(`sign ${field} failed:`, e?.message || e);
       return null;
@@ -240,6 +240,7 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     }
 
     let media_path = existingRows[0].media_path;
+    let media_poster = existingRows[0].media_poster;
     let oldLocalFilenameToDelete = null;
     let oldS3KeyToDelete = null;
 

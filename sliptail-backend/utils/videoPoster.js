@@ -1,30 +1,63 @@
+// utils/videoPoster.js
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const ffmpeg = require("fluent-ffmpeg");
-const os = require("os");
 const mime = require("mime-types");
-const storage = require("../storage"); // <- your storage.js dual driver
+const storage = require("../storage");
 
-function tmpFile(ext = ".jpg") {
+// make poster path by replacing the extension with .jpg (matches your routes)
+function posterKeyFor(videoKey) {
+  return String(videoKey || "").replace(/\.[^./\\]+$/, "") + ".jpg";
+}
+
+function tmpFile(ext = ".tmp") {
   const name = `poster-${crypto.randomBytes(6).toString("hex")}${ext}`;
   return path.join(os.tmpdir(), name);
 }
 
 /**
- * From a local temp video path, write a single JPEG poster to a temp file,
- * then upload via storage.uploadPrivate({ key, body, contentType }).
- *
- * @param {string} absVideoPath - local path where multer put the video
- * @param {string} keyStem - e.g. `posts/${postId}` (no extension)
- * @returns {Promise<{ key: string, url?: string }>} storage key, and for local a web path
+ * Create and store a poster image for a stored video.
+ * @param {string} videoKey - storage key of the uploaded video (e.g. "requests/abc/file.mp4")
+ * @param {{ private?: boolean }} [opts]
+ * @returns {Promise<{ key: string } | null>} poster key, or null if skipped (e.g. audio)
  */
-async function makeAndStorePoster(absVideoPath, keyStem) {
+async function makeAndStorePoster(videoKey, opts = {}) {
+  if (!videoKey || typeof videoKey !== "string") {
+    throw new Error("makeAndStorePoster: videoKey required");
+  }
+
+  // Try to read the stored file (supports S3/local via your storage.js)
+  let meta;
+  try {
+    meta = await storage.getReadStreamAndMeta(videoKey, undefined);
+  } catch (e) {
+    throw new Error(`makeAndStorePoster: could not read source "${videoKey}": ${e?.message || e}`);
+  }
+
+  const contentType = String(meta.contentType || mime.lookup(videoKey) || "");
+  const isAudio = contentType.toLowerCase().startsWith("audio/");
+  if (isAudio) {
+    // By design we skip posters for audio
+    return null;
+  }
+
+  // Save the source to a temp file so ffmpeg can seek reliably
+  const inTmp = tmpFile(path.extname(videoKey) || ".bin");
   const outJpg = tmpFile(".jpg");
 
-  // 50% timestamp is a good neutral frame
   await new Promise((resolve, reject) => {
-    ffmpeg(absVideoPath)
+    const w = fs.createWriteStream(inTmp);
+    meta.stream.on("error", reject);
+    w.on("error", reject);
+    w.on("finish", resolve);
+    meta.stream.pipe(w);
+  });
+
+  // Generate a middle-frame screenshot
+  await new Promise((resolve, reject) => {
+    ffmpeg(inTmp)
       .on("end", resolve)
       .on("error", reject)
       .screenshots({
@@ -35,19 +68,21 @@ async function makeAndStorePoster(absVideoPath, keyStem) {
       });
   });
 
-  const buf = fs.readFileSync(outJpg);
-  const key = `${keyStem.replace(/^\/+/, "")}-poster.jpg`;
+  const jpgBuf = fs.readFileSync(outJpg);
+  const posterKey = posterKeyFor(videoKey);
 
-  // Works for both local & S3 drivers
-  const { key: storedKey } = await storage.uploadPrivate({
-    key,
-    contentType: mime.lookup("jpg") || "image/jpeg",
-    body: buf,
+  // Store alongside the video; your routes read it with the same posterKey
+  await storage.uploadPrivate({
+    key: posterKey,
+    contentType: "image/jpeg",
+    body: jpgBuf,
   });
 
+  // Cleanup temp files
+  try { fs.unlinkSync(inTmp); } catch {}
   try { fs.unlinkSync(outJpg); } catch {}
 
-  return { key: storedKey };
+  return { key: posterKey };
 }
 
-module.exports = { makeAndStorePoster };
+module.exports = { makeAndStorePoster, posterKeyFor };
