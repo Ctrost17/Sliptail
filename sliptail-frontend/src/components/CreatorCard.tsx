@@ -75,37 +75,6 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
     }
   }
 
-  // ----- Smart avatar sizing: widen for horizontal, keep no-crop, add rounded corners -----
-  const [avatarDims, setAvatarDims] = useState<{ w: number; h: number }>({ w: 80, h: 80 });
-  const [avatarSized, setAvatarSized] = useState(false);
-
-  function onAvatarLoaded({
-    naturalWidth,
-    naturalHeight,
-  }: {
-    naturalWidth: number;
-    naturalHeight: number;
-  }) {
-    if (avatarSized) return;
-    const ar = naturalWidth / Math.max(1, naturalHeight);
-
-    // Base height steady; width expands for landscape
-    let h = 84; // ~5.25rem
-    let w = 84;
-
-    if (ar >= 1.25) {
-      w = Math.round(Math.min(144, Math.max(96, h * ar)));
-    }
-
-    // Guard against upscaling blur relative to DPR
-    const dpr = typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
-    const maxByPixels = Math.floor((naturalWidth / dpr) * 1.25);
-    w = Math.min(w, Math.max(84, maxByPixels));
-
-    setAvatarDims({ w, h });
-    setAvatarSized(true);
-  }
-
   return (
     <div
       className={`group relative h-80 w-64 [perspective:1000px] ${isCoarse ? "cursor-pointer" : ""}`}
@@ -126,21 +95,18 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
         {/* front */}
         <div
           className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
-            bg-white/10 border-2 border-black backdrop-blur-xl text-black"
+            bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10 text-black"
+
         >
-          {/* Avatar: rounded rectangle, no border, no circle, object-contain */}
-          <div
-            className="mb-2 relative overflow-hidden rounded-full"
-            style={{ width: avatarDims.w, height: avatarDims.h }}
-          >
+          {/* Avatar: match feed (circle + object-cover), but larger (72px) */}
+          <div className="mb-2 relative w-[72px] h-[72px] overflow-hidden rounded-2xl bg-white ring-1 ring-black/10">
             <Image
               src={avatarSrc}
               alt={creator.displayName}
               fill
               className="object-contain"
               quality={92}
-              sizes={`${Math.ceil(avatarDims.w)}px`}
-              onLoadingComplete={onAvatarLoaded}
+              sizes="72px"
             />
           </div>
 
@@ -180,14 +146,14 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
 
         {/* back */}
         <div
-          className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
-            bg-white/10 border-2 border-black backdrop-blur-xl"
+        className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
+          bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10"
         >
           {/* photos area fills */}
           <div className="grid grid-cols-2 gap-2 h-full min-h-0">
             {photoSrcs.map((src, i) => (
-              <div key={i} className="relative w-full h-full overflow-hidden rounded-lg border border-black/10">
-                <Image src={src} alt="" fill className="object-cover" />
+              <div key={i} className="relative w-full h-full overflow-hidden rounded-lg bg-gradient-to-b from-neutral-50 to-neutral-100 border border-black/10">
+                <Image src={src} alt="" fill className="object-contain" />
               </div>
             ))}
           </div>

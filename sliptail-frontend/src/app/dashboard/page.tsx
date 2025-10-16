@@ -183,8 +183,8 @@ async function sniffContentType(url: string): Promise<"image"|"video"|"audio"|"o
 
 function AttachmentViewer({
   src,
-  className = "w-full rounded-lg border overflow-hidden bg-black/5",
-}: { src: string; className?: string }) {
+  className = "w-full rounded-lg border overflow-hidden bg-black/5", posterUrl,
+}: { src: string; className?: string ; posterUrl?: string}) {
   const [kind, setKind] = React.useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
   const [errored, setErrored] = React.useState(false);
 
@@ -223,6 +223,7 @@ function AttachmentViewer({
         controls
         playsInline
         preload="metadata"
+        poster={posterUrl}
         className={`${className} aspect-video`}
         onError={() => setErrored(true)}
       />
@@ -247,6 +248,7 @@ function AttachmentViewer({
       controls
       playsInline
       preload="metadata"
+      poster={posterUrl}
       className={`${className} aspect-video`}
       onError={() => setErrored(true)}
     />
@@ -925,6 +927,10 @@ useEffect(() => {
       return `${apiBase}/api/requests/${encodeURIComponent(requestId)}/attachment`;
     }, [apiBase]);
 
+    const buildCreatorAttachmentPosterUrl = useCallback((requestId: string | number) => {
+      return `${apiBase}/api/requests/${encodeURIComponent(requestId)}/attachment/poster`;
+    }, [apiBase]);
+
         const handleDownloadAttachment = useCallback(async () => {
           try {
             if (!activeRequest?.id) return;
@@ -1555,7 +1561,10 @@ useEffect(() => {
                 {activeRequest.attachment_path ? (
                   <div className="pt-2 space-y-3">
                     {/* Streamed inline from protected endpoint (works for S3/local) */}
-                    <AttachmentViewer src={buildCreatorAttachmentUrl(activeRequest.id)} />
+                    <AttachmentViewer
+                      src={buildCreatorAttachmentUrl(activeRequest.id)}
+                      posterUrl={buildCreatorAttachmentPosterUrl(activeRequest.id)}
+                    />
                     <div className="flex gap-2">
                       <button
                         type="button"

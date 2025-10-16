@@ -11,6 +11,7 @@ const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
 const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/notify");
 const { needsTranscode, transcodeToMp4 } = require("../utils/video");
 const storage = require("../storage");
+const { makeAndStorePoster } = require("../utils/videoPoster");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -77,6 +78,10 @@ function newKey(prefix, original) {
     crypto.randomBytes(16).toString("hex");
   const ext = path.extname(original || "");
   return `${prefix}/${id}${ext}`;
+}
+function posterKeyFor(videoKey) {
+  // same folder, just replace extension with .jpg
+  return String(videoKey || "").replace(/\.[^./\\]+$/, "") + ".jpg";
 }
 
 /* --------------------------- Helper functions --------------------------- */
@@ -149,16 +154,20 @@ router.post(
 
     // attachment path if provided (store only basename)
     let attachment_path = null;
-        if (req.file) {
-          const key = newKey("requests", req.file.originalname);
-          const uploaded = await storage.uploadPrivate({
-            key,
-            contentType: req.file.mimetype || "application/octet-stream",
-            body: req.file.buffer,
-          });
-          attachment_path = uploaded.key; // store S3 key in DB
-}
-
+    if (req.file) {
+      const key = newKey("requests", req.file.originalname);
+      const uploaded = await storage.uploadPrivate({
+        key,
+        contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.buffer,
+      });
+      attachment_path = uploaded.key;
+      const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
+      if (!isAudio) {
+        try { await makeAndStorePoster(attachment_path, { private: true }); }
+        catch (e) { console.warn("buyer attachment poster (create) failed:", e?.message || e); }
+      }
+    }
     try {
       // 1) validate that product_id is a request product of this creator
       const v = await getRequestProduct(Number(product_id), Number(creator_id));
@@ -244,15 +253,20 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
     if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
 
     let attachment_path = null;
-      if (req.file) {
-        const key = newKey("requests", req.file.originalname);
-        const uploaded = await storage.uploadPrivate({
-          key,
-          contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.buffer,
-        });
-        attachment_path = uploaded.key;
+    if (req.file) {
+      const key = newKey("requests", req.file.originalname);
+      const uploaded = await storage.uploadPrivate({
+        key,
+        contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.buffer,
+      });
+      attachment_path = uploaded.key;
+      const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
+      if (!isAudio) {
+        try { await makeAndStorePoster(attachment_path, { private: true }); }
+        catch (e) { console.warn("buyer attachment poster (legacy) failed:", e?.message || e); }
       }
+    }
 
     const { rows: existing } = await db.query(
       `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
@@ -466,6 +480,12 @@ router.post(
         const outBuf = fs.readFileSync(outTmp);
         await storage.uploadPrivate({ key, contentType: "video/mp4", body: outBuf });
 
+        try {
+          await makeAndStorePoster(key, { private: true });
+        } catch (e) {
+          console.warn("request deliver: poster generation failed:", e?.message || e);
+        }
+
         try { fs.unlinkSync(inTmp); } catch {}
         try { fs.unlinkSync(outTmp); } catch {}
       } else {
@@ -476,6 +496,13 @@ router.post(
           body: req.file.buffer,
         });
       }
+      if (!isAudio) {
+        try {
+          await makeAndStorePoster(key, { private: true });
+        } catch (e) {
+          console.warn("request deliver: poster generation failed:", e?.message || e);
+        }
+      }      
 
       // ⬇️ Persist delivery and mark COMPLETE (single terminal state)
       await db.query("BEGIN");
@@ -578,6 +605,11 @@ router.post(
             });
 
             newAttachment = key;
+            try {
+              await makeAndStorePoster(newAttachment, { private: true });
+            } catch (e) {
+              console.warn("request complete: poster generation failed:", e?.message || e);
+            }            
             try { fs.unlinkSync(inTmp); } catch {}
             try { fs.unlinkSync(outTmp); } catch {}
           } else {
@@ -588,6 +620,13 @@ router.post(
               body: req.file.buffer,
             });
             newAttachment = key;
+              if (!isAudio && newAttachment) {
+                try {
+                  await makeAndStorePoster(newAttachment, { private: true });
+                } catch (e) {
+                  console.warn("request complete: poster generation failed:", e?.message || e);
+                }
+              }
           }
         }
 
@@ -846,6 +885,48 @@ router.get("/:id/my-attachment/file", requireAuth, async (req, res) => {
   }
 });
 
+// CREATOR: inline fetch of a poster/thumbnail for the BUYER's attachment (if available)
+router.get("/:id/attachment/poster", requireAuth, requireCreator, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const creatorId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT creator_id, attachment_path FROM custom_requests WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.creator_id) !== Number(creatorId)) {
+      return res.status(403).json({ error: "Not your request" });
+    }
+    const key = (r.attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No buyer attachment" });
+
+    const posterKey = posterKeyFor(key);
+
+    let meta;
+    try {
+      meta = await storage.getReadStreamAndMeta(posterKey, undefined);
+    } catch {
+      return res.status(404).json({ error: "No poster available" });
+    }
+
+    const filename = posterKey.split("/").pop() || "poster.jpg";
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "image/jpeg");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (typeof meta.contentLength === "number")
+      res.setHeader("Content-Length", String(meta.contentLength));
+
+    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Attachment poster failed" });
+  }
+});
+
 // BUYER: inline stream of creator’s delivery (status must be delivered|complete)
 router.get("/:id/delivery", requireAuth, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
@@ -891,6 +972,53 @@ router.get("/:id/delivery", requireAuth, async (req, res) => {
   }
 });
 
+// BUYER: inline fetch of a poster/thumbnail for the creator’s delivery (if available)
+router.get("/:id/delivery/poster", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const buyerId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT buyer_id, status, creator_attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(buyerId))
+      return res.status(403).json({ error: "Not your request" });
+
+    const s = String(r.status || "").toLowerCase();
+    if (s !== "complete")
+      return res.status(403).json({ error: "Not ready yet" });
+
+    const key = (r.creator_attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No delivery file" });
+
+    const posterKey = posterKeyFor(key);
+    // Try to stream the poster image
+    let meta;
+    try {
+      meta = await storage.getReadStreamAndMeta(posterKey, undefined);
+    } catch {
+      return res.status(404).json({ error: "No poster available" });
+    }
+
+    const filename = posterKey.split("/").pop() || "poster.jpg";
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("Content-Type", meta.contentType || "image/jpeg");
+    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
+    if (typeof meta.contentLength === "number")
+      res.setHeader("Content-Length", String(meta.contentLength));
+
+    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
+    meta.stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Poster view failed" });
+  }
+});
 /* -------------------------- NEW: create-from-session -------------------------- */
 /**
  * POST /api/requests/create-from-session
@@ -934,15 +1062,20 @@ router.post(
       if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
 
       let attachment_path = null;
-          if (req.file) {
-            const key = newKey("requests", req.file.originalname);
-            const uploaded = await storage.uploadPrivate({
-              key,
-              contentType: req.file.mimetype || "application/octet-stream",
-              body: req.file.buffer,
-            });
-            attachment_path = uploaded.key;
-          }
+      if (req.file) {
+        const key = newKey("requests", req.file.originalname);
+        const uploaded = await storage.uploadPrivate({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.buffer,
+        });
+        attachment_path = uploaded.key;
+        const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
+        if (!isAudio) {
+          try { await makeAndStorePoster(attachment_path, { private: true }); }
+          catch (e) { console.warn("buyer attachment poster (from-session) failed:", e?.message || e); }
+        }
+      }
 
       // Upsert custom_request for (order_id, buyer_id)
       const existing = await db.query(

@@ -86,8 +86,9 @@ function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "
 
 function AttachmentViewer({
   src,
+  posterSrc,
   className = "w-full rounded-lg border overflow-hidden bg-black/5",
-}: { src: string; className?: string }) {
+}: { src: string; posterSrc?: string; className?: string }) {
   const [kind, setKind] = useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
   const [errored, setErrored] = useState(false);
 
@@ -140,6 +141,7 @@ function AttachmentViewer({
         controls
         playsInline
         preload="metadata"
+        poster={posterSrc}
         className={`${className} aspect-video`}
         onError={() => setErrored(true)}
       />
@@ -165,11 +167,13 @@ function AttachmentViewer({
       controls
       playsInline
       preload="metadata"
+      poster={posterSrc}
       className={`${className} aspect-video`}
       onError={() => setErrored(true)}
     />
   );
 }
+
 
 
 export default function PurchasesPage() {
@@ -945,11 +949,12 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                     <h4 className="font-medium text-gray-700 mb-3">Creator’s Delivery</h4>
 
                     {/* Inline preview from protected route */}
-                    {selectedItem?.request_id && (
-                      <AttachmentViewer
-                        src={`${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id)}/delivery`}
-                      />
-                    )}
+                      {selectedItem?.request_id && (
+                        <AttachmentViewer
+                          src={`${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id)}/delivery`}
+                          posterSrc={`${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id)}/delivery/poster`}
+                        />
+                      )}
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       {/* Download from protected route */}

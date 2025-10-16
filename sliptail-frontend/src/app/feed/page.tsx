@@ -6,7 +6,7 @@ import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
 
 interface Product { id: number; creator_id: number; title: string | null; description: string | null; created_at?: string; display_name?: string; profile_image?: string; }
-interface Post { id: number; creator_id: number; title: string | null; body: string | null; media_path: string | null; created_at: string; product_id?: number; profile_image?: string; }
+interface Post { id: number; creator_id: number; title: string | null; body: string | null; media_path: string | null; media_poster?: string | null; created_at: string; product_id?: number; profile_image?: string; }
 interface MeResponse { user?: { id: number; role?: string; }; }
 
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
@@ -21,11 +21,13 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
 function PostMedia({
   src,
   file = null,
-  bleed = false, // NEW: make audio span to card edges on mobile when true
+  bleed = false,
+  poster,
 }: {
   src: string;
   file?: File | null;
   bleed?: boolean;
+  poster?: string;
 }) {
   const isAudio =
     (file?.type?.startsWith("audio/") ||
@@ -63,6 +65,7 @@ function PostMedia({
             playsInline
             preload="metadata"
             controlsList="nodownload"
+            poster={poster}
             className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
           />
         ) : (
@@ -406,9 +409,11 @@ export default function MembershipFeedPage() {
                           </div>
                           {post.body && <p className="mt-2 text-sm whitespace-pre-wrap leading-relaxed break-words">Description: {post.body}</p>}
                         {post.media_path && (
-                          <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} />
+                          <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} 
+                              /* 👇 NEW: poster from API if present */
+                             poster={post.media_poster ? (resolveImageUrl(post.media_poster, apiBase) || post.media_poster) : undefined}
+                                            />
                         )}
-
                         </div>
                       </div>
                     ))}
@@ -497,7 +502,8 @@ export default function MembershipFeedPage() {
 
                             {/* Keep images/videos inside the text column */}
                             {post.media_path && !isAudioMedia(null, post.media_path) && (
-                              <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path} />
+                              <PostMedia src={resolveMediaUrl(post.media_path) || post.media_path}
+                              poster={post.media_poster ? (resolveImageUrl(post.media_poster, apiBase) || post.media_poster) : undefined} />
                             )}
                           </div>
                         </div>
