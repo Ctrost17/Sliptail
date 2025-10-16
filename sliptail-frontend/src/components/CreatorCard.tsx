@@ -75,6 +75,14 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
     }
   }
 
+  // Build the flip transform classes.
+  // IMPORTANT: Only enable hover-flip on non-coarse pointers to avoid double-trigger on mobile.
+  const flipTransform =
+    "relative h-full w-full rounded-2xl shadow-2xl shadow-black/25 transition-transform duration-500 " +
+    "transform-gpu will-change-transform [transform-style:preserve-3d] " +
+    (isFlipped ? "[transform:rotateY(180deg)] " : "") +
+    (!isCoarse ? "group-hover:[transform:rotateY(180deg)] " : "");
+
   return (
     <div
       className={`group relative h-80 w-64 [perspective:1000px] ${isCoarse ? "cursor-pointer" : ""}`}
@@ -84,21 +92,17 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
       onClick={toggleFlip}
       onKeyDown={onKeyDown}
     >
-      <div
-        className={
-          "relative h-full w-full rounded-2xl shadow-2xl shadow-black/25 transition-transform duration-500 " +
-          "[transform-style:preserve-3d] " +
-          (isFlipped ? "[transform:rotateY(180deg)] " : "") +
-          "group-hover:[transform:rotateY(180deg)]"
-        }
-      >
+      <div className={flipTransform}>
         {/* front */}
         <div
-          className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
+          className="absolute inset-0 flex flex-col items-center rounded-2xl p-4
+            [backface-visibility:hidden] [transform:translateZ(0.1px)] [contain:paint]
             bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10 text-black"
-
+          aria-hidden={isFlipped}
+          // @ts-expect-error inert is fine at runtime
+          inert={isFlipped ? "" : undefined}
         >
-          {/* Avatar: match feed (circle + object-cover), but larger (72px) */}
+          {/* Avatar */}
           <div className="mb-2 relative w-[72px] h-[72px] overflow-hidden rounded-2xl bg-white ring-1 ring-black/10">
             <Image
               src={avatarSrc}
@@ -126,6 +130,7 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
               ))}
             </div>
           )}
+
           <div className="mt-1 h-5 flex items-center text-black/90">
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -139,24 +144,30 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
             <span className="ml-1 text-sm text-black/90">{ratingValue.toFixed(1)}</span>
           </div>
 
-          <p className="mt-3 text-center text-sm text-black/80 line-clamp-3">
-            {creator.bio}
-          </p>
+          <p className="mt-3 text-center text-sm text-black/80 line-clamp-3">{creator.bio}</p>
         </div>
 
         {/* back */}
         <div
-        className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
-          bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10"
+          className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2
+            [transform:rotateY(180deg)] [backface-visibility:hidden] [transform:translateZ(0.1px)] [contain:paint]
+            bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10"
+          aria-hidden={!isFlipped}
+          // @ts-expect-error inert is fine at runtime
+          inert={!isFlipped ? "" : undefined}
         >
           {/* photos area fills */}
           <div className="grid grid-cols-2 gap-2 h-full min-h-0">
             {photoSrcs.map((src, i) => (
-              <div key={i} className="relative w-full h-full overflow-hidden rounded-lg bg-gradient-to-b from-neutral-50 to-neutral-100 border border-black/10">
+              <div
+                key={i}
+                className="relative w-full h-full overflow-hidden rounded-2xl bg-gradient-to-b from-neutral-50 to-neutral-100 border border-black/10"
+              >
                 <Image src={src} alt="" fill className="object-contain" />
               </div>
             ))}
           </div>
+
           {/* button row; stop flip toggle when link is tapped/clicked */}
           <Link
             href={`/creators/${creator.id}`}
