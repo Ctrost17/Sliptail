@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
@@ -29,12 +29,109 @@ function PostMedia({
   bleed?: boolean;
   poster?: string;
 }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [overlayVisible, setOverlayVisible] = useState(true); // show by default when paused
+  const overlayTimerRef = useRef<number | undefined>(undefined);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [bufferedFrac, setBufferedFrac] = useState(0);
+  const [seeking, setSeeking] = useState(false);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+
   const isAudio =
     (file?.type?.startsWith("audio/") ||
       /\.mp3$/i.test((src || "").split("?")[0])) as boolean;
   const isVideo =
     (file?.type?.startsWith("video/") ||
       /\.(mp4|webm|ogg|m4v|mov)$/i.test((src || "").split("?")[0])) as boolean;
+
+  const clearOverlayTimer = () => {
+    if (overlayTimerRef.current !== undefined) {
+      window.clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = undefined;
+    }
+  };
+
+  const scheduleOverlayAutoHide = useCallback((delay = 1500) => {
+    clearOverlayTimer();
+    overlayTimerRef.current = window.setTimeout(() => {
+      setOverlayVisible(false);
+      overlayTimerRef.current = undefined;
+    }, delay);
+  }, []);
+
+  const toggleVideoPlayback = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused || v.ended) {
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
+  }, []);
+
+  const formatTime = (t: number) => {
+    if (!isFinite(t) || t < 0) t = 0;
+    const total = Math.floor(t);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  };
+
+  const updateBuffered = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.duration || !isFinite(v.duration)) {
+      setBufferedFrac(0);
+      return;
+    }
+    try {
+      const len = v.buffered?.length || 0;
+      if (len > 0) {
+        const end = v.buffered.end(len - 1);
+        setBufferedFrac(Math.max(0, Math.min(1, end / v.duration)));
+      } else {
+        setBufferedFrac(0);
+      }
+    } catch {
+      setBufferedFrac(0);
+    }
+  }, []);
+
+  const getFracFromClientX = (clientX: number) => {
+    const el = trackRef.current;
+    if (!el || !duration) return 0;
+    const rect = el.getBoundingClientRect();
+    const frac = (clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(1, frac));
+  };
+
+  const seekToFraction = (frac: number) => {
+    const v = videoRef.current;
+    if (!v || !duration) return;
+    const newTime = frac * duration;
+    v.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const handleScrubStart = (clientX: number) => {
+    setSeeking(true);
+    clearOverlayTimer();
+    setOverlayVisible(true);
+    seekToFraction(getFracFromClientX(clientX));
+  };
+
+  const handleScrubMove = (clientX: number) => {
+    if (!seeking) return;
+    seekToFraction(getFracFromClientX(clientX));
+  };
+
+  const handleScrubEnd = () => {
+    setSeeking(false);
+    if (isPlaying) scheduleOverlayAutoHide();
+  };
 
   if (isAudio) {
     return (
@@ -59,15 +156,139 @@ function PostMedia({
     <div className="mt-3 flex justify-center">
       <div className="w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200">
         {isVideo ? (
-          <video
-            src={src}
-            controls
-            playsInline
-            preload="metadata"
-            controlsList="nodownload"
-            poster={poster}
-            className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
-          />
+          <div
+            className="relative group"
+            onMouseEnter={() => isPlaying && setOverlayVisible(true)}
+            onMouseMove={() => {
+              if (isPlaying) {
+                setOverlayVisible(true);
+                scheduleOverlayAutoHide();
+              }
+            }}
+            onMouseLeave={() => isPlaying && setOverlayVisible(false)}
+            onTouchStart={() => {
+              if (isPlaying) {
+                setOverlayVisible(true);
+                scheduleOverlayAutoHide(1800);
+              }
+            }}
+            onClick={() => {
+              // Clicking the video area shows the overlay while playing
+              if (isPlaying) {
+                setOverlayVisible(true);
+                scheduleOverlayAutoHide();
+              }
+            }}
+          >
+            <video
+              ref={videoRef}
+              src={src}
+              playsInline
+              preload="metadata"
+              poster={poster}
+              onLoadedMetadata={() => {
+                const v = videoRef.current;
+                const d = v?.duration || 0;
+                setDuration(isFinite(d) ? d : 0);
+                updateBuffered();
+              }}
+              onTimeUpdate={() => {
+                const v = videoRef.current;
+                if (!v) return;
+                if (!seeking) setCurrentTime(v.currentTime || 0);
+              }}
+              onProgress={updateBuffered}
+              onPlay={() => {
+                setIsPlaying(true);
+                setOverlayVisible(false);
+                scheduleOverlayAutoHide(1200);
+              }}
+              onPause={() => {
+                setIsPlaying(false);
+                clearOverlayTimer();
+                setOverlayVisible(true);
+              }}
+              onEnded={() => {
+                setIsPlaying(false);
+                clearOverlayTimer();
+                setOverlayVisible(true);
+              }}
+              className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
+            />
+            {/* Centered Play/Pause overlay */}
+            {(overlayVisible || !isPlaying) && (
+              <button
+                type="button"
+                aria-label={isPlaying ? "Pause video" : "Play video"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleVideoPlayback();
+                }}
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center h-14 w-14 rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
+              >
+                {/* Icon */}
+                {isPlaying ? (
+                  // Pause icon
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <rect x="5" y="4" width="5" height="16" rx="1"></rect>
+                    <rect x="14" y="4" width="5" height="16" rx="1"></rect>
+                  </svg>
+                ) : (
+                  // Play icon
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7-11-7z"></path>
+                  </svg>
+                )}
+              </button>
+            )}
+
+            {/* Bottom time control (timeline) */}
+            <div className="absolute inset-x-0 bottom-0 p-3 select-none">
+              <div
+                className={`rounded-md px-2 py-1.5 bg-black/45 backdrop-blur-sm text-white shadow transition-opacity ${
+                  overlayVisible || !isPlaying ? "opacity-100" : "opacity-0"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {/* Current time */}
+                  <span className="text-[11px] tabular-nums min-w-[36px] text-white/90">{formatTime(currentTime)}</span>
+
+                  {/* Track */}
+                  <div
+                    ref={trackRef}
+                    className="relative h-2 flex-1 cursor-pointer"
+                    onMouseDown={(e) => handleScrubStart(e.clientX)}
+                    onMouseMove={(e) => handleScrubMove(e.clientX)}
+                    onMouseUp={handleScrubEnd}
+                    onMouseLeave={() => seeking && handleScrubEnd()}
+                    onTouchStart={(e) => handleScrubStart(e.touches[0].clientX)}
+                    onTouchMove={(e) => handleScrubMove(e.touches[0].clientX)}
+                    onTouchEnd={handleScrubEnd}
+                  >
+                    <div className="absolute inset-0 rounded-full bg-white/20" />
+                    {/* Buffered */}
+                    <div
+                      className="absolute inset-y-0 left-0 rounded-full bg-white/35"
+                      style={{ width: `${Math.max(0, Math.min(100, bufferedFrac * 100))}%` }}
+                    />
+                    {/* Played */}
+                    <div
+                      className="absolute inset-y-0 left-0 rounded-full bg-emerald-400"
+                      style={{ width: `${duration ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0}%` }}
+                    />
+                    {/* Thumb */}
+                    <div
+                      className="absolute -top-1.5 h-5 w-5 rounded-full bg-white shadow ring-1 ring-black/10"
+                      style={{ left: `${duration ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0}%`, transform: "translateX(-50%)" }}
+                    />
+                  </div>
+
+                  {/* Duration */}
+                  <span className="text-[11px] tabular-nums min-w-[36px] text-white/90">{formatTime(duration)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         ) : (
           <img
             src={src}
