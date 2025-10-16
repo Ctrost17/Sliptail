@@ -62,33 +62,39 @@ function isVideoUpload(file) {
 
 /* ---------------------- helpers: signed URLs --------------------- */
 
+// helper: accept raw keys, already-signed URLs, or {key:"..."} legacy shapes
+function normalizeKeyOrUrl(v) {
+  if (!v) return null;
+  if (typeof v === "string") {
+    if (/^https?:\/\//i.test(v)) return v;     // already a URL
+    try { const j = JSON.parse(v); if (j?.key) return j.key; } catch {}
+    return v;                                   // assume raw key
+  }
+  if (typeof v === "object" && v.key) return v.key;
+  return String(v);
+}
+
 async function addSignedUrl(post) {
   if (!post) return post;
-
-  // If there's nothing to sign, just pass through
   const out = { ...post };
 
-  // For both drivers, storage.getPrivateUrl() gives a usable URL:
-  // - LOCAL: returns "/uploads/..."
-  // - S3:    returns a presigned https URL
   async function sign(field) {
-    const v = post[field];
-    if (!v) return null;
+    const raw = normalizeKeyOrUrl(post[field]);
+    if (!raw) return null;
+    if (/^https?:\/\//i.test(raw)) return raw; // don’t re-sign full URLs
     try {
-      return await storage.getPrivateUrl(v, { expiresIn: 3600 }); // 1 hour
+      return await storage.getPrivateUrl(raw, { expiresIn: 3600 });
     } catch (e) {
       console.warn(`sign ${field} failed:`, e?.message || e);
       return null;
     }
   }
 
-  // Overwrite the fields your frontend already reads
-  // (so the UI can keep using post.media_path / post.media_poster)
-  if (post.media_path)    out.media_path    = await sign("media_path");
-  if (post.media_poster)  out.media_poster  = await sign("media_poster");
-
+  if (post.media_path)   out.media_path   = await sign("media_path");
+  if (post.media_poster) out.media_poster = await sign("media_poster");
   return out;
 }
+
 
 async function addSignedUrls(rows) {
   return Promise.all(rows.map(addSignedUrl));
@@ -183,25 +189,27 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
 
         // Store poster alongside post media: e.g. "posts/<postId>/poster.jpg"
         const posterKey = `posts/${postRow.id}/poster.jpg`;
-        const storedPosterKeyOrPath = await makeAndStorePoster(absInputPath, posterKey);
+        const storedPoster = await makeAndStorePoster(absInputPath, posterKey);
+        const posterValue = storedPoster?.key || storedPoster; // <— ensure plain string
 
         // Save on the post
         const { rows: upd } = await db.query(
           `UPDATE posts SET media_poster = $1 WHERE id = $2 RETURNING *`,
-          [storedPosterKeyOrPath, postRow.id]
+          [posterValue, postRow.id]
         );
         postRow = upd[0];
 
         // Cleanup tmp file if we created one
-        if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {}
-        }
+        if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
       } catch (e) {
         console.warn("poster generation failed:", e?.message || e);
       }
     }
 
-    const postWithUrl = await addSignedUrl(rows[0]);
+    // IMPORTANT: return the updated row (with poster), not rows[0]
+    const postWithUrl = await addSignedUrl(postRow);
     res.status(201).json({ post: postWithUrl });
+
 
     // Notify members for membership products
     if (product.product_type === "membership") {
@@ -243,6 +251,8 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     let media_poster = existingRows[0].media_poster;
     let oldLocalFilenameToDelete = null;
     let oldS3KeyToDelete = null;
+    let oldPosterLocalToDelete = null;   // <-- add
+    let oldPosterS3KeyToDelete = null;   // <-- add
 
     const isRemoving = media_remove === "1" || media_remove === "true";
     const isReplacing = !!req.file;
@@ -296,11 +306,6 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       sets.push(`media_path = $${i++}`);
       vals.push(media_path);
     }
-        if (isReplacing || isRemoving) {
-      sets.push(`media_poster = $${i++}`);
-      vals.push(media_poster);
-    }
-
 
     if (!sets.length) return res.status(400).json({ error: "No fields to update" });
     vals.push(postId);
@@ -310,59 +315,63 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       vals
     );
 
-      // Decide new poster value based on new/removed media
-  if (req.file) {
-    if (isVideoUpload(req.file)) {
-      try {
-        let absInputPath;
-        let tmpPath = null;
+    // ----- Decide new poster value based on new/removed media, and persist it -----
+    let finalRow = updated.rows[0];
 
-        if (storage.isS3) {
-          const tmpExt = path.extname(req.file.originalname || "") || ".bin";
-          tmpPath = path.join(os.tmpdir(), `postvid-${postId}-${Date.now()}${tmpExt}`);
-          await fs.promises.writeFile(tmpPath, req.file.buffer);
-          absInputPath = tmpPath;
-        } else {
-          absInputPath = req.file.path;
+    if (req.file) {
+      if (isVideoUpload(req.file)) {
+        try {
+          let absInputPath;
+          let tmpPath = null;
+
+          if (storage.isS3) {
+            const tmpExt = path.extname(req.file.originalname || "") || ".bin";
+            tmpPath = path.join(os.tmpdir(), `postvid-${postId}-${Date.now()}${tmpExt}`);
+            await fs.promises.writeFile(tmpPath, req.file.buffer);
+            absInputPath = tmpPath;
+          } else {
+            absInputPath = req.file.path;
+          }
+
+          const posterKey = `posts/${postId}/poster.jpg`;
+          const storedPoster = await makeAndStorePoster(absInputPath, posterKey);
+          const posterValue = storedPoster?.key || storedPoster; // <— ensure plain string
+
+          // Persist the fresh poster
+          const { rows: upd2 } = await db.query(
+            `UPDATE posts SET media_poster = $1, updated_at = NOW() WHERE id=$2 RETURNING *`,
+            [posterValue, postId]
+          );
+          finalRow = upd2[0];
+
+          if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
+        } catch (e) {
+          console.warn("poster generation (update) failed:", e?.message || e);
+          // If generation fails, drop any stale poster so UI doesn’t show a broken one
+          const { rows: upd2 } = await db.query(
+            `UPDATE posts SET media_poster = NULL, updated_at = NOW() WHERE id=$1 RETURNING *`,
+            [postId]
+          );
+          finalRow = upd2[0];
         }
-
-        const posterKey = `posts/${postId}/poster.jpg`;
-        media_poster = await makeAndStorePoster(absInputPath, posterKey);
-
-        if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
-      } catch (e) {
-        console.warn("poster generation (update) failed:", e?.message || e);
-        media_poster = null; // fall back to none if generation fails
+      } else {
+        // Replaced with a non-video; drop any old poster
+        const { rows: upd2 } = await db.query(
+          `UPDATE posts SET media_poster = NULL, updated_at = NOW() WHERE id=$1 RETURNING *`,
+          [postId]
+        );
+        finalRow = upd2[0];
       }
-    } else {
-      // Replaced with a non-video; drop any old poster
-      media_poster = null;
-    }
-  } else if (isRemoving) {
-    media_poster = null;
-  } 
-    // cleanup best-effort
-    if (oldLocalFilenameToDelete) {
-      const oldPath = path.join(postUploadsDir, oldLocalFilenameToDelete);
-      fs.existsSync(oldPath) && fs.unlink(oldPath, () => {});
-    }
-    if (oldS3KeyToDelete) {
-      try {
-        await storage.deletePrivate(oldS3KeyToDelete);
-      } catch (e) {
-        console.warn("Warning: failed to delete old private S3 object", oldS3KeyToDelete, e?.message || e);
-      }
-    }
-    if (oldPosterLocalToDelete) {
-      const oldPosterPath = path.join(postUploadsDir, oldPosterLocalToDelete);
-      fs.existsSync(oldPosterPath) && fs.unlink(oldPosterPath, () => {});
-    }
-    if (oldPosterS3KeyToDelete) {
-      try { await storage.deletePrivate(oldPosterS3KeyToDelete); }
-      catch (e) { console.warn("Warning: failed to delete old private S3 poster", oldPosterS3KeyToDelete, e?.message || e); }
+    } else if (isRemoving) {
+      // Explicit removal
+      const { rows: upd2 } = await db.query(
+        `UPDATE posts SET media_poster = NULL, updated_at = NOW() WHERE id=$1 RETURNING *`,
+        [postId]
+      );
+      finalRow = upd2[0];
     }
 
-    const postWithUrl = await addSignedUrl(updated.rows[0]);
+    const postWithUrl = await addSignedUrl(finalRow);
     return res.json({ post: postWithUrl });
   } catch (e) {
     console.error("update post error:", e);
@@ -552,15 +561,16 @@ router.delete("/:id", requireAuth, requireCreator, async (req, res) => {
     }
       const poster = existing[0].media_poster;
       if (poster) {
-        if (!storage.isS3 && String(poster).startsWith("/uploads/posts/")) {
-          const p = poster.replace("/uploads/posts/", "");
+        const posterKey = normalizeKeyOrUrl(poster);
+        if (!storage.isS3 && String(posterKey).startsWith("/uploads/posts/")) {
+          const p = posterKey.replace("/uploads/posts/", "");
           const fp = path.join(postUploadsDir, p);
           fs.existsSync(fp) && fs.unlink(fp, () => {});
         } else if (storage.isS3) {
-          try { await storage.deletePrivate(poster); }
-          catch (e) { console.warn("Warning: failed to delete private S3 poster", poster, e?.message || e); }
+          try { await storage.deletePrivate(posterKey); }
+          catch (e) { console.warn("Warning: failed to delete old private S3 poster", posterKey, e?.message || e); }
         }
-      }   
+      }  
 
     return res.status(204).end();
   } catch (e) {

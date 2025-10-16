@@ -82,7 +82,7 @@ async function makeAndStorePoster(videoKey, opts = {}) {
   try { fs.unlinkSync(inTmp); } catch {}
   try { fs.unlinkSync(outJpg); } catch {}
 
-  return { key: posterKey };
+   return storedKey;
 }
 
 module.exports = { makeAndStorePoster, posterKeyFor };
