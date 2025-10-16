@@ -4,6 +4,7 @@ const fs = require("fs");
 const fsp = fs.promises;
 
 const DRIVER = String(process.env.STORAGE_DRIVER || "local").toLowerCase();
+const isS3 = DRIVER === "s3";
 
 /* -------------------- LOCAL DRIVER -------------------- */
 async function ensureDir(p) {
@@ -159,6 +160,7 @@ async function getReadStreamAndMeta(key, rangeHeader) {
 
 module.exports = {
   DRIVER,
+  isS3,
   uploadPrivate,
   getPrivateUrl,
   getReadStreamAndMeta,
