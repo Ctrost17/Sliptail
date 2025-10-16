@@ -41,10 +41,21 @@ function PostMedia({
   const pointerIdRef = useRef<number | null>(null);
   const [showPoster, setShowPoster] = useState<boolean>(() => Boolean(poster));
 
-  // Keep poster visibility in sync if prop changes
+  // Compute an effective poster: prefer provided poster; otherwise try Safari frame extraction via `#t=0.1` on the video URL.
+  const effectivePoster = useMemo(() => {
+    if (poster && poster.trim()) return poster;
+    // Attempt to use Safari's frame extraction from the MP4/WebM URL at t=0.1s
+    const s = (src || "").toString();
+    // Only apply to likely video sources
+    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(s.split("?")[0]);
+    if (!isVid) return undefined;
+    return s.includes("#") ? s : `${s}#t=0.1`;
+  }, [poster, src]);
+
+  // Keep poster visibility in sync when poster availability changes
   useEffect(() => {
-    setShowPoster(Boolean(poster));
-  }, [poster]);
+    setShowPoster(Boolean(effectivePoster));
+  }, [effectivePoster]);
 
   // Ensure inline playback on iPhone Safari
   useEffect(() => {
@@ -56,6 +67,8 @@ function PostMedia({
       v.setAttribute("webkit-playsinline", "true");
       // Some Android WebViews (optional, harmless elsewhere)
       v.setAttribute("x5-playsinline", "true");
+      // Ensure not auto-playing or showing a black frame before interaction
+      v.pause();
     } catch {}
   }, []);
 
@@ -207,7 +220,7 @@ function PostMedia({
               playsInline
               preload="metadata"
               crossOrigin="anonymous"
-              poster={poster}
+              poster={effectivePoster}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
                 const d = v?.duration || 0;
@@ -232,7 +245,7 @@ function PostMedia({
                 setOverlayVisible(true);
                 const v = videoRef.current;
                 if (v && (v.currentTime ?? 0) <= 0.01) {
-                  setShowPoster(Boolean(poster));
+                  setShowPoster(Boolean(effectivePoster));
                 }
               }}
               onEnded={() => {
@@ -240,17 +253,17 @@ function PostMedia({
                 clearOverlayTimer();
                 setOverlayVisible(true);
                 setCurrentTime(0);
-                setShowPoster(Boolean(poster));
+                setShowPoster(Boolean(effectivePoster));
               }}
-              className={`${showPoster ? "hidden" : "block"} w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black`}
+              className={`${showPoster ? "hidden" : "block"} w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain`}
             />
             {/* Poster fallback (iPhone fix): show image preview until playback starts */}
-            {showPoster && poster && (
+            {showPoster && effectivePoster && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={poster}
+                src={effectivePoster}
                 alt="video preview"
-                className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black"
+                className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
               />
             )}
             {/* Centered Play/Pause overlay */}
