@@ -39,6 +39,9 @@ function PostMedia({
   const [seeking, setSeeking] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
+  const [showPosterOverlay, setShowPosterOverlay] = useState(true);
+  const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
+  
   // Use provided poster directly (already signed by backend)
   const effectivePoster = useMemo(() => {
     if (poster && poster.trim()) {
@@ -49,6 +52,27 @@ function PostMedia({
     console.log('[PostMedia] No poster, browser will load first frame for:', src);
     return undefined;
   }, [poster, src]);
+
+  // Resolve poster via fetch (handles protected endpoints with credentials)
+  useEffect(() => {
+    let revoke: string | null = null;
+    setResolvedPoster(null);
+    const url = poster?.trim();
+    if (!url) return;
+    (async () => {
+      try {
+        const res = await fetch(url, { credentials: "include", cache: "no-store" });
+        if (!res.ok) return;
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.toLowerCase().startsWith("image/")) return;
+        const blob = await res.blob();
+        const obj = URL.createObjectURL(blob);
+        revoke = obj;
+        setResolvedPoster(obj);
+      } catch {}
+    })();
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [poster]);
 
   // Ensure inline playback on iPhone Safari
   useEffect(() => {
@@ -238,6 +262,7 @@ function PostMedia({
               }}
               onPlay={() => {
                 setIsPlaying(true);
+                setShowPosterOverlay(false);
                 setOverlayVisible(false);
                 scheduleOverlayAutoHide(1200);
               }}
@@ -245,15 +270,34 @@ function PostMedia({
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
+                const v = videoRef.current;
+                // Show poster again if at the beginning
+                if (v && (v.currentTime ?? 0) <= 0.01) {
+                  setShowPosterOverlay(Boolean(resolvedPoster || effectivePoster));
+                }
               }}
               onEnded={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
+                setShowPosterOverlay(Boolean(resolvedPoster || effectivePoster));
                 setCurrentTime(0);
               }}
               className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
+            
+            {/* Poster image overlay for mobile - shown before video plays */}
+            {showPosterOverlay && (resolvedPoster || effectivePoster) && (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={resolvedPoster || effectivePoster}
+                  alt="video preview"
+                  className="absolute inset-0 w-full h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain bg-black pointer-events-none select-none"
+                />
+              </>
+            )}
+            
             {/* Centered Play/Pause overlay */}
             {(overlayVisible || !isPlaying) && (
               <button
