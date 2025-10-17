@@ -147,7 +147,7 @@ module.exports.recomputeCreatorActive = async function recomputeCreatorActive(db
         `SELECT (${flags.join(" OR ")}) AS ok
          FROM stripe_connect
          WHERE user_id::text=$1
-         ORDER BY id DESC
+         ORDER BY user_id DESC
          LIMIT 1`,
         [uid]
       );
