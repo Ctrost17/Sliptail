@@ -4,6 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+/* ----------------------------- Types ----------------------------- */
+
 interface Creator {
   id: number | string;
   displayName: string;
@@ -11,8 +13,13 @@ interface Creator {
   bio: string;
   rating: number | string | null | undefined;
   photos: Array<string | null | undefined>;
-  categories?: Array<string | { name: string } | { id: number; name: string; slug?: string }>;
+  categories?:
+    | Array<string>
+    | Array<{ name: string }>
+    | Array<{ id: number; name: string; slug?: string }>;
 }
+
+/* ----------------------------- Helpers ----------------------------- */
 
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
@@ -22,9 +29,12 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
 }
+
 function toApiBase(): string {
   return (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
 }
+
+/* ----------------------------- Component ----------------------------- */
 
 export default function CreatorCard({ creator }: { creator: Creator }) {
   const apiBase = useMemo(() => toApiBase(), []);
@@ -42,20 +52,28 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
       .slice(0, 4);
   }, [creator.categories]);
 
-  const avatarSrc = resolveImageUrl(creator.avatar, apiBase) || "/default-avatar.png";
+  const avatarSrc =
+    resolveImageUrl(creator.avatar, apiBase) || "/default-avatar.png";
+
   const photoSrcs = (creator.photos || [])
     .slice(0, 4)
-    .map((src) => resolveImageUrl(src || null, apiBase) || "/placeholder-image.png");
+    .map(
+      (src) =>
+        resolveImageUrl(src || null, apiBase) || "/placeholder-image.png"
+    );
 
-  // --- Mobile tap-to-flip support ---
+  /* ------------------ Mobile Tap-to-Flip ------------------ */
+
   const [isCoarse, setIsCoarse] = useState(false);
   const [isFlipped, setIsFlipped] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia("(pointer: coarse)");
+
     const apply = () => setIsCoarse(!!mq.matches);
     apply();
+
     try {
       mq.addEventListener("change", apply);
       return () => mq.removeEventListener("change", apply);
@@ -68,6 +86,7 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
   function toggleFlip() {
     if (isCoarse) setIsFlipped((f) => !f);
   }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -75,9 +94,47 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
     }
   }
 
+  /* ------------------ Avatar Sizing ------------------ */
+
+  const [avatarDims, setAvatarDims] = useState<{ w: number; h: number }>({
+    w: 80,
+    h: 80,
+  });
+  const [avatarSized, setAvatarSized] = useState(false);
+
+  function onAvatarLoaded({
+    naturalWidth,
+    naturalHeight,
+  }: {
+    naturalWidth: number;
+    naturalHeight: number;
+  }) {
+    if (avatarSized) return;
+
+    const ar = naturalWidth / Math.max(1, naturalHeight);
+    let h = 84;
+    let w = 84;
+
+    if (ar >= 1.25) {
+      w = Math.round(Math.min(144, Math.max(96, h * ar)));
+    }
+
+    const dpr =
+      typeof window !== "undefined" ? Math.max(1, window.devicePixelRatio || 1) : 1;
+    const maxByPixels = Math.floor((naturalWidth / dpr) * 1.25);
+    w = Math.min(w, Math.max(84, maxByPixels));
+
+    setAvatarDims({ w, h });
+    setAvatarSized(true);
+  }
+
+  /* ------------------ Render ------------------ */
+
   return (
     <div
-      className={`group relative h-80 w-64 [perspective:1000px] ${isCoarse ? "cursor-pointer" : ""}`}
+      className={`group relative h-80 w-64 [perspective:1000px] ${
+        isCoarse ? "cursor-pointer" : ""
+      }`}
       role="button"
       tabIndex={0}
       aria-pressed={isFlipped}
@@ -92,21 +149,21 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
           "group-hover:[transform:rotateY(180deg)]"
         }
       >
-        {/* front */}
-        <div
-          className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden]
-            bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10 text-black"
-
-        >
-          {/* Avatar: match feed (circle + object-cover), but larger (72px) */}
-          <div className="mb-2 relative w-[72px] h-[72px] overflow-hidden rounded-2xl bg-white ring-1 ring-black/10">
+        {/* ------------------ Front ------------------ */}
+        <div className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden] bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black backdrop-blur-xl text-black">
+          {/* Avatar */}
+          <div
+            className="mb-2 relative overflow-hidden rounded-full"
+            style={{ width: avatarDims.w, height: avatarDims.h }}
+          >
             <Image
               src={avatarSrc}
               alt={creator.displayName}
               fill
               className="object-contain"
               quality={92}
-              sizes="72px"
+              sizes={`${Math.ceil(avatarDims.w)}px`}
+              onLoadingComplete={onAvatarLoaded}
             />
           </div>
 
@@ -126,6 +183,7 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
               ))}
             </div>
           )}
+
           <div className="mt-1 h-5 flex items-center text-black/90">
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -136,7 +194,9 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
             >
               <path d="M12 .587l3.668 7.431 8.2 1.193-5.934 5.787 1.402 8.168L12 18.896l-7.336 3.87 1.402-8.168L.132 9.211l8.2-1.193z" />
             </svg>
-            <span className="ml-1 text-sm text-black/90">{ratingValue.toFixed(1)}</span>
+            <span className="ml-1 text-sm text-black/90">
+              {ratingValue.toFixed(1)}
+            </span>
           </div>
 
           <p className="mt-3 text-center text-sm text-black/80 line-clamp-3">
@@ -144,20 +204,19 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
           </p>
         </div>
 
-        {/* back */}
-        <div
-        className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden]
-          bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black/10"
-        >
-          {/* photos area fills */}
+        {/* ------------------ Back ------------------ */}
+        <div className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden] bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black backdrop-blur-xl">
           <div className="grid grid-cols-2 gap-2 h-full min-h-0">
             {photoSrcs.map((src, i) => (
-              <div key={i} className="relative w-full h-full overflow-hidden rounded-lg bg-gradient-to-b from-neutral-50 to-neutral-100 border border-black/10">
-                <Image src={src} alt="" fill className="object-contain" />
+              <div
+                key={i}
+                className="relative w-full h-full overflow-hidden rounded-lg border border-black/10"
+              >
+                <Image src={src} alt="" fill className="object-cover" />
               </div>
             ))}
           </div>
-          {/* button row; stop flip toggle when link is tapped/clicked */}
+
           <Link
             href={`/creators/${creator.id}`}
             className="rounded-xl border-2 border-black bg-black/10 py-2 text-center text-black hover:bg-white/15 transition"
