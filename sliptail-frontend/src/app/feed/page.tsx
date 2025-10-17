@@ -31,7 +31,7 @@ function PostMedia({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [overlayVisible, setOverlayVisible] = useState(true); // show by default when paused
+  const [overlayVisible, setOverlayVisible] = useState(true);
   const overlayTimerRef = useRef<number | undefined>(undefined);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -39,23 +39,16 @@ function PostMedia({
   const [seeking, setSeeking] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
-  const [showPoster, setShowPoster] = useState<boolean>(() => Boolean(poster));
-
-  // Compute an effective poster: prefer provided poster; otherwise try Safari frame extraction via `#t=0.1` on the video URL.
+  // Use provided poster directly (already signed by backend)
   const effectivePoster = useMemo(() => {
-    if (poster && poster.trim()) return poster;
-    // Attempt to use Safari's frame extraction from the MP4/WebM URL at t=0.1s
-    const s = (src || "").toString();
-    // Only apply to likely video sources
-    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(s.split("?")[0]);
-    if (!isVid) return undefined;
-    return s.includes("#") ? s : `${s}#t=0.1`;
+    if (poster && poster.trim()) {
+      console.log('[PostMedia] Using poster from API:', poster);
+      return poster;
+    }
+    // If no poster provided, let browser show first frame with preload="metadata"
+    console.log('[PostMedia] No poster, browser will load first frame for:', src);
+    return undefined;
   }, [poster, src]);
-
-  // Keep poster visibility in sync when poster availability changes
-  useEffect(() => {
-    setShowPoster(Boolean(effectivePoster));
-  }, [effectivePoster]);
 
   // Ensure inline playback on iPhone Safari
   useEffect(() => {
@@ -219,13 +212,14 @@ function PostMedia({
               src={src}
               playsInline
               preload="metadata"
-              crossOrigin="anonymous"
+              crossOrigin="use-credentials"
               poster={effectivePoster}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
                 const d = v?.duration || 0;
                 setDuration(isFinite(d) ? d : 0);
                 updateBuffered();
+                console.log('[PostMedia] Video metadata loaded, duration:', d, 'poster:', effectivePoster);
               }}
               onTimeUpdate={() => {
                 const v = videoRef.current;
@@ -233,39 +227,33 @@ function PostMedia({
                 if (!seeking) setCurrentTime(v.currentTime || 0);
               }}
               onProgress={updateBuffered}
+              onError={(e) => {
+                console.error('[PostMedia] Video error:', e);
+                const v = videoRef.current;
+                if (v) {
+                  console.error('[PostMedia] Video src:', v.currentSrc);
+                  console.error('[PostMedia] Video poster:', v.poster);
+                  console.error('[PostMedia] Video error code:', v.error?.code, v.error?.message);
+                }
+              }}
               onPlay={() => {
                 setIsPlaying(true);
                 setOverlayVisible(false);
-                setShowPoster(false);
                 scheduleOverlayAutoHide(1200);
               }}
               onPause={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
-                const v = videoRef.current;
-                if (v && (v.currentTime ?? 0) <= 0.01) {
-                  setShowPoster(Boolean(effectivePoster));
-                }
               }}
               onEnded={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
                 setCurrentTime(0);
-                setShowPoster(Boolean(effectivePoster));
               }}
-              className={`${showPoster ? "hidden" : "block"} w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain`}
+              className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
-            {/* Poster fallback (iPhone fix): show image preview until playback starts */}
-            {showPoster && effectivePoster && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={effectivePoster}
-                alt="video preview"
-                className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
-              />
-            )}
             {/* Centered Play/Pause overlay */}
             {(overlayVisible || !isPlaying) && (
               <button

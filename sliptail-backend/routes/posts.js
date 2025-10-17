@@ -170,41 +170,25 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
 
     // If a video was uploaded, make a poster now and save it
     let postRow = rows[0];
-    if (req.file && isVideoUpload(req.file)) {
+    if (req.file && media_path && isVideoUpload(req.file)) {
       try {
-        // Build a temp absolute path to feed ffmpeg, depending on driver
-        let absInputPath;
-        let tmpPath = null;
+        // makeAndStorePoster reads from storage (media_path key) and generates a poster
+        const posterResult = await makeAndStorePoster(media_path, { private: true });
+        
+        // Get the poster key from the result
+        const posterValue =
+          typeof posterResult === "string"
+            ? posterResult
+            : (posterResult && (posterResult.key || posterResult.path)) || null;
 
-        if (storage.isS3) {
-          // We uploaded from memory; write the buffer to tmp for ffmpeg
-          const tmpExt = path.extname(req.file.originalname || "") || ".bin";
-          tmpPath = path.join(os.tmpdir(), `postvid-${postRow.id}-${Date.now()}${tmpExt}`);
-          await fs.promises.writeFile(tmpPath, req.file.buffer);
-          absInputPath = tmpPath;
-        } else {
-          // Disk mode already put the file on disk
-          absInputPath = req.file.path; // multer's diskStorage gives us this
-        }
-
-          // Store poster alongside post media: e.g. "posts/<postId>/poster.jpg"
-          const posterKey = `posts/${postRow.id}/poster.jpg`;
-          const posterResult = await makeAndStorePoster(absInputPath, posterKey);
-          // normalise to a string key/path
-          const posterValue =
-            typeof posterResult === "string"
-              ? posterResult
-              : (posterResult && (posterResult.key || posterResult.path)) || null;
-
+        if (posterValue) {
           // Save on the post
           const { rows: upd } = await db.query(
             `UPDATE posts SET media_poster = $1 WHERE id = $2 RETURNING *`,
             [posterValue, postRow.id]
           );
           postRow = upd[0];
-
-        // Cleanup tmp file if we created one
-        if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
+        }
       } catch (e) {
         console.warn("poster generation failed:", e?.message || e);
       }
@@ -325,30 +309,18 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
     if (req.file) {
       if (isVideoUpload(req.file)) {
         try {
-          let absInputPath;
-          let tmpPath = null;
+          // makeAndStorePoster reads from storage (media_path key) and generates a poster
+          const storedPoster = await makeAndStorePoster(media_path, { private: true });
+          const posterValue = storedPoster?.key || storedPoster;
 
-          if (storage.isS3) {
-            const tmpExt = path.extname(req.file.originalname || "") || ".bin";
-            tmpPath = path.join(os.tmpdir(), `postvid-${postId}-${Date.now()}${tmpExt}`);
-            await fs.promises.writeFile(tmpPath, req.file.buffer);
-            absInputPath = tmpPath;
-          } else {
-            absInputPath = req.file.path;
+          if (posterValue) {
+            // Persist the fresh poster
+            const { rows: upd2 } = await db.query(
+              `UPDATE posts SET media_poster = $1, updated_at = NOW() WHERE id=$2 RETURNING *`,
+              [posterValue, postId]
+            );
+            finalRow = upd2[0];
           }
-
-          const posterKey = `posts/${postId}/poster.jpg`;
-          const storedPoster = await makeAndStorePoster(absInputPath, posterKey);
-          const posterValue = storedPoster?.key || storedPoster; // <— ensure plain string
-
-          // Persist the fresh poster
-          const { rows: upd2 } = await db.query(
-            `UPDATE posts SET media_poster = $1, updated_at = NOW() WHERE id=$2 RETURNING *`,
-            [posterValue, postId]
-          );
-          finalRow = upd2[0];
-
-          if (tmpPath) { try { fs.unlink(tmpPath, () => {}); } catch {} }
         } catch (e) {
           console.warn("poster generation (update) failed:", e?.message || e);
           // If generation fails, drop any stale poster so UI doesn’t show a broken one

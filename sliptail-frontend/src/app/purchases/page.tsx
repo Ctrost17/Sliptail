@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState,useCallback } from "react";
+import { useEffect, useMemo, useState,useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
@@ -84,6 +84,105 @@ function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "
   return "other";
 }
 
+// Video component that reliably shows a poster/preview before play (iPhone-safe)
+function VideoWithPoster({
+  src,
+  posterSrc,
+  className = "",
+}: { src: string; posterSrc?: string; className?: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [showPoster, setShowPoster] = useState<boolean>(true);
+
+  const effectivePoster = useMemo(() => {
+    if (posterSrc && posterSrc.trim()) return posterSrc;
+    const clean = (src || "").split("?")[0];
+    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(clean);
+    if (!isVid) return undefined;
+    return src.includes("#") ? src : `${src}#t=0.1`;
+  }, [posterSrc, src]);
+
+  const isPosterImage = useMemo(() => {
+    const p = (effectivePoster || "").split("#")[0].split("?")[0].toLowerCase();
+    return /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/.test(p);
+  }, [effectivePoster]);
+
+  // Resolve poster via fetch (handles protected endpoints with credentials)
+  const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
+  useEffect(() => {
+    let revoke: string | null = null;
+    setResolvedPoster(null);
+    const url = posterSrc?.trim();
+    if (!url) return;
+    // Only try to fetch when it looks like an image or when server provides an image route
+    (async () => {
+      try {
+        const res = await fetch(url, { credentials: "include", cache: "no-store" });
+        if (!res.ok) return;
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.toLowerCase().startsWith("image/")) return;
+        const blob = await res.blob();
+        const obj = URL.createObjectURL(blob);
+        revoke = obj;
+        setResolvedPoster(obj);
+      } catch {}
+    })();
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [posterSrc]);
+
+  useEffect(() => {
+    setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage))));
+  }, [effectivePoster, isPosterImage, resolvedPoster]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.setAttribute("playsinline", "true");
+      v.setAttribute("webkit-playsinline", "true");
+      v.setAttribute("x5-playsinline", "true");
+      v.pause();
+    } catch {}
+  }, []);
+
+  return (
+    <div className={`relative ${className}`}>
+      <video
+        ref={videoRef}
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        crossOrigin="anonymous"
+        poster={resolvedPoster || effectivePoster}
+        onPlay={() => setShowPoster(false)}
+        onEnded={() => { setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage)))); }}
+        onPause={() => {
+          const v = videoRef.current;
+          if (v && (v.currentTime ?? 0) <= 0.01) setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage))));
+        }}
+        className="absolute inset-0 w-full h-full object-contain bg-black"
+      />
+      {showPoster && (resolvedPoster || (effectivePoster && isPosterImage)) && (
+        <>
+          {/* Poster image overlay so iOS shows preview reliably */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={resolvedPoster || effectivePoster}
+            alt="video preview"
+            className="absolute inset-0 w-full h-full object-contain bg-black pointer-events-none select-none"
+          />
+          {/* Optional visual play affordance (does not capture taps) */}
+          <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white shadow ring-1 ring-white/20">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M8 5v14l11-7-11-7z"></path>
+            </svg>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AttachmentViewer({
   src,
   posterSrc,
@@ -135,17 +234,7 @@ function AttachmentViewer({
   }
 
   if (kind === "video") {
-    return (
-      <video
-        src={src}
-        controls
-        playsInline
-        preload="metadata"
-        poster={posterSrc}
-        className={`${className} aspect-video`}
-        onError={() => setErrored(true)}
-      />
-    );
+    return <VideoWithPoster src={src} posterSrc={posterSrc} className={`${className} aspect-video`} />;
   }
 
   if (kind === "audio") {
@@ -162,15 +251,7 @@ function AttachmentViewer({
 
   // Unknown? Try video first (your deliveries are usually video), fall back on error.
   return (
-    <video
-      src={src}
-      controls
-      playsInline
-      preload="metadata"
-      poster={posterSrc}
-      className={`${className} aspect-video`}
-      onError={() => setErrored(true)}
-    />
+    <VideoWithPoster src={src} posterSrc={posterSrc} className={`${className} aspect-video`} />
   );
 }
 

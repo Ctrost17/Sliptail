@@ -181,6 +181,68 @@ async function sniffContentType(url: string): Promise<"image"|"video"|"audio"|"o
   return "other";
 }
 
+function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?: string; className?: string }) {
+  const ref = React.useRef<HTMLVideoElement | null>(null);
+  const [showPoster, setShowPoster] = React.useState(true);
+  const effectivePoster = React.useMemo(() => {
+    if (poster && poster.trim()) return poster;
+    const clean = (src || "").split("?")[0];
+    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(clean);
+    if (!isVid) return undefined;
+    return src.includes("#") ? src : `${src}#t=0.1`;
+  }, [poster, src]);
+
+  const [resolvedPoster, setResolvedPoster] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let revoke: string | null = null;
+    setResolvedPoster(null);
+    const url = (poster || "").trim();
+    if (!url) { setShowPoster(Boolean(effectivePoster)); return; }
+    (async () => {
+      try {
+        const res = await fetch(url, { credentials: "include", cache: "no-store" });
+        if (!res.ok) { setShowPoster(Boolean(effectivePoster)); return; }
+        const ct = res.headers.get("content-type") || "";
+        if (!ct.toLowerCase().startsWith("image/")) { setShowPoster(Boolean(effectivePoster)); return; }
+        const blob = await res.blob();
+        const obj = URL.createObjectURL(blob);
+        revoke = obj;
+        setResolvedPoster(obj);
+        setShowPoster(true);
+      } catch {
+        setShowPoster(Boolean(effectivePoster));
+      }
+    })();
+    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+  }, [poster, effectivePoster]);
+  React.useEffect(() => {
+    const v = ref.current; if (!v) return;
+    try { v.setAttribute("playsinline", "true"); v.setAttribute("webkit-playsinline", "true"); v.setAttribute("x5-playsinline", "true"); v.pause(); } catch {}
+  }, []);
+
+  return (
+    <div className={`relative ${className}`}>
+      <video
+        ref={ref}
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        crossOrigin="anonymous"
+        poster={resolvedPoster || effectivePoster}
+        onPlay={() => setShowPoster(false)}
+        onEnded={() => setShowPoster(Boolean((resolvedPoster || effectivePoster)))}
+        onPause={() => { const v = ref.current; if (v && (v.currentTime ?? 0) <= 0.01) setShowPoster(Boolean((resolvedPoster || effectivePoster))); }}
+        className="absolute inset-0 w-full h-full object-contain bg-black"
+      />
+      {showPoster && (resolvedPoster || effectivePoster) && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={resolvedPoster || effectivePoster} alt="video preview" className="absolute inset-0 w-full h-full object-contain bg-black pointer-events-none select-none" />
+      )}
+    </div>
+  );
+}
+
 function AttachmentViewer({
   src,
   className = "w-full rounded-lg border overflow-hidden bg-black/5", posterUrl,
@@ -216,19 +278,7 @@ function AttachmentViewer({
   if (kind === "image") {
     return <img src={src} alt="attachment" className={`${className} object-contain`} onError={() => setErrored(true)} />;
   }
-  if (kind === "video") {
-    return (
-      <video
-        src={src}
-        controls
-        playsInline
-        preload="metadata"
-        poster={posterUrl}
-        className={`${className} aspect-video`}
-        onError={() => setErrored(true)}
-      />
-    );
-  }
+  if (kind === "video") return <VideoWithPoster src={src} poster={posterUrl} className={`${className} aspect-video`} />;
   if (kind === "audio") {
     return (
       <audio
@@ -242,17 +292,7 @@ function AttachmentViewer({
   }
 
   // Unknown: optimistically try video; fallback becomes link via onError.
-  return (
-    <video
-      src={src}
-      controls
-      playsInline
-      preload="metadata"
-      poster={posterUrl}
-      className={`${className} aspect-video`}
-      onError={() => setErrored(true)}
-    />
-  );
+  return <VideoWithPoster src={src} poster={posterUrl} className={`${className} aspect-video`} />;
 }
 
 function LocalAttachmentPreview({ file, url }: { file: File | null; url: string | null }) {
