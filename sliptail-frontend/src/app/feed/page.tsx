@@ -41,38 +41,131 @@ function PostMedia({
   const pointerIdRef = useRef<number | null>(null);
   const [showPosterOverlay, setShowPosterOverlay] = useState(true);
   const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
+  const [clientGeneratedPoster, setClientGeneratedPoster] = useState<string | null>(null);
   
-  // Use provided poster directly (already signed by backend)
-  const effectivePoster = useMemo(() => {
-    if (poster && poster.trim()) {
-      console.log('[PostMedia] Using poster from API:', poster);
-      return poster;
-    }
-    // If no poster provided, let browser show first frame with preload="metadata"
-    console.log('[PostMedia] No poster, browser will load first frame for:', src);
-    return undefined;
-  }, [poster, src]);
-
   // Resolve poster via fetch (handles protected endpoints with credentials)
+  // This is crucial for mobile browsers that don't pass credentials with the poster attribute
   useEffect(() => {
     let revoke: string | null = null;
     setResolvedPoster(null);
     const url = poster?.trim();
-    if (!url) return;
+    if (!url) {
+      console.log('[PostMedia] No poster provided for:', src);
+      return;
+    }
+    
+    console.log('[PostMedia] Fetching poster with credentials:', url);
     (async () => {
       try {
         const res = await fetch(url, { credentials: "include", cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn('[PostMedia] Poster fetch failed:', res.status, res.statusText);
+          return;
+        }
         const ct = res.headers.get("content-type") || "";
-        if (!ct.toLowerCase().startsWith("image/")) return;
+        if (!ct.toLowerCase().startsWith("image/")) {
+          console.warn('[PostMedia] Poster is not an image:', ct);
+          return;
+        }
         const blob = await res.blob();
         const obj = URL.createObjectURL(blob);
         revoke = obj;
         setResolvedPoster(obj);
-      } catch {}
+        console.log('[PostMedia] Poster blob created successfully');
+      } catch (err) {
+        console.error('[PostMedia] Error fetching poster:', err);
+      }
     })();
     return () => { if (revoke) URL.revokeObjectURL(revoke); };
-  }, [poster]);
+  }, [poster, src]);
+
+  // Generate client-side poster from video first frame if no backend poster
+  const generateClientPoster = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) return; // Need metadata loaded
+    
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          setClientGeneratedPoster((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+          console.log('[PostMedia] Generated client-side poster');
+        }
+      }, 'image/jpeg', 0.8);
+    } catch (err) {
+      console.error('[PostMedia] Error generating client-side poster:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Only generate if we don't have a backend poster
+    if (poster || !src) return;
+    
+    const v = videoRef.current;
+    if (!v) return;
+    
+    const handleCanPlay = () => {
+      // Seek to 0.5s for a better frame, then generate
+      const handleSeeked = () => {
+        generateClientPoster();
+        v.removeEventListener('seeked', handleSeeked);
+      };
+      
+      v.currentTime = 0.5;
+      v.addEventListener('seeked', handleSeeked);
+    };
+    
+    if (v.readyState >= 3) { // HAVE_FUTURE_DATA or greater
+      handleCanPlay();
+    } else {
+      v.addEventListener('canplay', handleCanPlay, { once: true });
+    }
+    
+    return () => {
+      v.removeEventListener('canplay', handleCanPlay);
+    };
+  }, [poster, src, generateClientPoster]);
+
+  // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
+  const effectivePoster = useMemo(() => {
+    if (resolvedPoster) {
+      console.log('[PostMedia] Using resolved poster blob:', resolvedPoster);
+      return resolvedPoster;
+    }
+    if (clientGeneratedPoster) {
+      console.log('[PostMedia] Using client-generated poster:', clientGeneratedPoster);
+      return clientGeneratedPoster;
+    }
+    // If no poster available, let browser show first frame with preload="metadata"
+    console.log('[PostMedia] No poster available, browser will load first frame for:', src);
+    return undefined;
+  }, [resolvedPoster, clientGeneratedPoster, src]);
+
+  // Cleanup client-generated poster on unmount
+  useEffect(() => {
+    return () => {
+      if (clientGeneratedPoster) {
+        URL.revokeObjectURL(clientGeneratedPoster);
+      }
+    };
+  }, [clientGeneratedPoster]);
+
+  // Update poster overlay visibility when effectivePoster becomes available
+  useEffect(() => {
+    if (effectivePoster && !isPlaying) {
+      setShowPosterOverlay(true);
+    }
+  }, [effectivePoster, isPlaying]);
 
   // Ensure inline playback on iPhone Safari
   useEffect(() => {
@@ -238,6 +331,7 @@ function PostMedia({
               preload="metadata"
               crossOrigin="use-credentials"
               poster={effectivePoster}
+              key={effectivePoster || src}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
                 const d = v?.duration || 0;
@@ -271,27 +365,27 @@ function PostMedia({
                 clearOverlayTimer();
                 setOverlayVisible(true);
                 const v = videoRef.current;
-                // Show poster again if at the beginning
-                if (v && (v.currentTime ?? 0) <= 0.01) {
-                  setShowPosterOverlay(Boolean(resolvedPoster || effectivePoster));
+                // Show poster again if at the beginning or if we have a poster
+                if (v && ((v.currentTime ?? 0) <= 0.01 || effectivePoster)) {
+                  setShowPosterOverlay(Boolean(effectivePoster));
                 }
               }}
               onEnded={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
-                setShowPosterOverlay(Boolean(resolvedPoster || effectivePoster));
+                setShowPosterOverlay(Boolean(effectivePoster));
                 setCurrentTime(0);
               }}
               className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
             
-            {/* Poster image overlay for mobile - shown before video plays */}
-            {showPosterOverlay && (resolvedPoster || effectivePoster) && (
+            {/* Poster image overlay - shown before video plays, especially important for mobile */}
+            {showPosterOverlay && effectivePoster && (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={resolvedPoster || effectivePoster}
+                  src={effectivePoster}
                   alt="video preview"
                   className="absolute inset-0 w-full h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain bg-black pointer-events-none select-none"
                 />
