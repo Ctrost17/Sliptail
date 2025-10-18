@@ -42,6 +42,8 @@ function PostMedia({
   const [showPosterOverlay, setShowPosterOverlay] = useState(true);
   const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
   const [clientGeneratedPoster, setClientGeneratedPoster] = useState<string | null>(null);
+  const [posterLoading, setPosterLoading] = useState(false);
+  const hasPosterProp = Boolean(poster?.trim());
   
   // Resolve poster via fetch (handles protected endpoints with credentials)
   // This is crucial for mobile browsers that don't pass credentials with the poster attribute
@@ -50,46 +52,69 @@ function PostMedia({
     setResolvedPoster(null);
     const url = poster?.trim();
     if (!url) {
-      console.log('[PostMedia] No poster provided for:', src);
+      console.log('[PostMedia] No poster URL provided from backend for:', src);
       return;
     }
     
+    setPosterLoading(true);
     console.log('[PostMedia] Fetching poster with credentials:', url);
+    
     (async () => {
       try {
         const res = await fetch(url, { credentials: "include", cache: "no-store" });
         if (!res.ok) {
           console.warn('[PostMedia] Poster fetch failed:', res.status, res.statusText);
+          setPosterLoading(false);
           return;
         }
         const ct = res.headers.get("content-type") || "";
         if (!ct.toLowerCase().startsWith("image/")) {
-          console.warn('[PostMedia] Poster is not an image:', ct);
+          console.warn('[PostMedia] Poster is not an image, content-type:', ct);
+          setPosterLoading(false);
           return;
         }
         const blob = await res.blob();
         const obj = URL.createObjectURL(blob);
         revoke = obj;
         setResolvedPoster(obj);
-        console.log('[PostMedia] Poster blob created successfully');
+        setPosterLoading(false);
+        console.log('[PostMedia] ✓ Poster blob created successfully');
       } catch (err) {
         console.error('[PostMedia] Error fetching poster:', err);
+        setPosterLoading(false);
       }
     })();
-    return () => { if (revoke) URL.revokeObjectURL(revoke); };
+    
+    return () => { 
+      if (revoke) URL.revokeObjectURL(revoke);
+      setPosterLoading(false);
+    };
   }, [poster, src]);
 
   // Generate client-side poster from video first frame if no backend poster
+  // This is a fallback for when the backend doesn't provide a poster
   const generateClientPoster = useCallback(() => {
     const v = videoRef.current;
-    if (!v || v.readyState < 2) return; // Need metadata loaded
+    if (!v || v.readyState < 2) {
+      console.log('[PostMedia] Cannot generate poster - video not ready, readyState:', v?.readyState);
+      return;
+    }
+    
+    if (v.videoWidth === 0 || v.videoHeight === 0) {
+      console.log('[PostMedia] Cannot generate poster - video dimensions are 0');
+      return;
+    }
     
     try {
+      console.log('[PostMedia] Generating client-side poster...');
       const canvas = document.createElement('canvas');
       canvas.width = v.videoWidth;
       canvas.height = v.videoHeight;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        console.error('[PostMedia] Failed to get canvas context');
+        return;
+      }
       
       ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
       canvas.toBlob((blob) => {
@@ -99,57 +124,84 @@ function PostMedia({
             if (prev) URL.revokeObjectURL(prev);
             return url;
           });
-          console.log('[PostMedia] Generated client-side poster');
+          console.log('[PostMedia] ✓ Client-side poster generated successfully');
         }
-      }, 'image/jpeg', 0.8);
+      }, 'image/jpeg', 0.85);
     } catch (err) {
       console.error('[PostMedia] Error generating client-side poster:', err);
     }
   }, []);
 
+  // Attempt to generate client-side poster if no backend poster provided
   useEffect(() => {
     // Only generate if we don't have a backend poster
-    if (poster || !src) return;
+    if (hasPosterProp || !src) return;
     
     const v = videoRef.current;
     if (!v) return;
     
-    const handleCanPlay = () => {
-      // Seek to 0.5s for a better frame, then generate
-      const handleSeeked = () => {
-        generateClientPoster();
-        v.removeEventListener('seeked', handleSeeked);
-      };
-      
-      v.currentTime = 0.5;
-      v.addEventListener('seeked', handleSeeked);
+    console.log('[PostMedia] No backend poster - will attempt client-side generation');
+    
+    // Try multiple approaches for mobile compatibility
+    const attemptGeneration = () => {
+      setTimeout(() => {
+        if (v.readyState >= 2 && v.videoWidth > 0) {
+          generateClientPoster();
+        }
+      }, 100);
     };
     
-    if (v.readyState >= 3) { // HAVE_FUTURE_DATA or greater
-      handleCanPlay();
-    } else {
-      v.addEventListener('canplay', handleCanPlay, { once: true });
+    // Listen to multiple events for better mobile support
+    const handleLoadedData = () => {
+      console.log('[PostMedia] Video loadeddata event, readyState:', v.readyState);
+      attemptGeneration();
+    };
+    
+    const handleLoadedMetadata = () => {
+      console.log('[PostMedia] Video loadedmetadata event, readyState:', v.readyState);
+      // Try to load some data for poster generation
+      if (v.readyState < 2) {
+        v.load();
+      }
+    };
+    
+    const handleCanPlay = () => {
+      console.log('[PostMedia] Video canplay event, readyState:', v.readyState);
+      attemptGeneration();
+    };
+    
+    v.addEventListener('loadedmetadata', handleLoadedMetadata);
+    v.addEventListener('loadeddata', handleLoadedData);
+    v.addEventListener('canplay', handleCanPlay);
+    
+    // If video is already ready, try immediately
+    if (v.readyState >= 2) {
+      attemptGeneration();
     }
     
     return () => {
+      v.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      v.removeEventListener('loadeddata', handleLoadedData);
       v.removeEventListener('canplay', handleCanPlay);
     };
-  }, [poster, src, generateClientPoster]);
+  }, [hasPosterProp, src, generateClientPoster]);
 
   // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
   const effectivePoster = useMemo(() => {
     if (resolvedPoster) {
-      console.log('[PostMedia] Using resolved poster blob:', resolvedPoster);
+      console.log('[PostMedia] Using resolved backend poster blob');
       return resolvedPoster;
     }
     if (clientGeneratedPoster) {
-      console.log('[PostMedia] Using client-generated poster:', clientGeneratedPoster);
+      console.log('[PostMedia] Using client-generated poster');
       return clientGeneratedPoster;
     }
-    // If no poster available, let browser show first frame with preload="metadata"
-    console.log('[PostMedia] No poster available, browser will load first frame for:', src);
+    // If no poster available and not loading, rely on browser's preload
+    if (!posterLoading && !hasPosterProp) {
+      console.log('[PostMedia] No poster available - relying on browser preload');
+    }
     return undefined;
-  }, [resolvedPoster, clientGeneratedPoster, src]);
+  }, [resolvedPoster, clientGeneratedPoster, posterLoading, hasPosterProp]);
 
   // Cleanup client-generated poster on unmount
   useEffect(() => {
@@ -162,8 +214,13 @@ function PostMedia({
 
   // Update poster overlay visibility when effectivePoster becomes available
   useEffect(() => {
+    // Always show poster overlay when we have a poster and video is not playing
     if (effectivePoster && !isPlaying) {
+      console.log('[PostMedia] Setting showPosterOverlay=true because effectivePoster is available');
       setShowPosterOverlay(true);
+    } else if (!effectivePoster) {
+      console.log('[PostMedia] No effectivePoster available, hiding overlay');
+      setShowPosterOverlay(false);
     }
   }, [effectivePoster, isPlaying]);
 
@@ -337,7 +394,7 @@ function PostMedia({
                 const d = v?.duration || 0;
                 setDuration(isFinite(d) ? d : 0);
                 updateBuffered();
-                console.log('[PostMedia] Video metadata loaded, duration:', d, 'poster:', effectivePoster);
+                console.log('[PostMedia] Video metadata loaded, duration:', d, 'readyState:', v?.readyState, 'hasEffectivePoster:', Boolean(effectivePoster));
               }}
               onTimeUpdate={() => {
                 const v = videoRef.current;
@@ -380,16 +437,25 @@ function PostMedia({
               className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
             
+            {/* Loading placeholder while poster is being fetched */}
+            {posterLoading && !effectivePoster && (
+              <div className="absolute inset-0 z-[1] flex items-center justify-center bg-neutral-900">
+                <div className="text-white text-sm">Loading preview...</div>
+              </div>
+            )}
+            
             {/* Poster image overlay - shown before video plays, especially important for mobile */}
             {showPosterOverlay && effectivePoster && (
-              <>
+              <div className="absolute inset-0 z-[1] pointer-events-none select-none bg-black">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={effectivePoster}
                   alt="video preview"
-                  className="absolute inset-0 w-full h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain bg-black pointer-events-none select-none"
+                  className="w-full h-full max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain"
+                  onLoad={() => console.log('[PostMedia] Poster overlay image loaded')}
+                  onError={(e) => console.error('[PostMedia] Poster overlay image failed to load', e)}
                 />
-              </>
+              </div>
             )}
             
             {/* Centered Play/Pause overlay */}
