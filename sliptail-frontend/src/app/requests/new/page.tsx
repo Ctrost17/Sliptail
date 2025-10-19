@@ -273,7 +273,7 @@ export default function NewRequestPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 overflow-x-hidden">
+    <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6">
       <h1 className="mb-2 text-2xl font-bold">Tell the creator what you need</h1>
       <p className="mb-6 text-neutral-600">
         Add a brief description and any reference media (optional). You can also
@@ -323,7 +323,7 @@ export default function NewRequestPage() {
 
             {/* Make the text shrink inside the row instead of pushing layout wide */}
             <div className="min-w-0 flex-1">
-              <span className="block truncate text-sm text-neutral-600 max-w-full">
+              <span className="block truncate sm:truncate text-sm text-neutral-600 max-w-full break-words">
                 {file ? file.name : "No file selected"}
               </span>
             </div>
