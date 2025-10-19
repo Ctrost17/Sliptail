@@ -130,7 +130,7 @@ function ProductTypesSection() {
       blurb:
         "Creators upload once and sell forever. Fans get instant delivery.",
       creatorPoints: [
-        "PDFs, videos, presets —no limits",
+        "PDFs, videos, audio files, and more",
         "Automatic fulfillment after purchase",
       ],
       fanPoints: [
@@ -168,11 +168,11 @@ function ProductTypesSection() {
         "Creators take bespoke commissions. Fans ask for exactly what they want.",
       creatorPoints: [
         "Built-in brief & Details",
-        "Different reqeust options",
+        "Allows for any type of request",
       ],
       fanPoints: [
         "Attach references & specifics",
-        "Clear timelines and status",
+        "Clear status and easy Access to delivered work",
       ],
       icon: (
         <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">

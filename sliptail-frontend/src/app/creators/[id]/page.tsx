@@ -568,9 +568,11 @@ export default function CreatorProfilePage() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Hero */}
-      <section className="relative">
-        <div className="absolute inset-0 bg-gradient-to-tr from-emerald-300 via-cyan-400 to-sky-400 opacity-90" />
-        <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-24 sm:pt-12 sm:pb-28 lg:pt-14">
+    <section className="relative overflow-visible">
+      {/* background behind content */}
+      <div className="absolute inset-0 z-0 bg-gradient-to-tr from-emerald-300 via-cyan-400 to-sky-400 opacity-90" />
+      {/* content above wave + more bottom padding + min height */}
+      <div className="relative z-10 mx-auto max-w-6xl px-4 pt-12 sm:pt-14 lg:pt-16 pb-32 sm:pb-36 lg:pb-48 min-h-[380px] sm:min-h-[440px] lg:min-h-[520px]">
           <div className="flex flex-col items-center text-center">
             {/* Resolution-aware, auto-sized round avatar (no zoom/crop) */}
             <div
@@ -612,9 +614,18 @@ export default function CreatorProfilePage() {
 
             {/* Categories */}
             {categories.length > 0 && (
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <div className="mt-5 lg:mt-6 flex flex-wrap items-center justify-center gap-2">
                 {categories.map((c) => (
-                  <span key={c.id} className="rounded-full border border-black/10 bg-white/80 px-3 py-1 text-xs text-gray-700 shadow-sm" title={c.name}>
+                    <span
+                      key={c.id}
+                      className="
+                        rounded-full border border-black/20 bg-white/90
+                        px-4 lg:px-5 py-1.5 lg:py-2
+                        text-sm lg:text-base font-medium text-gray-800
+                        shadow backdrop-blur-sm
+                      "
+                      title={c.name}
+                    >
                     {c.name}
                   </span>
                 ))}
@@ -622,14 +633,19 @@ export default function CreatorProfilePage() {
             )}
           </div>
         </div>
-        {/* Decorative curve */}
-        <svg className="absolute bottom-0 left-0 right-0" viewBox="0 0 1440 110" fill="none" preserveAspectRatio="none">
+          {/* Decorative curve (behind content) */}
+          <svg
+            className="absolute bottom-0 left-0 right-0 z-0 pointer-events-none"
+            viewBox="0 0 1440 110"
+            fill="none"
+            preserveAspectRatio="none"
+          >
           <path d="M0 0h1440v56c-224 40-448 60-720 54S224 78 0 56V0Z" className="fill-gray-50" />
         </svg>
       </section>
 
       {/* Body */}
-      <main className="relative mx-auto max-w-6xl px-4 -mt-16 space-y-10 sm:-mt-20">
+      <main className="relative mx-auto max-w-6xl px-4 -mt-12 sm:-mt-16 lg:-mt-20 space-y-10 pb-12 sm:pb-16 lg:pb-20">
         {/* About */}
         {creator?.bio ? (
           <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">

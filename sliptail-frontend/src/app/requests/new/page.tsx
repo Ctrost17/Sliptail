@@ -46,16 +46,16 @@ function AttachmentPreview({
   };
 
   return (
-    <div
-      className="relative mt-3 rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
-      style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
-    >
+      <div
+        className="relative mt-3 w-full max-w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
+        style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
+      >
       {isAudio ? (
         <audio
           src={url}
           controls
           preload="metadata"
-          className="block w-full bg-black"
+          className="block w-full max-w-full bg-black"
         />
       ) : isVideo ? (
         <video
@@ -64,7 +64,7 @@ function AttachmentPreview({
           playsInline
           preload="metadata"
           controlsList="nodownload"
-          className="block w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
+          className="block w-full max-w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
           onLoadedMetadata={handleVideoMeta}
         />
       ) : isImage ? (
@@ -73,7 +73,7 @@ function AttachmentPreview({
           src={url}
           alt="attachment preview"
           loading="lazy"
-          className="block w-full h-auto object-contain bg-black"
+          className="block w-full max-w-full h-auto object-contain bg-black"
           onLoad={handleImageLoad}
         />
       ) : (
@@ -273,7 +273,7 @@ export default function NewRequestPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 overflow-x-hidden">
       <h1 className="mb-2 text-2xl font-bold">Tell the creator what you need</h1>
       <p className="mb-6 text-neutral-600">
         Add a brief description and any reference media (optional). You can also
@@ -321,9 +321,12 @@ export default function NewRequestPage() {
               Choose File
             </label>
 
-            <span className="text-sm text-neutral-600 truncate">
-              {file ? file.name : "No file selected"}
-            </span>
+            {/* Make the text shrink inside the row instead of pushing layout wide */}
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm text-neutral-600 max-w-full">
+                {file ? file.name : "No file selected"}
+              </span>
+            </div>
           </div>
 
           {/* Inline media preview (image / video / audio) */}
