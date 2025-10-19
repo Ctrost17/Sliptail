@@ -44,6 +44,7 @@ function PostMedia({
   const [clientGeneratedPoster, setClientGeneratedPoster] = useState<string | null>(null);
   const [pausedFramePoster, setPausedFramePoster] = useState<string | null>(null);
   const [posterLoading, setPosterLoading] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
   const hasPosterProp = Boolean(poster?.trim());
   
   // Resolve poster via fetch (handles protected endpoints with credentials)
@@ -276,6 +277,8 @@ function PostMedia({
 
   // Update poster overlay visibility when effectivePoster becomes available or playing state changes
   useEffect(() => {
+    console.log('[PostMedia] Poster visibility check - effectivePoster:', Boolean(effectivePoster), 'isPlaying:', isPlaying, 'videoReady:', videoReady);
+    
     // Show poster overlay when we have a poster and video is not playing
     if (effectivePoster && !isPlaying) {
       console.log('[PostMedia] Setting showPosterOverlay=true (poster available, not playing)');
@@ -285,7 +288,7 @@ function PostMedia({
       setShowPosterOverlay(false);
     }
     // If no poster and not playing, let the video element show its own state
-  }, [effectivePoster, isPlaying]);
+  }, [effectivePoster, isPlaying, videoReady]);
 
   // Ensure inline playback on iPhone Safari and set initial state
   useEffect(() => {
@@ -488,7 +491,22 @@ function PostMedia({
                 const d = v?.duration || 0;
                 setDuration(isFinite(d) ? d : 0);
                 updateBuffered();
+                setVideoReady(true);
                 console.log('[PostMedia] Video metadata loaded, duration:', d, 'readyState:', v?.readyState, 'hasEffectivePoster:', Boolean(effectivePoster));
+                
+                // Ensure poster is shown when video is ready but not playing
+                if (!isPlaying && effectivePoster) {
+                  setShowPosterOverlay(true);
+                }
+              }}
+              onLoadedData={() => {
+                // Video data is loaded, ensure poster shows if not playing
+                const v = videoRef.current;
+                console.log('[PostMedia] Video data loaded, readyState:', v?.readyState);
+                setVideoReady(true);
+                if (!isPlaying && effectivePoster) {
+                  setShowPosterOverlay(true);
+                }
               }}
               onTimeUpdate={() => {
                 const v = videoRef.current;
@@ -555,9 +573,16 @@ function PostMedia({
               className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
             
+            {/* Loading placeholder while video/poster is loading */}
+            {!videoReady && !effectivePoster && (
+              <div className="absolute inset-0 z-[2] flex items-center justify-center bg-neutral-900">
+                <div className="text-white text-sm">Loading video...</div>
+              </div>
+            )}
+            
             {/* Loading placeholder while poster is being fetched */}
-            {posterLoading && !effectivePoster && (
-              <div className="absolute inset-0 z-[1] flex items-center justify-center bg-neutral-900">
+            {posterLoading && !effectivePoster && videoReady && (
+              <div className="absolute inset-0 z-[2] flex items-center justify-center bg-neutral-900">
                 <div className="text-white text-sm">Loading preview...</div>
               </div>
             )}
@@ -565,16 +590,21 @@ function PostMedia({
             {/* Poster image overlay - shown when video is not playing and we have a poster */}
             {effectivePoster && !isPlaying && (
               <div 
-                className="absolute inset-0 z-[1] pointer-events-none select-none bg-black"
-                style={{ display: showPosterOverlay ? 'block' : 'none' }}
+                className="absolute inset-0 z-[3] pointer-events-none select-none bg-black"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={effectivePoster}
                   alt="video preview"
                   className="w-full h-full max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain"
-                  onLoad={() => console.log('[PostMedia] Poster overlay image loaded:', effectivePoster.substring(0, 50))}
-                  onError={(e) => console.error('[PostMedia] Poster overlay image failed to load', e)}
+                  onLoad={() => {
+                    console.log('[PostMedia] Poster overlay image loaded:', effectivePoster.substring(0, 50));
+                    setShowPosterOverlay(true);
+                  }}
+                  onError={(e) => {
+                    console.error('[PostMedia] Poster overlay image failed to load', e);
+                    setShowPosterOverlay(false);
+                  }}
                 />
               </div>
             )}
