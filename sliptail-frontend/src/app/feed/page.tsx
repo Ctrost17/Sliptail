@@ -243,23 +243,23 @@ function PostMedia({
 
   // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
   const effectivePoster = useMemo(() => {
+    console.log('[PostMedia] Computing effectivePoster - paused:', pausedFramePoster?.substring(0,30), 'resolved:', resolvedPoster?.substring(0,30), 'client:', clientGeneratedPoster?.substring(0,30), 'isPlaying:', isPlaying);
+    
     // If video was paused, show the paused frame
     if (pausedFramePoster && !isPlaying) {
-      console.log('[PostMedia] Using paused frame poster');
+      console.log('[PostMedia] ✓ Using paused frame poster');
       return pausedFramePoster;
     }
     if (resolvedPoster) {
-      console.log('[PostMedia] Using resolved backend poster blob');
+      console.log('[PostMedia] ✓ Using resolved backend poster blob');
       return resolvedPoster;
     }
     if (clientGeneratedPoster) {
-      console.log('[PostMedia] Using client-generated poster');
+      console.log('[PostMedia] ✓ Using client-generated poster');
       return clientGeneratedPoster;
     }
     // If no poster available and not loading, rely on browser's preload
-    if (!posterLoading && !hasPosterProp) {
-      console.log('[PostMedia] No poster available - relying on browser preload');
-    }
+    console.log('[PostMedia] ✗ No poster available - posterLoading:', posterLoading, 'hasPosterProp:', hasPosterProp);
     return undefined;
   }, [resolvedPoster, clientGeneratedPoster, pausedFramePoster, isPlaying, posterLoading, hasPosterProp]);
 
@@ -305,11 +305,11 @@ function PostMedia({
       
       // Ensure initial state is correct
       setIsPlaying(false);
-      if (effectivePoster) {
-        setShowPosterOverlay(true);
-      }
+      setShowPosterOverlay(true);
+      
+      console.log('[PostMedia] Video element initialized, paused');
     } catch {}
-  }, [effectivePoster]);
+  }, []);
 
   const isAudio =
     (file?.type?.startsWith("audio/") ||
@@ -485,7 +485,7 @@ function PostMedia({
               playsInline
               preload="metadata"
               crossOrigin="use-credentials"
-              poster={effectivePoster}
+              poster={effectivePoster || poster}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
                 const d = v?.duration || 0;
@@ -573,39 +573,33 @@ function PostMedia({
               className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
             />
             
-            {/* Loading placeholder while video/poster is loading */}
-            {!videoReady && !effectivePoster && (
-              <div className="absolute inset-0 z-[2] flex items-center justify-center bg-neutral-900">
-                <div className="text-white text-sm">Loading video...</div>
-              </div>
-            )}
-            
-            {/* Loading placeholder while poster is being fetched */}
-            {posterLoading && !effectivePoster && videoReady && (
-              <div className="absolute inset-0 z-[2] flex items-center justify-center bg-neutral-900">
-                <div className="text-white text-sm">Loading preview...</div>
-              </div>
-            )}
-            
             {/* Poster image overlay - shown when video is not playing and we have a poster */}
-            {effectivePoster && !isPlaying && (
+            {!isPlaying && effectivePoster && (
               <div 
-                className="absolute inset-0 z-[3] pointer-events-none select-none bg-black"
+                className="absolute inset-0 z-[5] pointer-events-none select-none"
+                style={{ backgroundColor: '#000' }}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                  key={effectivePoster}
                   src={effectivePoster}
                   alt="video preview"
                   className="w-full h-full max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain"
+                  style={{ display: 'block' }}
                   onLoad={() => {
-                    console.log('[PostMedia] Poster overlay image loaded:', effectivePoster.substring(0, 50));
-                    setShowPosterOverlay(true);
+                    console.log('[PostMedia] ✓ Poster overlay image loaded and visible:', effectivePoster.substring(0, 50));
                   }}
                   onError={(e) => {
-                    console.error('[PostMedia] Poster overlay image failed to load', e);
-                    setShowPosterOverlay(false);
+                    console.error('[PostMedia] ✗ Poster overlay image failed to load:', effectivePoster.substring(0, 50));
                   }}
                 />
+              </div>
+            )}
+            
+            {/* Fallback: show video's native poster if no overlay poster yet */}
+            {!isPlaying && !effectivePoster && posterLoading && (
+              <div className="absolute inset-0 z-[4] flex items-center justify-center bg-neutral-900 pointer-events-none">
+                <div className="text-white text-sm opacity-70">Loading preview...</div>
               </div>
             )}
             
