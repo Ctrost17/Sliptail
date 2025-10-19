@@ -46,10 +46,17 @@ function AttachmentPreview({
   };
 
   return (
-      <div
-        className="relative mt-3 w-full max-w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black"
-        style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
-      >
+<div
+          className="
+            relative mt-3 mx-auto
+            w-full
+            max-w-[22rem]           /* ~352px cap on phones */
+            sm:max-w-[36rem]        /* ~576px cap on tablets */
+            md:max-w-full           /* use full card width on desktop */
+            rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black
+          "
+          style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
+        >
       {isAudio ? (
         <audio
           src={url}
@@ -64,7 +71,9 @@ function AttachmentPreview({
           playsInline
           preload="metadata"
           controlsList="nodownload"
-          className="block w-full max-w-full h-auto max-h-[75vh] md:max-h-[70vh] lg:max-h-[65vh] object-contain bg-black"
+          className="block w-full h-auto
+           max-h-[50vh] sm:max-h-[65vh] lg:max-h-[70vh]
+           object-contain bg-black"
           onLoadedMetadata={handleVideoMeta}
         />
       ) : isImage ? (
@@ -73,7 +82,8 @@ function AttachmentPreview({
           src={url}
           alt="attachment preview"
           loading="lazy"
-          className="block w-full max-w-full h-auto object-contain bg-black"
+          className="block w-full h-auto object-contain bg-black
+           max-h-[60vh] sm:max-h-[70vh]"
           onLoad={handleImageLoad}
         />
       ) : (
@@ -323,7 +333,8 @@ export default function NewRequestPage() {
 
             {/* Make the text shrink inside the row instead of pushing layout wide */}
             <div className="min-w-0 flex-1">
-              <span className="block truncate sm:truncate text-sm text-neutral-600 max-w-full break-words">
+              <span className="block text-xs sm:text-sm text-neutral-600
+                 max-w-full break-words break-all leading-snug">
                 {file ? file.name : "No file selected"}
               </span>
             </div>
