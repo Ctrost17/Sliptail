@@ -151,23 +151,36 @@ function PostMedia({
       const canvas = document.createElement('canvas');
       canvas.width = v.videoWidth;
       canvas.height = v.videoHeight;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
       if (!ctx) {
         console.error('[PostMedia] Failed to get canvas context');
         return;
       }
       
       ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob((blob) => {
-        if (blob) {
-          const url = URL.createObjectURL(blob);
-          setPausedFramePoster((prev) => {
-            if (prev) URL.revokeObjectURL(prev);
-            return url;
-          });
-          console.log('[PostMedia] ✓ Paused frame poster generated successfully');
-        }
-      }, 'image/jpeg', 0.85);
+      
+      // Use toDataURL for immediate synchronous result to avoid black flash
+      try {
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPausedFramePoster((prev) => {
+          if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return dataUrl;
+        });
+        console.log('[PostMedia] ✓ Paused frame poster generated successfully (sync)');
+      } catch (err) {
+        // Fallback to blob if toDataURL fails (e.g., tainted canvas)
+        console.warn('[PostMedia] toDataURL failed, falling back to blob:', err);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const url = URL.createObjectURL(blob);
+            setPausedFramePoster((prev) => {
+              if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+              return url;
+            });
+            console.log('[PostMedia] ✓ Paused frame poster generated successfully (blob)');
+          }
+        }, 'image/jpeg', 0.85);
+      }
     } catch (err) {
       console.error('[PostMedia] Error generating paused frame poster:', err);
     }
@@ -252,10 +265,10 @@ function PostMedia({
   // Cleanup client-generated poster on unmount
   useEffect(() => {
     return () => {
-      if (clientGeneratedPoster) {
+      if (clientGeneratedPoster && clientGeneratedPoster.startsWith('blob:')) {
         URL.revokeObjectURL(clientGeneratedPoster);
       }
-      if (pausedFramePoster) {
+      if (pausedFramePoster && pausedFramePoster.startsWith('blob:')) {
         URL.revokeObjectURL(pausedFramePoster);
       }
     };
@@ -503,11 +516,10 @@ function PostMedia({
                 const v = videoRef.current;
                 // Generate poster at current time when paused
                 if (v && v.currentTime > 0.01) {
-                  // Delay slightly to ensure the frame is ready
-                  setTimeout(() => {
-                    generatePausedFramePoster();
-                    setShowPosterOverlay(true);
-                  }, 50);
+                  // Generate immediately without delay to avoid black flash
+                  generatePausedFramePoster();
+                  // Show overlay immediately to hide black screen
+                  setShowPosterOverlay(true);
                 } else if (effectivePoster) {
                   // Show original poster if at the beginning
                   setShowPosterOverlay(true);
