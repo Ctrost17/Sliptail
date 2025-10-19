@@ -46,17 +46,10 @@ function AttachmentPreview({
   };
 
   return (
-<div
-          className="
-            relative mt-3 mx-auto
-            w-full
-            max-w-[22rem]           /* ~352px cap on phones */
-            sm:max-w-[36rem]        /* ~576px cap on tablets */
-            md:max-w-full           /* use full card width on desktop */
-            rounded-xl overflow-hidden ring-1 ring-neutral-200 bg-black
-          "
-          style={isImage && ratio ? { aspectRatio: String(ratio) } : undefined}
-        >
+      <div
+        className="relative mt-3 mx-auto w-full max-w-[22rem] sm:max-w-[36rem] md:max-w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 max-h-[70vh]"
+        style={ratio ? { aspectRatio: String(ratio) } : undefined}
+      >
       {isAudio ? (
         <audio
           src={url}
@@ -82,8 +75,7 @@ function AttachmentPreview({
           src={url}
           alt="attachment preview"
           loading="lazy"
-          className="block w-full h-auto object-contain bg-black
-           max-h-[60vh] sm:max-h-[70vh]"
+          className="block w-full h-full object-contain bg-black"
           onLoad={handleImageLoad}
         />
       ) : (
