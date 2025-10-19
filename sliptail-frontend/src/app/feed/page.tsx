@@ -42,6 +42,7 @@ function PostMedia({
   const [showPosterOverlay, setShowPosterOverlay] = useState(true);
   const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
   const [clientGeneratedPoster, setClientGeneratedPoster] = useState<string | null>(null);
+  const [pausedFramePoster, setPausedFramePoster] = useState<string | null>(null);
   const [posterLoading, setPosterLoading] = useState(false);
   const hasPosterProp = Boolean(poster?.trim());
   
@@ -132,6 +133,46 @@ function PostMedia({
     }
   }, []);
 
+  // Generate poster at current video time when paused
+  const generatePausedFramePoster = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) {
+      console.log('[PostMedia] Cannot generate paused frame - video not ready');
+      return;
+    }
+    
+    if (v.videoWidth === 0 || v.videoHeight === 0) {
+      console.log('[PostMedia] Cannot generate paused frame - video dimensions are 0');
+      return;
+    }
+    
+    try {
+      console.log('[PostMedia] Generating paused frame poster at time:', v.currentTime);
+      const canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        console.error('[PostMedia] Failed to get canvas context');
+        return;
+      }
+      
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          setPausedFramePoster((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+          console.log('[PostMedia] ✓ Paused frame poster generated successfully');
+        }
+      }, 'image/jpeg', 0.85);
+    } catch (err) {
+      console.error('[PostMedia] Error generating paused frame poster:', err);
+    }
+  }, []);
+
   // Attempt to generate client-side poster if no backend poster provided
   useEffect(() => {
     // Only generate if we don't have a backend poster
@@ -188,6 +229,11 @@ function PostMedia({
 
   // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
   const effectivePoster = useMemo(() => {
+    // If video was paused, show the paused frame
+    if (pausedFramePoster && !isPlaying) {
+      console.log('[PostMedia] Using paused frame poster');
+      return pausedFramePoster;
+    }
     if (resolvedPoster) {
       console.log('[PostMedia] Using resolved backend poster blob');
       return resolvedPoster;
@@ -201,7 +247,7 @@ function PostMedia({
       console.log('[PostMedia] No poster available - relying on browser preload');
     }
     return undefined;
-  }, [resolvedPoster, clientGeneratedPoster, posterLoading, hasPosterProp]);
+  }, [resolvedPoster, clientGeneratedPoster, pausedFramePoster, isPlaying, posterLoading, hasPosterProp]);
 
   // Cleanup client-generated poster on unmount
   useEffect(() => {
@@ -209,8 +255,11 @@ function PostMedia({
       if (clientGeneratedPoster) {
         URL.revokeObjectURL(clientGeneratedPoster);
       }
+      if (pausedFramePoster) {
+        URL.revokeObjectURL(pausedFramePoster);
+      }
     };
-  }, [clientGeneratedPoster]);
+  }, [clientGeneratedPoster, pausedFramePoster]);
 
   // Update poster overlay visibility when effectivePoster becomes available
   useEffect(() => {
@@ -265,6 +314,8 @@ function PostMedia({
     const v = videoRef.current;
     if (!v) return;
     if (v.paused || v.ended) {
+      // Hide poster overlay immediately when initiating play
+      setShowPosterOverlay(false);
       v.play().catch(() => {});
     } else {
       v.pause();
@@ -314,6 +365,17 @@ function PostMedia({
     const newTime = frac * duration;
     v.currentTime = newTime;
     setCurrentTime(newTime);
+    
+    // If video is paused, generate a new poster at the seeked position
+    if (v.paused && !isPlaying) {
+      // Use requestAnimationFrame to ensure the video frame is updated before capturing
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          generatePausedFramePoster();
+          setShowPosterOverlay(true);
+        }, 100);
+      });
+    }
   };
 
   const handleScrubStart = (clientX: number) => {
@@ -330,7 +392,20 @@ function PostMedia({
 
   const handleScrubEnd = () => {
     setSeeking(false);
-    if (isPlaying) scheduleOverlayAutoHide();
+    if (isPlaying) {
+      scheduleOverlayAutoHide();
+    } else {
+      // When scrubbing while paused, generate poster at the final position
+      const v = videoRef.current;
+      if (v && v.paused) {
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            generatePausedFramePoster();
+            setShowPosterOverlay(true);
+          }, 100);
+        });
+      }
+    }
   };
 
   if (isAudio) {
@@ -388,7 +463,6 @@ function PostMedia({
               preload="metadata"
               crossOrigin="use-credentials"
               poster={effectivePoster}
-              key={effectivePoster || src}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
                 const d = v?.duration || 0;
@@ -415,6 +489,11 @@ function PostMedia({
                 setIsPlaying(true);
                 setShowPosterOverlay(false);
                 setOverlayVisible(false);
+                // Clear paused frame poster when playing
+                setPausedFramePoster((prev) => {
+                  if (prev) URL.revokeObjectURL(prev);
+                  return null;
+                });
                 scheduleOverlayAutoHide(1200);
               }}
               onPause={() => {
@@ -422,15 +501,27 @@ function PostMedia({
                 clearOverlayTimer();
                 setOverlayVisible(true);
                 const v = videoRef.current;
-                // Show poster again if at the beginning or if we have a poster
-                if (v && ((v.currentTime ?? 0) <= 0.01 || effectivePoster)) {
-                  setShowPosterOverlay(Boolean(effectivePoster));
+                // Generate poster at current time when paused
+                if (v && v.currentTime > 0.01) {
+                  // Delay slightly to ensure the frame is ready
+                  setTimeout(() => {
+                    generatePausedFramePoster();
+                    setShowPosterOverlay(true);
+                  }, 50);
+                } else if (effectivePoster) {
+                  // Show original poster if at the beginning
+                  setShowPosterOverlay(true);
                 }
               }}
               onEnded={() => {
                 setIsPlaying(false);
                 clearOverlayTimer();
                 setOverlayVisible(true);
+                // Clear paused frame and show original poster
+                setPausedFramePoster((prev) => {
+                  if (prev) URL.revokeObjectURL(prev);
+                  return null;
+                });
                 setShowPosterOverlay(Boolean(effectivePoster));
                 setCurrentTime(0);
               }}
@@ -445,7 +536,7 @@ function PostMedia({
             )}
             
             {/* Poster image overlay - shown before video plays, especially important for mobile */}
-            {showPosterOverlay && effectivePoster && (
+            {showPosterOverlay && effectivePoster && !isPlaying && (
               <div className="absolute inset-0 z-[1] pointer-events-none select-none bg-black">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -644,12 +735,23 @@ export default function MembershipFeedPage() {
         .then(r => r.products || []);
       setOtherProducts(subscribed);
 
-      console.log("Feed products found:", subscribed);
+      console.log("[Feed] Feed products found:", subscribed);
 
       const allProducts = [...prods, ...subscribed];
       if (allProducts.length) {
         const arrays = await Promise.all(allProducts.map(p => fetchApi<{ posts: Post[] }>(`/api/posts/product/${p.id}`, { method: "GET", token, cache: "no-store" })
-          .then(r => (r.posts || []).map(post => ({ ...post })))
+          .then(r => {
+            const posts = r.posts || [];
+            // Log poster info for debugging
+            posts.forEach(post => {
+              console.log(`[Feed] Post ${post.id}:`, {
+                media_path: post.media_path,
+                media_poster: post.media_poster,
+                has_poster: Boolean(post.media_poster)
+              });
+            });
+            return posts.map(post => ({ ...post }));
+          })
           .catch(() => [])
         ));
         const merged = arrays.flat();
