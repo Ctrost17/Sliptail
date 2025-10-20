@@ -64,9 +64,7 @@ function AttachmentPreview({
           playsInline
           preload="metadata"
           controlsList="nodownload"
-          className="block w-full h-auto
-           max-h-[50vh] sm:max-h-[65vh] lg:max-h-[70vh]
-           object-contain bg-black"
+          className="block w-full h-full object-contain bg-black"
           onLoadedMetadata={handleVideoMeta}
         />
       ) : isImage ? (

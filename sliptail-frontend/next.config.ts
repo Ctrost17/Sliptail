@@ -41,6 +41,8 @@ const nextConfig: NextConfig = {
         hostname: "sliptail-public-01.s3.us-east-2.amazonaws.com",
         pathname: "/**",
       },
+       // ✅ CloudFront (primary path now)
+    { protocol: "https", hostname: "d1fjxq3uw0s2kj.cloudfront.net", pathname: "/**" },
       // (optional) if you later move to a CloudFront domain, add it here too
       // { protocol: "https", hostname: "your-cdn.example.com", pathname: "/**" },
     ],
