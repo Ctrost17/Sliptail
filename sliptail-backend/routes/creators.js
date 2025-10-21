@@ -50,8 +50,10 @@ function toPublicUrl(absPath) {
 // NEW: S3 key builders + URL helper
 function s3KeyForProfile(userId, originalName) {
   const ext = path.extname(originalName || "").toLowerCase() || ".jpg";
-  return `creators/${userId}/profile${ext}`;
-}
+  const ts  = Date.now(); // or a content hash if you prefer
+  return `creators/${userId}/profile/${ts}${ext}`;
+  }
+
 function s3KeyForGallery(userId, index, originalName) {
   const ext = path.extname(originalName || "").toLowerCase() || ".jpg";
   return `creators/${userId}/gallery/${index}${ext}`;

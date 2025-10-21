@@ -35,12 +35,6 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "sliptail.com", pathname: "/uploads/**" },
       { protocol: "https", hostname: "www.sliptail.com", pathname: "/uploads/**" },
 
-      // ✅ Allow S3 public bucket (so /_next/image can fetch it)
-      {
-        protocol: "https",
-        hostname: "sliptail-public-01.s3.us-east-2.amazonaws.com",
-        pathname: "/**",
-      },
        // ✅ CloudFront (primary path now)
     { protocol: "https", hostname: "d1fjxq3uw0s2kj.cloudfront.net", pathname: "/**" },
       // (optional) if you later move to a CloudFront domain, add it here too
