@@ -84,105 +84,933 @@ function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "
   return "other";
 }
 
-// Video component that reliably shows a poster/preview before play (iPhone-safe)
+// Video component that matches the feed page implementation
 function VideoWithPoster({
   src,
   posterSrc,
   className = "",
 }: { src: string; posterSrc?: string; className?: string }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [showPoster, setShowPoster] = useState<boolean>(true);
-
-  const effectivePoster = useMemo(() => {
-    if (posterSrc && posterSrc.trim()) return posterSrc;
-    const clean = (src || "").split("?")[0];
-    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(clean);
-    if (!isVid) return undefined;
-    return src.includes("#") ? src : `${src}#t=0.1`;
-  }, [posterSrc, src]);
-
-  const isPosterImage = useMemo(() => {
-    const p = (effectivePoster || "").split("#")[0].split("?")[0].toLowerCase();
-    return /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/.test(p);
-  }, [effectivePoster]);
-
-  // Resolve poster via fetch (handles protected endpoints with credentials)
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [overlayVisible, setOverlayVisible] = useState(true);
+  const overlayTimerRef = useRef<number | undefined>(undefined);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [bufferedFrac, setBufferedFrac] = useState(0);
+  const [seeking, setSeeking] = useState(false);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const pointerIdRef = useRef<number | null>(null);
+  const [showPosterOverlay, setShowPosterOverlay] = useState(true);
   const [resolvedPoster, setResolvedPoster] = useState<string | null>(null);
+  const [clientGeneratedPoster, setClientGeneratedPoster] = useState<string | null>(null);
+  const [pausedFramePoster, setPausedFramePoster] = useState<string | null>(null);
+  const [posterLoading, setPosterLoading] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomOverlayVisible, setZoomOverlayVisible] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const hasPosterProp = Boolean(posterSrc?.trim());
+  
+  // Resolve poster via fetch (handles protected endpoints with credentials)
   useEffect(() => {
     let revoke: string | null = null;
     setResolvedPoster(null);
     const url = posterSrc?.trim();
-    if (!url) return;
-    // Only try to fetch when it looks like an image or when server provides an image route
+    if (!url) {
+      console.log('[VideoWithPoster] No poster URL provided from backend for:', src);
+      return;
+    }
+    
+    setPosterLoading(true);
+    console.log('[VideoWithPoster] Fetching poster with credentials:', url);
+    
     (async () => {
       try {
         const res = await fetch(url, { credentials: "include", cache: "no-store" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn('[VideoWithPoster] Poster fetch failed:', res.status, res.statusText);
+          setPosterLoading(false);
+          return;
+        }
         const ct = res.headers.get("content-type") || "";
-        if (!ct.toLowerCase().startsWith("image/")) return;
+        if (!ct.toLowerCase().startsWith("image/")) {
+          console.warn('[VideoWithPoster] Poster is not an image, content-type:', ct);
+          setPosterLoading(false);
+          return;
+        }
         const blob = await res.blob();
         const obj = URL.createObjectURL(blob);
         revoke = obj;
         setResolvedPoster(obj);
-      } catch {}
+        setPosterLoading(false);
+        console.log('[VideoWithPoster] ✓ Poster blob created successfully');
+      } catch (err) {
+        console.error('[VideoWithPoster] Error fetching poster:', err);
+        setPosterLoading(false);
+      }
     })();
-    return () => { if (revoke) URL.revokeObjectURL(revoke); };
-  }, [posterSrc]);
+    
+    return () => { 
+      if (revoke) URL.revokeObjectURL(revoke);
+      setPosterLoading(false);
+    };
+  }, [posterSrc, src]);
 
+  // Generate client-side poster from video first frame if no backend poster
+  const generateClientPoster = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) {
+      console.log('[VideoWithPoster] Cannot generate poster - video not ready, readyState:', v?.readyState);
+      return;
+    }
+    
+    if (v.videoWidth === 0 || v.videoHeight === 0) {
+      console.log('[VideoWithPoster] Cannot generate poster - video dimensions are 0');
+      return;
+    }
+    
+    try {
+      console.log('[VideoWithPoster] Generating client-side poster...');
+      const canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        console.error('[VideoWithPoster] Failed to get canvas context');
+        return;
+      }
+      
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          setClientGeneratedPoster((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+          console.log('[VideoWithPoster] ✓ Client-side poster generated successfully');
+        }
+      }, 'image/jpeg', 0.85);
+    } catch (err) {
+      console.error('[VideoWithPoster] Error generating client-side poster:', err);
+    }
+  }, []);
+
+  // Generate poster at current video time when paused
+  const generatePausedFramePoster = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) {
+      console.log('[VideoWithPoster] Cannot generate paused frame - video not ready');
+      return;
+    }
+    
+    if (v.videoWidth === 0 || v.videoHeight === 0) {
+      console.log('[VideoWithPoster] Cannot generate paused frame - video dimensions are 0');
+      return;
+    }
+    
+    try {
+      console.log('[VideoWithPoster] Generating paused frame poster at time:', v.currentTime);
+      const canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: false });
+      if (!ctx) {
+        console.error('[VideoWithPoster] Failed to get canvas context');
+        return;
+      }
+      
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      
+      // Use toDataURL for immediate synchronous result to avoid black flash
+      try {
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPausedFramePoster((prev) => {
+          if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+          return dataUrl;
+        });
+        console.log('[VideoWithPoster] ✓ Paused frame poster generated successfully (sync)');
+      } catch (err) {
+        // Fallback to blob if toDataURL fails (e.g., tainted canvas)
+        console.warn('[VideoWithPoster] toDataURL failed, falling back to blob:', err);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            const url = URL.createObjectURL(blob);
+            setPausedFramePoster((prev) => {
+              if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+              return url;
+            });
+            console.log('[VideoWithPoster] ✓ Paused frame poster generated successfully (blob)');
+          }
+        }, 'image/jpeg', 0.85);
+      }
+    } catch (err) {
+      console.error('[VideoWithPoster] Error generating paused frame poster:', err);
+    }
+  }, []);
+
+  // Attempt to generate client-side poster if no backend poster provided
   useEffect(() => {
-    setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage))));
-  }, [effectivePoster, isPosterImage, resolvedPoster]);
+    // Only generate if we don't have a backend poster
+    if (hasPosterProp || !src) return;
+    
+    const v = videoRef.current;
+    if (!v) return;
+    
+    console.log('[VideoWithPoster] No backend poster - will attempt client-side generation');
+    
+    // Try multiple approaches for mobile compatibility
+    const attemptGeneration = () => {
+      setTimeout(() => {
+        if (v.readyState >= 2 && v.videoWidth > 0) {
+          generateClientPoster();
+        }
+      }, 100);
+    };
+    
+    // Listen to multiple events for better mobile support
+    const handleLoadedData = () => {
+      console.log('[VideoWithPoster] Video loadeddata event, readyState:', v.readyState);
+      attemptGeneration();
+    };
+    
+    const handleLoadedMetadata = () => {
+      console.log('[VideoWithPoster] Video loadedmetadata event, readyState:', v.readyState);
+      // Try to load some data for poster generation
+      if (v.readyState < 2) {
+        v.load();
+      }
+    };
+    
+    const handleCanPlay = () => {
+      console.log('[VideoWithPoster] Video canplay event, readyState:', v.readyState);
+      attemptGeneration();
+    };
+    
+    v.addEventListener('loadedmetadata', handleLoadedMetadata);
+    v.addEventListener('loadeddata', handleLoadedData);
+    v.addEventListener('canplay', handleCanPlay);
+    
+    // If video is already ready, try immediately
+    if (v.readyState >= 2) {
+      attemptGeneration();
+    }
+    
+    return () => {
+      v.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      v.removeEventListener('loadeddata', handleLoadedData);
+      v.removeEventListener('canplay', handleCanPlay);
+    };
+  }, [hasPosterProp, src, generateClientPoster]);
 
+  // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
+  const effectivePoster = useMemo(() => {
+    if (pausedFramePoster && !isPlaying) {
+      console.log('[VideoWithPoster] ✓ Using paused frame poster');
+      return pausedFramePoster;
+    }
+    if (resolvedPoster) {
+      console.log('[VideoWithPoster] ✓ Using resolved backend poster blob');
+      return resolvedPoster;
+    }
+    if (clientGeneratedPoster) {
+      console.log('[VideoWithPoster] ✓ Using client-generated poster');
+      return clientGeneratedPoster;
+    }
+    // If no poster available and not loading, rely on browser's preload
+    console.log('[VideoWithPoster] ✗ No poster available - posterLoading:', posterLoading, 'hasPosterProp:', hasPosterProp);
+    return undefined;
+  }, [resolvedPoster, clientGeneratedPoster, pausedFramePoster, isPlaying, posterLoading, hasPosterProp]);
+
+  // Cleanup client-generated poster on unmount
+  useEffect(() => {
+    return () => {
+      if (clientGeneratedPoster && clientGeneratedPoster.startsWith('blob:')) {
+        URL.revokeObjectURL(clientGeneratedPoster);
+      }
+      if (pausedFramePoster && pausedFramePoster.startsWith('blob:')) {
+        URL.revokeObjectURL(pausedFramePoster);
+      }
+    };
+  }, [clientGeneratedPoster, pausedFramePoster]);
+
+  // Update poster overlay visibility when effectivePoster becomes available or playing state changes
+  useEffect(() => {
+    console.log('[VideoWithPoster] Poster visibility check - effectivePoster:', Boolean(effectivePoster), 'isPlaying:', isPlaying, 'videoReady:', videoReady);
+    
+    // Show poster overlay when we have a poster and video is not playing
+    if (effectivePoster && !isPlaying) {
+      console.log('[VideoWithPoster] Setting showPosterOverlay=true (poster available, not playing)');
+      setShowPosterOverlay(true);
+    } else if (isPlaying) {
+      console.log('[VideoWithPoster] Hiding poster overlay (video is playing)');
+      setShowPosterOverlay(false);
+    }
+    // If no poster and not playing, let the video element show its own state
+  }, [effectivePoster, isPlaying, videoReady]);
+
+  // Ensure inline playback on iPhone Safari and set initial state
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     try {
       v.setAttribute("playsinline", "true");
+      // iOS Safari specific
       v.setAttribute("webkit-playsinline", "true");
+      // Some Android WebViews (optional, harmless elsewhere)
       v.setAttribute("x5-playsinline", "true");
+      // Ensure not auto-playing or showing a black frame before interaction
       v.pause();
+      
+      // Try to seek to a small time to show first frame
+      const handleCanPlayThrough = () => {
+        if (v.currentTime === 0 && v.duration > 0) {
+          v.currentTime = 0.01; // Very small seek to ensure first frame shows
+        }
+      };
+      
+      // Handle video native fullscreen (iOS Safari)
+      const handleVideoFullscreenChange = () => {
+        // On iOS, video can enter fullscreen natively
+        // We should sync our state when this happens
+        try {
+          if ((v as any).webkitDisplayingFullscreen) {
+            setIsFullscreen(true);
+          } else {
+            // Only set to false if we're not in document fullscreen
+            const isDocumentFullscreen = !!(
+              document.fullscreenElement ||
+              (document as any).webkitFullscreenElement ||
+              (document as any).mozFullScreenElement ||
+              (document as any).msFullscreenElement
+            );
+            if (!isDocumentFullscreen) {
+              setIsFullscreen(false);
+            }
+          }
+        } catch (err) {
+          // Ignore errors accessing webkit properties
+        }
+      };
+      
+      v.addEventListener('canplaythrough', handleCanPlayThrough, { once: true });
+      v.addEventListener('webkitbeginfullscreen', handleVideoFullscreenChange);
+      v.addEventListener('webkitendfullscreen', handleVideoFullscreenChange);
+      
+      // Ensure initial state is correct
+      setIsPlaying(false);
+      setShowPosterOverlay(true);
+      
+      console.log('[VideoWithPoster] Video element initialized, paused');
+      
+      return () => {
+        v.removeEventListener('canplaythrough', handleCanPlayThrough);
+        v.removeEventListener('webkitbeginfullscreen', handleVideoFullscreenChange);
+        v.removeEventListener('webkitendfullscreen', handleVideoFullscreenChange);
+      };
     } catch {}
   }, []);
 
+  const formatTime = useCallback((t: number) => {
+    if (!isFinite(t) || t < 0) t = 0;
+    const total = Math.floor(t);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }, []);
+
+  const updateBuffered = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.duration || !isFinite(v.duration)) {
+      setBufferedFrac(0);
+      return;
+    }
+    try {
+      const len = v.buffered?.length || 0;
+      if (len > 0) {
+        const end = v.buffered.end(len - 1);
+        setBufferedFrac(Math.max(0, Math.min(1, end / v.duration)));
+      } else {
+        setBufferedFrac(0);
+      }
+    } catch {
+      setBufferedFrac(0);
+    }
+  }, []);
+
+  const getFracFromClientX = useCallback((clientX: number) => {
+    const el = trackRef.current;
+    if (!el || !duration) return 0;
+    const rect = el.getBoundingClientRect();
+    const frac = (clientX - rect.left) / rect.width;
+    return Math.max(0, Math.min(1, frac));
+  }, [duration]);
+
+  const seekToFraction = useCallback((frac: number) => {
+    const v = videoRef.current;
+    if (!v || !duration) return;
+    const newTime = frac * duration;
+    v.currentTime = newTime;
+    setCurrentTime(newTime);
+  }, [duration]);
+
+  const handleScrubStart = useCallback((clientX: number) => {
+    setSeeking(true);
+    const frac = getFracFromClientX(clientX);
+    seekToFraction(frac);
+  }, [getFracFromClientX, seekToFraction]);
+
+  const handleScrubMove = useCallback((clientX: number) => {
+    if (!seeking) return;
+    const frac = getFracFromClientX(clientX);
+    seekToFraction(frac);
+  }, [seeking, getFracFromClientX, seekToFraction]);
+
+  const handleScrubEnd = useCallback(() => {
+    setSeeking(false);
+  }, []);
+
+  const scheduleOverlayAutoHide = useCallback((delay = 2500) => {
+    clearTimeout(overlayTimerRef.current);
+    overlayTimerRef.current = window.setTimeout(() => {
+      setOverlayVisible(false);
+    }, delay);
+  }, []);
+
+  const clearOverlayTimer = useCallback(() => {
+    clearTimeout(overlayTimerRef.current);
+  }, []);
+
+  const toggleVideoPlayback = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused || v.ended) {
+      // Hide poster overlay immediately when initiating play
+      setShowPosterOverlay(false);
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
+  }, []);
+
+  const handleZoomIn = useCallback(() => {
+    setZoomLevel((prev) => Math.min(prev + 0.25, 3)); // Max zoom 3x
+    setZoomOverlayVisible(true);
+    setTimeout(() => setZoomOverlayVisible(false), 1500);
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setZoomLevel((prev) => Math.max(prev - 0.25, 0.5)); // Min zoom 0.5x
+    setZoomOverlayVisible(true);
+    setTimeout(() => setZoomOverlayVisible(false), 1500);
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    setZoomLevel(1);
+    setZoomOverlayVisible(true);
+    setTimeout(() => setZoomOverlayVisible(false), 1500);
+  }, []);
+
+  const handleFullscreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Check if we're currently in fullscreen
+    const isCurrentlyFullscreen = !!(
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement
+    );
+
+    if (!isCurrentlyFullscreen) {
+      // Enter fullscreen - try different methods for cross-browser support
+      const requestFullscreen = 
+        container.requestFullscreen ||
+        (container as any).webkitRequestFullscreen ||
+        (container as any).webkitRequestFullScreen ||
+        (container as any).mozRequestFullScreen ||
+        (container as any).msRequestFullscreen;
+
+      if (requestFullscreen) {
+        requestFullscreen.call(container).then(() => {
+          setIsFullscreen(true);
+        }).catch((err: any) => {
+          console.error('Error attempting to enable fullscreen:', err);
+          // Fallback for mobile: simulate fullscreen with CSS
+          setIsFullscreen(true);
+        });
+      } else {
+        // Fallback for browsers that don't support fullscreen API (like iOS Safari)
+        console.log('Fullscreen API not supported, using CSS fallback');
+        setIsFullscreen(true);
+      }
+    } else {
+      // Exit fullscreen
+      const exitFullscreen = 
+        document.exitFullscreen ||
+        (document as any).webkitExitFullscreen ||
+        (document as any).webkitCancelFullScreen ||
+        (document as any).mozCancelFullScreen ||
+        (document as any).msExitFullscreen;
+
+      if (exitFullscreen) {
+        exitFullscreen.call(document).then(() => {
+          setIsFullscreen(false);
+        }).catch((err: any) => {
+          console.error('Error attempting to exit fullscreen:', err);
+          setIsFullscreen(false);
+        });
+      } else {
+        setIsFullscreen(false);
+      }
+    }
+  }, []);
+
+  // Listen for fullscreen changes - handle all browser prefixes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFullscreenNow = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      setIsFullscreen(isFullscreenNow);
+    };
+
+    // Add listeners for all browser prefixes
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
+  // Handle mobile viewport and prevent scrolling in fullscreen
+  useEffect(() => {
+    if (isFullscreen) {
+      // Prevent scrolling on mobile when in fullscreen
+      document.body.style.overflow = 'hidden';
+      document.documentElement.style.overflow = 'hidden';
+      
+      // Lock screen orientation if possible (for mobile devices)
+      if ('screen' in window && 'orientation' in (window as any).screen) {
+        try {
+          (window as any).screen.orientation.lock('landscape').catch(() => {
+            // Orientation lock failed, ignore
+          });
+        } catch (err) {
+          // Orientation lock not supported, ignore
+        }
+      }
+    } else {
+      // Restore scrolling
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+      
+      // Unlock orientation
+      if ('screen' in window && 'orientation' in (window as any).screen) {
+        try {
+          (window as any).screen.orientation.unlock();
+        } catch (err) {
+          // Orientation unlock not supported, ignore
+        }
+      }
+    }
+
+    return () => {
+      // Cleanup on unmount
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+    };
+  }, [isFullscreen]);
+
+  const isVideo = true; // Always true for VideoWithPoster component
+  
   return (
     <div className={`relative ${className}`}>
-      <video
-        ref={videoRef}
-        src={src}
-        controls
-        playsInline
-        preload="metadata"
-        crossOrigin="anonymous"
-        poster={resolvedPoster || effectivePoster}
-        onPlay={() => setShowPoster(false)}
-        onEnded={() => { setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage)))); }}
-        onPause={() => {
-          const v = videoRef.current;
-          if (v && (v.currentTime ?? 0) <= 0.01) setShowPoster(Boolean((resolvedPoster || (effectivePoster && isPosterImage))));
-        }}
-        className="absolute inset-0 w-full h-full object-contain bg-black"
-      />
-      {showPoster && (resolvedPoster || (effectivePoster && isPosterImage)) && (
-        <>
-          {/* Poster image overlay so iOS shows preview reliably */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={resolvedPoster || effectivePoster}
-            alt="video preview"
-            className="absolute inset-0 w-full h-full object-contain bg-black pointer-events-none select-none"
+      <div 
+        ref={containerRef}
+        className={`w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 ${isFullscreen ? 'fixed inset-0 z-[9999] bg-black flex items-center justify-center rounded-none ring-0' : ''}`}
+        style={isFullscreen ? {
+          width: '100vw',
+          height: '100vh',
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          zIndex: 9999,
+        } : undefined}
+      >
+        <div
+          className="relative group"
+          onMouseEnter={() => isPlaying && setOverlayVisible(true)}
+          onMouseMove={() => {
+            if (isPlaying) {
+              setOverlayVisible(true);
+              scheduleOverlayAutoHide();
+            }
+          }}
+          onMouseLeave={() => isPlaying && setOverlayVisible(false)}
+          onPointerDown={() => {
+            // On touch or pen/mouse down, reveal overlay briefly while playing
+            if (isPlaying) {
+              setOverlayVisible(true);
+              scheduleOverlayAutoHide(1800);
+            }
+          }}
+          onClick={() => {
+            // Clicking the video area shows the overlay while playing
+            if (isPlaying) {
+              setOverlayVisible(true);
+              scheduleOverlayAutoHide();
+            }
+          }}
+        >
+          <video
+            ref={videoRef}
+            src={src}
+            playsInline
+            preload="metadata"
+            crossOrigin="use-credentials"
+            poster={effectivePoster || posterSrc}
+            onLoadedMetadata={() => {
+              const v = videoRef.current;
+              const d = v?.duration || 0;
+              setDuration(isFinite(d) ? d : 0);
+              updateBuffered();
+              setVideoReady(true);
+              console.log('[VideoWithPoster] Video metadata loaded, duration:', d, 'readyState:', v?.readyState, 'hasEffectivePoster:', Boolean(effectivePoster));
+              
+              // Try to seek to first frame to ensure it's visible
+              if (v && !effectivePoster && v.readyState >= 1) {
+                v.currentTime = 0.1;
+              }
+              
+              // Ensure poster is shown when video is ready but not playing
+              if (!isPlaying && effectivePoster) {
+                setShowPosterOverlay(true);
+              }
+            }}
+            onLoadedData={() => {
+              // Video data is loaded, ensure poster shows if not playing
+              const v = videoRef.current;
+              console.log('[VideoWithPoster] Video data loaded, readyState:', v?.readyState);
+              setVideoReady(true);
+              
+              // Generate client poster if no backend poster and video is ready
+              if (!hasPosterProp && v && v.readyState >= 2 && v.videoWidth > 0) {
+                console.log('[VideoWithPoster] Attempting to generate first frame poster');
+                setTimeout(() => generateClientPoster(), 100);
+              }
+              
+              if (!isPlaying && effectivePoster) {
+                setShowPosterOverlay(true);
+              }
+            }}
+            onTimeUpdate={() => {
+              const v = videoRef.current;
+              if (!v) return;
+              if (!seeking) setCurrentTime(v.currentTime || 0);
+            }}
+            onProgress={updateBuffered}
+            onError={(e) => {
+              console.error('[VideoWithPoster] Video error:', e);
+              const v = videoRef.current;
+              if (v) {
+                console.error('[VideoWithPoster] Video src:', v.currentSrc);
+                console.error('[VideoWithPoster] Video poster:', v.poster);
+                console.error('[VideoWithPoster] Video error code:', v.error?.code, v.error?.message);
+              }
+            }}
+            onPlay={() => {
+              setIsPlaying(true);
+              setShowPosterOverlay(false);
+              setOverlayVisible(false);
+              // Clear paused frame poster when playing
+              setPausedFramePoster((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return null;
+              });
+              scheduleOverlayAutoHide(1200);
+            }}
+            onPause={() => {
+              console.log('[VideoWithPoster] Video paused');
+              setIsPlaying(false);
+              clearOverlayTimer();
+              setOverlayVisible(true);
+              const v = videoRef.current;
+              
+              // Always generate and show poster when paused
+              if (v && v.currentTime > 0.01) {
+                // Generate immediately without delay to avoid black flash
+                generatePausedFramePoster();
+                // Force show overlay immediately
+                setShowPosterOverlay(true);
+              } else {
+                // At the beginning, show existing poster or generate one
+                if (effectivePoster) {
+                  setShowPosterOverlay(true);
+                } else if (v) {
+                  // Generate even at start if no poster exists
+                  generatePausedFramePoster();
+                  setShowPosterOverlay(true);
+                }
+              }
+            }}
+            onEnded={() => {
+              setIsPlaying(false);
+              clearOverlayTimer();
+              setOverlayVisible(true);
+              setShowPosterOverlay(Boolean(effectivePoster));
+              setCurrentTime(0);
+            }}
+            className={`w-full h-auto bg-black object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+            style={{ 
+              transform: `scale(${zoomLevel})`,
+              transformOrigin: 'center center',
+              transition: 'transform 0.2s ease-in-out'
+            }}
           />
-          {/* Optional visual play affordance (does not capture taps) */}
-          <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex h-12 w-12 items-center justify-center rounded-full bg-black/55 text-white shadow ring-1 ring-white/20">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M8 5v14l11-7-11-7z"></path>
-            </svg>
+          
+          {/* Poster image overlay - shown when video is not playing and we have a poster */}
+          {!isPlaying && effectivePoster && (
+            <div 
+              className="absolute inset-0 z-[5] pointer-events-none select-none"
+              style={{ backgroundColor: '#000' }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                key={effectivePoster}
+                src={effectivePoster}
+                alt="video preview"
+                className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+                style={{ 
+                  display: 'block',
+                  transform: `scale(${zoomLevel})`,
+                  transformOrigin: 'center center',
+                  transition: 'transform 0.2s ease-in-out'
+                }}
+                onLoad={() => {
+                  console.log('[VideoWithPoster] ✓ Poster overlay image loaded and visible:', effectivePoster.substring(0, 50));
+                }}
+                onError={(e) => {
+                  console.error('[VideoWithPoster] ✗ Poster overlay image failed to load:', effectivePoster.substring(0, 50));
+                }}
+              />
+            </div>
+          )}
+          
+          {/* Fallback: show video's native poster if no overlay poster yet */}
+          {!isPlaying && !effectivePoster && posterLoading && (
+            <div className="absolute inset-0 z-[4] flex items-center justify-center bg-neutral-900 pointer-events-none">
+              <div className="text-white text-sm opacity-70">Loading preview...</div>
+            </div>
+          )}
+          
+          {/* Additional fallback: when no poster at all, ensure video first frame is visible */}
+          {!isPlaying && !effectivePoster && !posterLoading && videoReady && (
+            <div className="absolute inset-0 z-[3] bg-transparent pointer-events-none" />
+          )}
+          
+          {/* Centered Play/Pause overlay */}
+          {(overlayVisible || !isPlaying) && (
+            <button
+              type="button"
+              aria-label={isPlaying ? "Pause video" : "Play video"}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleVideoPlayback();
+              }}
+              className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center h-14 w-14 rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
+            >
+              {/* Icon */}
+              {isPlaying ? (
+                // Pause icon
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <rect x="5" y="4" width="5" height="16" rx="1"></rect>
+                  <rect x="14" y="4" width="5" height="16" rx="1"></rect>
+                </svg>
+              ) : (
+                // Play icon
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5v14l11-7-11-7z"></path>
+                </svg>
+              )}
+            </button>
+          )}
+
+          {/* Bottom time control (timeline) */}
+          <div className="absolute inset-x-0 bottom-0 p-3 select-none z-10">
+            <div
+              className={`rounded-md px-2 py-1.5 bg-black/45 backdrop-blur-sm text-white shadow transition-opacity ${
+                overlayVisible || !isPlaying ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                {/* Current time */}
+                <span className="text-[11px] tabular-nums min-w-[36px] text-white/90">{formatTime(currentTime)}</span>
+
+                {/* Track */}
+                <div
+                  ref={trackRef}
+                  className="relative h-2 flex-1 cursor-pointer touch-none"
+                  onPointerDown={(e) => {
+                    pointerIdRef.current = e.pointerId;
+                    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                    handleScrubStart(e.clientX);
+                  }}
+                  onPointerMove={(e) => {
+                    if (pointerIdRef.current !== null) {
+                      e.preventDefault();
+                      handleScrubMove(e.clientX);
+                    }
+                  }}
+                  onPointerUp={() => {
+                    pointerIdRef.current = null;
+                    handleScrubEnd();
+                  }}
+                  onPointerCancel={() => {
+                    pointerIdRef.current = null;
+                    handleScrubEnd();
+                  }}
+                >
+                  <div className="absolute inset-0 rounded-full bg-white/20" />
+                  {/* Buffered */}
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-full bg-white/35"
+                    style={{ width: `${Math.max(0, Math.min(100, bufferedFrac * 100))}%` }}
+                  />
+                  {/* Played */}
+                  <div
+                    className="absolute inset-y-0 left-0 rounded-full bg-emerald-400"
+                    style={{ width: `${duration ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0}%` }}
+                  />
+                  {/* Thumb */}
+                  <div
+                    className="absolute -top-1.5 h-5 w-5 rounded-full bg-white shadow ring-1 ring-black/10"
+                    style={{ left: `${duration ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0}%`, transform: "translateX(-50%)" }}
+                  />
+                </div>
+
+                {/* Duration */}
+                <span className="text-[11px] tabular-nums min-w-[36px] text-white/90">{formatTime(duration)}</span>
+              </div>
+            </div>
           </div>
-        </>
-      )}
+
+          {/* Zoom Controls */}
+          <div className="absolute top-3 right-3 z-10">
+            <div
+              className={`flex flex-col gap-1 transition-opacity ${
+                overlayVisible || !isPlaying ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              {/* Zoom In */}
+              <button
+                type="button"
+                aria-label="Zoom in"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleZoomIn();
+                }}
+                disabled={zoomLevel >= 3}
+                className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="M21 21l-4.35-4.35"></path>
+                  <line x1="9" y1="11" x2="13" y2="11"></line>
+                  <line x1="11" y1="9" x2="11" y2="13"></line>
+                </svg>
+              </button>
+
+              {/* Zoom Out */}
+              <button
+                type="button"
+                aria-label="Zoom out"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleZoomOut();
+                }}
+                disabled={zoomLevel <= 0.5}
+                className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="M21 21l-4.35-4.35"></path>
+                  <line x1="9" y1="11" x2="13" y2="11"></line>
+                </svg>
+              </button>
+
+              {/* Reset Zoom */}
+              {zoomLevel !== 1 && (
+                <button
+                  type="button"
+                  aria-label="Reset zoom"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    resetZoom();
+                  }}
+                  className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 flex items-center justify-center text-xs font-bold"
+                >
+                  1x
+                </button>
+              )}
+
+              {/* Fullscreen */}
+              <button
+                type="button"
+                aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleFullscreen();
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleFullscreen();
+                }}
+                className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center touch-manipulation"
+              >
+                {isFullscreen ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path>
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Zoom Level Indicator */}
+          {zoomOverlayVisible && (
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 pointer-events-none">
+              <div className="bg-black/75 text-white px-3 py-1 rounded-md text-sm font-medium backdrop-blur-sm">
+                {zoomLevel === 1 ? '100%' : `${Math.round(zoomLevel * 100)}%`}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
-
 function AttachmentViewer({
   src,
   posterSrc,

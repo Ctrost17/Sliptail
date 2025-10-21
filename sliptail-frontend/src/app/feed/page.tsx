@@ -45,6 +45,8 @@ function PostMedia({
   const [pausedFramePoster, setPausedFramePoster] = useState<string | null>(null);
   const [posterLoading, setPosterLoading] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const hasPosterProp = Boolean(poster?.trim());
   
   // Resolve poster via fetch (handles protected endpoints with credentials)
@@ -345,6 +347,88 @@ function PostMedia({
     }
   }, []);
 
+  const handleFullscreen = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Check if we're currently in fullscreen
+    const isCurrentlyFullscreen = !!(
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement ||
+      (document as any).mozFullScreenElement ||
+      (document as any).msFullscreenElement
+    );
+
+    if (!isCurrentlyFullscreen) {
+      // Enter fullscreen - try different methods for cross-browser support
+      const requestFullscreen = 
+        container.requestFullscreen ||
+        (container as any).webkitRequestFullscreen ||
+        (container as any).webkitRequestFullScreen ||
+        (container as any).mozRequestFullScreen ||
+        (container as any).msRequestFullscreen;
+
+      if (requestFullscreen) {
+        requestFullscreen.call(container).then(() => {
+          setIsFullscreen(true);
+        }).catch((err: any) => {
+          console.error('Error attempting to enable fullscreen:', err);
+          // Fallback for mobile: simulate fullscreen with CSS
+          setIsFullscreen(true);
+        });
+      } else {
+        // Fallback for browsers that don't support fullscreen API (like iOS Safari)
+        console.log('Fullscreen API not supported, using CSS fallback');
+        setIsFullscreen(true);
+      }
+    } else {
+      // Exit fullscreen
+      const exitFullscreen = 
+        document.exitFullscreen ||
+        (document as any).webkitExitFullscreen ||
+        (document as any).webkitCancelFullScreen ||
+        (document as any).mozCancelFullScreen ||
+        (document as any).msExitFullscreen;
+
+      if (exitFullscreen) {
+        exitFullscreen.call(document).then(() => {
+          setIsFullscreen(false);
+        }).catch((err: any) => {
+          console.error('Error attempting to exit fullscreen:', err);
+          setIsFullscreen(false);
+        });
+      } else {
+        setIsFullscreen(false);
+      }
+    }
+  }, []);
+
+  // Listen for fullscreen changes - handle all browser prefixes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFullscreenNow = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      setIsFullscreen(isFullscreenNow);
+    };
+
+    // Add listeners for all browser prefixes
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
   const formatTime = (t: number) => {
     if (!isFinite(t) || t < 0) t = 0;
     const total = Math.floor(t);
@@ -452,7 +536,18 @@ function PostMedia({
   // ---- IMAGE / VIDEO (unchanged) ----
   return (
     <div className="mt-3 flex justify-center">
-      <div className="w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200">
+      <div 
+        ref={containerRef}
+        className={`w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200 ${isFullscreen ? 'fixed inset-0 z-[9999] bg-black flex items-center justify-center rounded-none ring-0 max-w-none' : ''}`}
+        style={isFullscreen ? {
+          width: '100vw',
+          height: '100vh',
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          zIndex: 9999,
+        } : undefined}
+      >
         {isVideo ? (
           <div
             className="relative group"
@@ -570,7 +665,7 @@ function PostMedia({
                 setShowPosterOverlay(Boolean(effectivePoster));
                 setCurrentTime(0);
               }}
-              className="w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] bg-black object-contain"
+              className={`w-full md:w-auto h-auto bg-black object-contain ${isFullscreen ? 'max-h-screen max-w-full' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
             />
             
             {/* Poster image overlay - shown when video is not playing and we have a poster */}
@@ -584,7 +679,7 @@ function PostMedia({
                   key={effectivePoster}
                   src={effectivePoster}
                   alt="video preview"
-                  className="w-full h-full max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] object-contain"
+                  className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen max-w-full' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
                   style={{ display: 'block' }}
                   onLoad={() => {
                     console.log('[PostMedia] ✓ Poster overlay image loaded and visible:', effectivePoster.substring(0, 50));
@@ -687,6 +782,39 @@ function PostMedia({
                   <span className="text-[11px] tabular-nums min-w-[36px] text-white/90">{formatTime(duration)}</span>
                 </div>
               </div>
+            </div>
+
+            {/* Fullscreen button */}
+            <div className="absolute top-3 right-3 z-10">
+              <button
+                type="button"
+                aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleFullscreen();
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleFullscreen();
+                }}
+                className={`w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center touch-manipulation transition-opacity ${
+                  overlayVisible || !isPlaying ? "opacity-100" : "opacity-0"
+                }`}
+              >
+                {isFullscreen ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path>
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                  </svg>
+                )}
+              </button>
             </div>
           </div>
         ) : (
