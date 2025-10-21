@@ -518,7 +518,11 @@ function VideoWithPoster({
     const container = containerRef.current;
     if (!container) return;
 
-    // Check if we're currently in fullscreen (document API or our CSS state)
+    // Detect mobile devices for better fallback handling
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log('[VideoWithPoster] Fullscreen toggle requested - isMobile:', isMobile, 'current isFullscreen state:', isFullscreen);
+
+    // Check if we're currently in fullscreen (document API)
     const isDocumentFullscreen = !!(
       document.fullscreenElement ||
       (document as any).webkitFullscreenElement ||
@@ -526,11 +530,20 @@ function VideoWithPoster({
       (document as any).msFullscreenElement
     );
 
-    // Use our state as the source of truth for CSS fallback cases
-    const isCurrentlyFullscreen = isDocumentFullscreen || isFullscreen;
+    console.log('[VideoWithPoster] Document fullscreen state:', isDocumentFullscreen);
 
-    if (!isCurrentlyFullscreen) {
-      // Enter fullscreen - try different methods for cross-browser support
+    if (!isFullscreen) {
+      // Entering fullscreen
+      console.log('[VideoWithPoster] Attempting to enter fullscreen');
+      
+      // For mobile devices or when fullscreen API is not available, use CSS fallback directly
+      if (isMobile || !container.requestFullscreen) {
+        console.log('[VideoWithPoster] Using CSS fallback for mobile/unsupported browser');
+        setIsFullscreen(true);
+        return;
+      }
+
+      // Try native fullscreen API for desktop browsers
       const requestFullscreen = 
         container.requestFullscreen ||
         (container as any).webkitRequestFullscreen ||
@@ -540,43 +553,45 @@ function VideoWithPoster({
 
       if (requestFullscreen) {
         requestFullscreen.call(container).then(() => {
-          console.log('Native fullscreen enabled');
+          console.log('[VideoWithPoster] ✓ Native fullscreen enabled');
           setIsFullscreen(true);
         }).catch((err: any) => {
-          console.log('Native fullscreen failed, using CSS fallback:', err.message);
-          // Fallback for mobile: simulate fullscreen with CSS
+          console.log('[VideoWithPoster] Native fullscreen failed, using CSS fallback:', err.message);
           setIsFullscreen(true);
         });
       } else {
-        // Fallback for browsers that don't support fullscreen API (like iOS Safari)
-        console.log('Fullscreen API not supported, using CSS fallback');
+        console.log('[VideoWithPoster] Fullscreen API not available, using CSS fallback');
         setIsFullscreen(true);
       }
     } else {
-      // Exit fullscreen
-      if (isDocumentFullscreen) {
-        // We're in native fullscreen, use document API to exit
-        const exitFullscreen = 
-          document.exitFullscreen ||
-          (document as any).webkitExitFullscreen ||
-          (document as any).webkitCancelFullScreen ||
-          (document as any).mozCancelFullScreen ||
-          (document as any).msExitFullscreen;
+      // Exiting fullscreen
+      console.log('[VideoWithPoster] Attempting to exit fullscreen');
+      
+      // For mobile or CSS fallback, always just toggle state
+      if (isMobile || !isDocumentFullscreen) {
+        console.log('[VideoWithPoster] Exiting CSS fallback fullscreen');
+        setIsFullscreen(false);
+        return;
+      }
 
-        if (exitFullscreen) {
-          exitFullscreen.call(document).then(() => {
-            console.log('Native fullscreen exited');
-            setIsFullscreen(false);
-          }).catch((err: any) => {
-            console.error('Error attempting to exit fullscreen:', err);
-            setIsFullscreen(false);
-          });
-        } else {
+      // Try to exit native fullscreen for desktop
+      const exitFullscreen = 
+        document.exitFullscreen ||
+        (document as any).webkitExitFullscreen ||
+        (document as any).webkitCancelFullScreen ||
+        (document as any).mozCancelFullScreen ||
+        (document as any).msExitFullscreen;
+
+      if (exitFullscreen) {
+        exitFullscreen.call(document).then(() => {
+          console.log('[VideoWithPoster] ✓ Native fullscreen exited');
           setIsFullscreen(false);
-        }
+        }).catch((err: any) => {
+          console.log('[VideoWithPoster] Native fullscreen exit failed, forcing state change:', err.message);
+          setIsFullscreen(false);
+        });
       } else {
-        // We're in CSS fallback fullscreen, just toggle state
-        console.log('Exiting CSS fallback fullscreen');
+        console.log('[VideoWithPoster] Exit fullscreen API not available, forcing state change');
         setIsFullscreen(false);
       }
     }
@@ -584,6 +599,8 @@ function VideoWithPoster({
 
   // Listen for fullscreen changes - handle all browser prefixes
   useEffect(() => {
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
     const handleFullscreenChange = () => {
       const isFullscreenNow = !!(
         document.fullscreenElement ||
@@ -591,7 +608,13 @@ function VideoWithPoster({
         (document as any).mozFullScreenElement ||
         (document as any).msFullscreenElement
       );
-      setIsFullscreen(isFullscreenNow);
+      
+      console.log('[VideoWithPoster] Fullscreen change detected - native fullscreen:', isFullscreenNow);
+      
+      // On mobile, we primarily rely on our CSS state, but update if native fullscreen changes
+      if (!isMobile || isFullscreenNow) {
+        setIsFullscreen(isFullscreenNow);
+      }
     };
 
     // Add listeners for all browser prefixes
@@ -607,6 +630,24 @@ function VideoWithPoster({
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
     };
   }, []);
+
+  // Add ESC key listener for exiting fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        console.log('[VideoWithPoster] ESC key pressed - exiting fullscreen');
+        setIsFullscreen(false);
+      }
+    };
+
+    if (isFullscreen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   // Handle mobile viewport and prevent scrolling in fullscreen
   useEffect(() => {
@@ -666,6 +707,28 @@ function VideoWithPoster({
           margin: '0',
         } : undefined}
       >
+        {/* Mobile Fullscreen Exit Helper - tap anywhere to exit */}
+        {isFullscreen && (
+          <div 
+            className="absolute inset-0 z-[1] bg-transparent cursor-pointer md:hidden"
+            onClick={(e) => {
+              // Only handle background clicks, not clicks on video or controls
+              if (e.target === e.currentTarget) {
+                console.log('[VideoWithPoster] Mobile background tap detected - exiting fullscreen');
+                setIsFullscreen(false);
+              }
+            }}
+          />
+        )}
+
+        {/* Mobile Fullscreen Exit Instructions */}
+        {isFullscreen && (
+          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[10] md:hidden pointer-events-none">
+            <div className="bg-black/70 text-white text-sm px-4 py-2 rounded-full backdrop-blur-sm">
+              Tap outside video to exit fullscreen
+            </div>
+          </div>
+        )}
         <div
           className="relative group"
           onMouseEnter={() => isPlaying && setOverlayVisible(true)}

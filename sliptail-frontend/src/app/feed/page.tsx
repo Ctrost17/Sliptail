@@ -351,16 +351,19 @@ function PostMedia({
     const container = containerRef.current;
     if (!container) return;
 
-    // Check if we're currently in fullscreen
-    const isCurrentlyFullscreen = !!(
-      document.fullscreenElement ||
-      (document as any).webkitFullscreenElement ||
-      (document as any).mozFullScreenElement ||
-      (document as any).msFullscreenElement
-    );
+    // Detect mobile devices for better fallback handling
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log('[PostMedia] Fullscreen toggle - isMobile:', isMobile, 'current state:', isFullscreen);
 
-    if (!isCurrentlyFullscreen) {
-      // Enter fullscreen - try different methods for cross-browser support
+    if (!isFullscreen) {
+      // Entering fullscreen - use CSS fallback directly for mobile
+      if (isMobile || !container.requestFullscreen) {
+        console.log('[PostMedia] Using CSS fallback for mobile/unsupported browser');
+        setIsFullscreen(true);
+        return;
+      }
+
+      // Try native fullscreen API for desktop
       const requestFullscreen = 
         container.requestFullscreen ||
         (container as any).webkitRequestFullscreen ||
@@ -372,17 +375,21 @@ function PostMedia({
         requestFullscreen.call(container).then(() => {
           setIsFullscreen(true);
         }).catch((err: any) => {
-          console.error('Error attempting to enable fullscreen:', err);
-          // Fallback for mobile: simulate fullscreen with CSS
+          console.log('Native fullscreen failed, using CSS fallback:', err.message);
           setIsFullscreen(true);
         });
       } else {
-        // Fallback for browsers that don't support fullscreen API (like iOS Safari)
-        console.log('Fullscreen API not supported, using CSS fallback');
         setIsFullscreen(true);
       }
     } else {
-      // Exit fullscreen
+      // Exiting fullscreen - for mobile, always use direct state toggle
+      if (isMobile) {
+        console.log('[PostMedia] Mobile fullscreen exit');
+        setIsFullscreen(false);
+        return;
+      }
+
+      // Try native fullscreen exit for desktop
       const exitFullscreen = 
         document.exitFullscreen ||
         (document as any).webkitExitFullscreen ||
@@ -394,14 +401,14 @@ function PostMedia({
         exitFullscreen.call(document).then(() => {
           setIsFullscreen(false);
         }).catch((err: any) => {
-          console.error('Error attempting to exit fullscreen:', err);
+          console.log('Native exit failed, forcing state change:', err.message);
           setIsFullscreen(false);
         });
       } else {
         setIsFullscreen(false);
       }
     }
-  }, []);
+  }, [isFullscreen]);
 
   // Listen for fullscreen changes - handle all browser prefixes
   useEffect(() => {
