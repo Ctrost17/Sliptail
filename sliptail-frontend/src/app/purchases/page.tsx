@@ -1592,7 +1592,7 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">My Account</h1>
+          <h1 className="text-3xl font-bold text-gray-900">My Purchases</h1>
           <p className="text-gray-600 mt-2">Manage your memberships, requests, and purchases</p>
         </div>
 

@@ -531,7 +531,7 @@ router.post(
                   body: data,
                 });
                 await fs.promises.unlink(outputPath).catch(() => {});
-                return finalizeCreate(outputFilename); // store S3 key in products.filename
+                return finalizeCreate(key); // store S3 key in products.filename
               } catch (e) {
                 console.error("S3 upload (video) failed:", e);
                 return res.status(500).json({ error: "Video upload failed" });
@@ -558,7 +558,7 @@ router.post(
             contentType: mimeType || "application/octet-stream",
             body: req.file.buffer,
           });
-          return finalizeCreate(outputFilename); // store S3 key in products.filename
+          return finalizeCreate(key); // ✅ store S3 key in products.filename
         } catch (e) {
           console.error("S3 upload (non-video) failed:", e);
           return res.status(500).json({ error: "File upload failed" });
