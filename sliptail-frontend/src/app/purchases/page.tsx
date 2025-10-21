@@ -518,13 +518,16 @@ function VideoWithPoster({
     const container = containerRef.current;
     if (!container) return;
 
-    // Check if we're currently in fullscreen
-    const isCurrentlyFullscreen = !!(
+    // Check if we're currently in fullscreen (document API or our CSS state)
+    const isDocumentFullscreen = !!(
       document.fullscreenElement ||
       (document as any).webkitFullscreenElement ||
       (document as any).mozFullScreenElement ||
       (document as any).msFullscreenElement
     );
+
+    // Use our state as the source of truth for CSS fallback cases
+    const isCurrentlyFullscreen = isDocumentFullscreen || isFullscreen;
 
     if (!isCurrentlyFullscreen) {
       // Enter fullscreen - try different methods for cross-browser support
@@ -537,9 +540,10 @@ function VideoWithPoster({
 
       if (requestFullscreen) {
         requestFullscreen.call(container).then(() => {
+          console.log('Native fullscreen enabled');
           setIsFullscreen(true);
         }).catch((err: any) => {
-          console.error('Error attempting to enable fullscreen:', err);
+          console.log('Native fullscreen failed, using CSS fallback:', err.message);
           // Fallback for mobile: simulate fullscreen with CSS
           setIsFullscreen(true);
         });
@@ -550,25 +554,33 @@ function VideoWithPoster({
       }
     } else {
       // Exit fullscreen
-      const exitFullscreen = 
-        document.exitFullscreen ||
-        (document as any).webkitExitFullscreen ||
-        (document as any).webkitCancelFullScreen ||
-        (document as any).mozCancelFullScreen ||
-        (document as any).msExitFullscreen;
+      if (isDocumentFullscreen) {
+        // We're in native fullscreen, use document API to exit
+        const exitFullscreen = 
+          document.exitFullscreen ||
+          (document as any).webkitExitFullscreen ||
+          (document as any).webkitCancelFullScreen ||
+          (document as any).mozCancelFullScreen ||
+          (document as any).msExitFullscreen;
 
-      if (exitFullscreen) {
-        exitFullscreen.call(document).then(() => {
+        if (exitFullscreen) {
+          exitFullscreen.call(document).then(() => {
+            console.log('Native fullscreen exited');
+            setIsFullscreen(false);
+          }).catch((err: any) => {
+            console.error('Error attempting to exit fullscreen:', err);
+            setIsFullscreen(false);
+          });
+        } else {
           setIsFullscreen(false);
-        }).catch((err: any) => {
-          console.error('Error attempting to exit fullscreen:', err);
-          setIsFullscreen(false);
-        });
+        }
       } else {
+        // We're in CSS fallback fullscreen, just toggle state
+        console.log('Exiting CSS fallback fullscreen');
         setIsFullscreen(false);
       }
     }
-  }, []);
+  }, [isFullscreen]);
 
   // Listen for fullscreen changes - handle all browser prefixes
   useEffect(() => {
@@ -645,10 +657,13 @@ function VideoWithPoster({
         style={isFullscreen ? {
           width: '100vw',
           height: '100vh',
+          minHeight: '100vh',
           position: 'fixed',
           top: 0,
           left: 0,
           zIndex: 9999,
+          padding: '0',
+          margin: '0',
         } : undefined}
       >
         <div
@@ -774,7 +789,11 @@ function VideoWithPoster({
               setShowPosterOverlay(Boolean(effectivePoster));
               setCurrentTime(0);
             }}
-            className={`w-full h-auto bg-black object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+            className={`w-full bg-black object-contain ${
+              isFullscreen 
+                ? 'h-full max-h-screen max-w-full' 
+                : 'h-auto max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+            }`}
             style={{ 
               transform: `scale(${zoomLevel})`,
               transformOrigin: 'center center',
@@ -793,7 +812,11 @@ function VideoWithPoster({
                 key={effectivePoster}
                 src={effectivePoster}
                 alt="video preview"
-                className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+                className={`w-full h-full object-contain ${
+                  isFullscreen 
+                    ? 'max-h-screen max-w-full' 
+                    : 'max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+                }`}
                 style={{ 
                   display: 'block',
                   transform: `scale(${zoomLevel})`,
@@ -831,7 +854,9 @@ function VideoWithPoster({
                 e.stopPropagation();
                 toggleVideoPlayback();
               }}
-              className="absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center h-14 w-14 rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
+              className={`absolute z-10 left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 inline-flex items-center justify-center ${
+                isFullscreen ? 'h-20 w-20' : 'h-14 w-14'
+              } rounded-full bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-white/60 transition-all duration-200 touch-manipulation`}
             >
               {/* Icon */}
               {isPlaying ? (
@@ -983,7 +1008,7 @@ function VideoWithPoster({
                   e.stopPropagation();
                   handleFullscreen();
                 }}
-                className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center touch-manipulation"
+                className={`${isFullscreen ? 'w-12 h-12' : 'w-8 h-8'} rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center touch-manipulation transition-all duration-200`}
               >
                 {isFullscreen ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1062,7 +1087,7 @@ function AttachmentViewer({
   }
 
   if (kind === "video") {
-    return <VideoWithPoster src={src} posterSrc={posterSrc} className={`${className} aspect-video`} />;
+    return <VideoWithPoster src={src} posterSrc={posterSrc} className={className} />;
   }
 
   if (kind === "audio") {
@@ -1079,7 +1104,7 @@ function AttachmentViewer({
 
   // Unknown? Try video first (your deliveries are usually video), fall back on error.
   return (
-    <VideoWithPoster src={src} posterSrc={posterSrc} className={`${className} aspect-video`} />
+    <VideoWithPoster src={src} posterSrc={posterSrc} className={className} />
   );
 }
 

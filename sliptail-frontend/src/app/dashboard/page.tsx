@@ -783,7 +783,11 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
               setShowPosterOverlay(Boolean(effectivePoster));
               setCurrentTime(0);
             }}
-            className={`w-full h-auto bg-black object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+            className={`w-full bg-black object-contain ${
+              isFullscreen 
+                ? 'h-full max-h-screen max-w-full' 
+                : 'h-auto max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+            }`}
             style={{ 
               transform: `scale(${zoomLevel})`,
               transformOrigin: 'center center',
@@ -802,7 +806,11 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
                 key={effectivePoster}
                 src={effectivePoster}
                 alt="video preview"
-                className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+                className={`w-full h-full object-contain ${
+                  isFullscreen 
+                    ? 'max-h-screen max-w-full' 
+                    : 'max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+                }`}
                 style={{ 
                   display: 'block',
                   transform: `scale(${zoomLevel})`,
@@ -1048,7 +1056,7 @@ function AttachmentViewer({
   if (kind === "image") {
     return <img src={src} alt="attachment" className={`${className} object-contain`} onError={() => setErrored(true)} />;
   }
-  if (kind === "video") return <VideoWithPoster src={src} poster={posterUrl} className={`${className} aspect-video`} />;
+  if (kind === "video") return <VideoWithPoster src={src} poster={posterUrl} className={className} />;
   if (kind === "audio") {
     return (
       <audio
@@ -1062,7 +1070,7 @@ function AttachmentViewer({
   }
 
   // Unknown: optimistically try video; fallback becomes link via onError.
-  return <VideoWithPoster src={src} poster={posterUrl} className={`${className} aspect-video`} />;
+  return <VideoWithPoster src={src} poster={posterUrl} className={className} />;
 }
 
 function LocalAttachmentPreview({ file, url }: { file: File | null; url: string | null }) {
@@ -1079,7 +1087,7 @@ function LocalAttachmentPreview({ file, url }: { file: File | null; url: string 
     return <audio src={url} controls preload="metadata" className="block w-full bg-black" />;
   }
   if (isVideo) {
-    return <VideoPreviewWithThumbnail url={url} />;
+    return <VideoWithPoster src={url} className="" />;
   }
   if (isImage) {
     return <img src={url} alt="preview" className="block w-full h-auto object-contain bg-black" />;
@@ -1289,7 +1297,11 @@ function VideoPreviewWithThumbnail({ url }: { url: string }) {
         preload="metadata"
         crossOrigin="use-credentials"
         poster={effectiveThumbnail || undefined}
-        className={`block w-full h-auto object-contain bg-black ${isFullscreen ? 'max-h-screen' : 'max-h-[60vh]'}`}
+        className={`block w-full object-contain bg-black ${
+          isFullscreen 
+            ? 'h-full max-h-screen max-w-full' 
+            : 'h-auto max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+        }`}
         style={{ 
           transform: `scale(${zoomLevel})`,
           transformOrigin: 'center center',
@@ -1338,7 +1350,11 @@ function VideoPreviewWithThumbnail({ url }: { url: string }) {
           <img 
             src={effectiveThumbnail} 
             alt="video thumbnail" 
-            className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[60vh]'}`}
+            className={`w-full h-full object-contain ${
+              isFullscreen 
+                ? 'max-h-screen max-w-full' 
+                : 'max-h-[45vh] sm:max-h-[50vh] md:max-h-[55vh] lg:max-h-[60vh]'
+            }`}
             style={{ 
               transform: `scale(${zoomLevel})`,
               transformOrigin: 'center center',

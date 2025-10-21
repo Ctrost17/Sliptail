@@ -665,7 +665,11 @@ function PostMedia({
                 setShowPosterOverlay(Boolean(effectivePoster));
                 setCurrentTime(0);
               }}
-              className={`w-full md:w-auto h-auto bg-black object-contain ${isFullscreen ? 'max-h-screen max-w-full' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+              className={`w-full md:w-auto bg-black object-contain ${
+                isFullscreen 
+                  ? 'h-full max-h-screen max-w-full' 
+                  : 'h-auto max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+              }`}
             />
             
             {/* Poster image overlay - shown when video is not playing and we have a poster */}
@@ -679,7 +683,11 @@ function PostMedia({
                   key={effectivePoster}
                   src={effectivePoster}
                   alt="video preview"
-                  className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen max-w-full' : 'max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'}`}
+                  className={`w-full h-full object-contain ${
+                    isFullscreen 
+                      ? 'max-h-screen max-w-full' 
+                      : 'max-h-[50vh] sm:max-h-[60vh] md:max-h-[65vh] lg:max-h-[70vh]'
+                  }`}
                   style={{ display: 'block' }}
                   onLoad={() => {
                     console.log('[PostMedia] ✓ Poster overlay image loaded and visible:', effectivePoster.substring(0, 50));
