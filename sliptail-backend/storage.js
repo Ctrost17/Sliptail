@@ -246,7 +246,7 @@ async function uploadPublic({
       const params = withSse({
         Bucket: bucket,
         Key: key,
-        Body: body,
+         Body: toBodyStream(body),
         ContentType,
         ...(PUBLIC_BUCKET ? {} : ALLOW_PUBLIC_ACL ? { ACL: "public-read" } : {}),
       });
@@ -309,7 +309,7 @@ async function getPrivateUrl(key, { expiresIn = 900 } = {}) {
       const url = `${CF_DOMAIN.replace(/\/+$/, "")}/${k.split("/").map(encodeURIComponent).join("/")}`;
 
       // CloudFront "expires" is a timestamp (ms) — use now + expiresIn seconds
-      const signed = cfSignUrl({
+      const signed = getCFSignedUrl({
         url,
         keyPairId: CF_KEY_PAIR_ID,
         privateKey: CF_PRIVKEY,
