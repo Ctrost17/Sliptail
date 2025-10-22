@@ -546,7 +546,9 @@ function PostMedia({
     <div className="mt-3 flex justify-center">
       <div 
         ref={containerRef}
-        className={`w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200 ${isFullscreen ? 'fixed inset-0 z-[9999] bg-black flex items-center justify-center rounded-none ring-0 max-w-none' : ''}`}
+         className={`w-full md:w-auto max-w-3xl rounded-xl overflow-hidden ring-1 ring-neutral-200 ${
+            isFullscreen ? 'fixed inset-0 z-[9999] bg-black flex items-center justify-center rounded-none ring-0 max-w-none' : 'bg-black'
+          }`}
         style={isFullscreen ? {
           width: '100vw',
           height: '100vh',
@@ -833,18 +835,58 @@ function PostMedia({
               </button>
             </div>
           </div>
-        ) : (
-          <img
-            src={src}
-            alt="post media"
-            loading="lazy"
-            className="block w-full md:w-auto h-auto max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh] mx-auto"
-          />
-        )}
+) : (
+  <div className="relative group">
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img
+      src={src}
+      alt="post media"
+      loading="lazy"
+      decoding="async"
+      sizes="(max-width: 768px) 100vw, 768px"
+      className={`block mx-auto select-none ${
+        isFullscreen
+          ? 'max-h-screen max-w-full object-contain'
+          : 'w-full md:w-auto h-auto object-contain max-h-[70vh] md:max-h-[65vh] lg:max-h-[60vh]'
+      }`}
+      style={{
+        imageOrientation: 'from-image' as any, // helps Safari respect EXIF orientation
+        touchAction: 'manipulation',
+        backgroundColor: 'black',
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleFullscreen();
+      }}
+    />
+
+    {/* Fullscreen button (images) */}
+    <button
+      type="button"
+      aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleFullscreen();
+      }}
+      className="absolute top-3 right-3 w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center"
+    >
+      {isFullscreen ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path>
+        </svg>
+      ) : (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+        </svg>
+      )}
+    </button>
       </div>
+    )} 
+    </div>
     </div>
   );
 }
+
 
 export default function MembershipFeedPage() {
   const [{ token }] = useState(() => loadAuth());
@@ -1310,12 +1352,12 @@ export default function MembershipFeedPage() {
       {isCreator && addingProduct && (
         <div className="fixed inset-0 z-40 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeAdd} />
-          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85vh] overflow-y-auto">
+          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85svh] md:max-h-[85vh] overflow-y-auto overscroll-contain">
             <h2 className="text-sm font-semibold mb-3">New post for {addingProduct.title || `Product #${addingProduct.id}`}</h2>
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Title</label>
-                <input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder="Post title" className="w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder="Post title" className="w-full rounded-md border px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Body</label>
@@ -1363,12 +1405,12 @@ export default function MembershipFeedPage() {
       {isCreator && editingPost && (
         <div className="fixed inset-0 z-40 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeEdit} />
-          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85vh] overflow-y-auto">
+          <div role="dialog" aria-modal="true" className="relative z-50 w-full max-w-md rounded-2xl bg-white shadow-xl border p-5 animate-in fade-in zoom-in max-h-[85svh] md:max-h-[85vh] overflow-y-auto overscroll-contain">
             <h2 className="text-sm font-semibold mb-3">Edit Post</h2>
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Title</label>
-                <input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder="Post title" className="w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <input value={draftTitle} onChange={e => setDraftTitle(e.target.value)} placeholder="Post title" className="w-full rounded-md border px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Body</label>
