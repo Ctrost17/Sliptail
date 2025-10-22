@@ -7,7 +7,7 @@ const DRIVER = String(process.env.STORAGE_DRIVER || "local").toLowerCase();
 const isS3 = DRIVER === "s3";
 
 // CloudFront signer (rename to avoid clash with S3 presigner)
-const { getSignedUrl: cfSignUrl } = require("@aws-sdk/cloudfront-signer");
+const { getSignedUrl: getCFSignedUrl } = require("@aws-sdk/cloudfront-signer");
 // CF env
 const CF_DOMAIN = process.env.CF_PRIVATE_DOMAIN || null; // e.g. "https://dxxx.cloudfront.net"
 const CF_KEY_PAIR_ID = process.env.CF_KEY_PAIR_ID || null;
