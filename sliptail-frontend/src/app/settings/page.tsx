@@ -114,7 +114,7 @@ function loadGis(): Promise<void> {
   });
 }
 
-/** Get a fresh Google ID token from GIS (popup/One-Tap style) */
+/** Get a fresh Google ID token from GIS with FedCM → legacy prompt fallback */
 async function getGoogleIdTokenOnClient(): Promise<string> {
   if (typeof window === "undefined") throw new Error("Must be called in the browser");
   const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
@@ -122,52 +122,90 @@ async function getGoogleIdTokenOnClient(): Promise<string> {
 
   await loadGis();
 
-  return new Promise<string>((resolve, reject) => {
-    let settled = false;
+  async function tryPrompt(useFedCM: boolean): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
 
-    const cleanup = () => {
-      try {
-        window.google?.accounts?.id?.cancel?.();
-      } catch {}
-    };
+      const cleanup = () => {
+        try {
+          window.google?.accounts?.id?.cancel?.();
+        } catch {}
+      };
 
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: (resp: { credential?: string }) => {
-        if (settled) return;
-        if (resp?.credential) {
+      // (Re)initialize with desired FedCM setting
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        // This callback gives us the ID token (JWT) in resp.credential
+        callback: (resp: { credential?: string }) => {
+          if (settled) return;
+          if (resp?.credential) {
+            settled = true;
+            cleanup();
+            resolve(resp.credential);
+          } else {
+            settled = true;
+            cleanup();
+            reject(new Error("No credential returned from Google"));
+          }
+        },
+        // UX knobs
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        // Key line: toggle FedCM usage
+        use_fedcm_for_prompt: useFedCM,
+        // Helps in Safari/ITP contexts
+        itp_support: true,
+      });
+
+      window.google.accounts.id.prompt((notification: any) => {
+        const notDisplayed = notification?.getNotDisplayedReason?.();
+        const skipped = notification?.getSkippedReason?.();
+        const reason = notDisplayed || skipped;
+
+        // If it never displayed or was skipped, treat as failure so we can fallback
+        if (!settled && reason) {
           settled = true;
           cleanup();
-          resolve(resp.credential);
-        } else {
-          settled = true;
-          cleanup();
-          reject(new Error("No credential returned from Google"));
+          reject(new Error(String(reason)));
         }
-      },
-      auto_select: false,
-      cancel_on_tap_outside: true,
-      use_fedcm_for_prompt: true,
-    });
+      });
 
-    window.google.accounts.id.prompt((notification: any) => {
-      const reason =
-        notification?.getNotDisplayedReason?.() || notification?.getSkippedReason?.();
-      if (!settled && reason && reason !== "undefined") {
-        settled = true;
-        cleanup();
-        reject(new Error(`Google reauth was dismissed: ${reason}`));
-      }
+      // Safety timeout
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error("Google reauth timed out"));
+        }
+      }, 30_000);
     });
+  }
 
-    setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        reject(new Error("Google reauth timed out"));
+  // 1) Try with FedCM (modern path)
+  try {
+    return await tryPrompt(true);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+
+    // 2) If FedCM is disabled / blocked / network-rejected, retry without FedCM
+    // Common reasons: "user_cancel", "opt_out_or_no_session", "unknown_reason",
+    // "suppressed_by_user", "browser_not_supported", or the console's NetworkError
+    const looksLikeFedCMBlock =
+      /fedcm|networkerror|notdisplayed|skipped|suppressed|unknown|browser|disabled/i.test(msg);
+
+    if (looksLikeFedCMBlock) {
+      try {
+        return await tryPrompt(false); // legacy prompt path
+      } catch (e2) {
+        throw new Error(
+          "Google reauth was blocked or dismissed. Please allow third-party sign-in for this site (key/person icon near the URL), or try again."
+        );
       }
-    }, 30_000);
-  });
+    }
+
+    // If the error wasn't FedCM-related, surface it
+    throw e;
+  }
 }
 
 /** Exchange a Google ID token for a short-lived reauth_token on your backend */
