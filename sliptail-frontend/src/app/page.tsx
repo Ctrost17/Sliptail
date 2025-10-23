@@ -328,7 +328,10 @@ function FeaturedCarousel({ children }: { children: React.ReactNode }) {
 
     // spacer so first/last can center (not used for single-card case below)
     const first = cards[0];
-    setPad(Math.max(0, (el.clientWidth - first.offsetWidth) / 2));
+    // Ensure better centering by accounting for card width and container width
+    const cardWidth = first.offsetWidth;
+    const containerWidth = el.clientWidth;
+    setPad(Math.max(0, (containerWidth - cardWidth) / 2));
 
     const idx = getCenteredIndex();
     setCanLeft(idx > 0);
@@ -397,17 +400,16 @@ function FeaturedCarousel({ children }: { children: React.ReactNode }) {
       <div
         ref={trackRef}
         className={[
-          "flex items-center gap-4 snap-x snap-mandatory scroll-smooth",
+          "flex items-center snap-x snap-mandatory scroll-smooth",
           "overflow-x-auto overflow-y-visible",
           // ↑ keep overflow-y-visible, but give more bottom padding so the card's drop shadow can render fully
           "pt-6 pb-16 min-h-[24rem]",
-          "px-6",
           isSingle ? "justify-center" : "justify-start",
         ].join(" ")}
         style={{
           scrollbarWidth: "none",
           WebkitOverflowScrolling: "touch",
-          // spacer padding only matters when there’s more than one card
+          // spacer padding only matters when there's more than one card
           scrollPaddingLeft: isSingle ? undefined : `${pad}px`,
           scrollPaddingRight: isSingle ? undefined : `${pad}px`,
         }}
@@ -560,8 +562,10 @@ export default function Home() {
             <div
               key={i}
               data-card="1"
-              className="snap-center shrink-0 w-[90vw] max-w-sm h-64 rounded-2xl bg-white p-4 shadow animate-pulse"
-            />
+              className="snap-center shrink-0 w-[100vw] flex justify-center"
+            >
+              <div className="h-64 w-full max-w-[280px] sm:max-w-[320px] rounded-2xl bg-white p-4 shadow animate-pulse" />
+            </div>
           ))}
         </FeaturedCarousel>
       </div>
@@ -575,7 +579,7 @@ export default function Home() {
               <div
                 key={c.creator_id}
                 data-card="1"
-                 className="snap-center shrink-0 w-[90vw] min-w-[90vw] basis-[90vw] max-w-sm p-1"
+                className="snap-center shrink-0 w-[100vw] flex justify-center"
               >
                 <CreatorCard
                   creator={{
