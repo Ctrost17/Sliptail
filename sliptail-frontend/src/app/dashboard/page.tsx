@@ -2358,7 +2358,7 @@ useEffect(() => {
               </div>
               {/* Product count from fetched list */}
               <div className="rounded-lg border px-3 py-2 text-sm">
-                <span className="font-medium">{products.length}</span> products
+                <span className="font-medium">{products.length}</span> Product(s)
               </div>
             </div>
           </header>
