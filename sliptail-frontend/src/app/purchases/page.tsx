@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState,useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
+import Image from "next/image";
+import Link from "next/link";
 import {
   Download, Eye, X, AlertCircle, Star, ChevronRight, Loader2,
   Calendar, CreditCard, Shield, ArrowRight
@@ -1232,6 +1234,54 @@ function AttachmentViewer({
   );
 }
 
+function ProfileAvatar({
+  src,
+  alt,
+  size = 56,                 // px; 56 = w-14 h-14
+  creatorId,
+  className = "",
+  ringClass = "ring-2 ring-white shadow-lg", // or "ring-2 ring-gray-100" for list rows
+}: {
+  src: string | null | undefined;
+  alt: string;
+  size?: number;
+  creatorId?: number | null | undefined;
+  className?: string;
+  ringClass?: string;
+}) {
+  const img = (
+    <div
+      className={`relative rounded-full overflow-hidden bg-neutral-200 ${ringClass} ${className}`}
+      style={{ width: size, height: size }}
+    >
+      <Image
+        src={src || "/default-avatar.png"}
+        alt={alt}
+        fill
+        sizes={`${size}px`}          // lets Retina/hi-DPI pick 2x automatically
+        className="object-cover object-center"
+        quality={92}
+        priority={false}
+        style={{ imageOrientation: "from-image" as any }}
+      />
+    </div>
+  );
+
+  // Make it clickable/tappable if we have an id
+  return creatorId
+    ? (
+        <Link
+          href={`/creators/${creatorId}`}
+          aria-label={`View ${alt}`}
+          title={`View ${alt}`}
+          className="outline-none focus:ring-2 focus:ring-emerald-500 rounded-full"
+        >
+          {img}
+        </Link>
+      )
+    : img;
+}
+
 
 
 export default function PurchasesPage() {
@@ -1679,11 +1729,13 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                   <div key={m.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 overflow-hidden group">
                     <div className="aspect-w-16 aspect-h-9 bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 p-6">
                       <div className="flex items-center space-x-4">
-                        <img
-                          src={resolveImageUrl(m.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                          alt={m.creator_profile?.display_name || "Creator"}
-                          className="w-16 h-16 rounded-full object-cover ring-4 ring-white shadow-lg"
-                        />
+                          <ProfileAvatar
+                            src={resolveImageUrl(m.creator_profile?.profile_image, apiBase)}
+                            alt={m.creator_profile?.display_name || "Creator"}
+                            size={64}
+                            creatorId={m.creator_profile?.user_id}
+                            ringClass="ring-4 ring-white shadow-lg"
+                          />
                         <div>
                           {m.membership_cancel_at_period_end && m.membership_period_end ? (
                             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
@@ -1766,11 +1818,13 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                   return (
                     <div key={r.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
                       <div className="flex items-start space-x-4">
-                        <img
-                          src={resolveImageUrl(r.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                          alt={r.creator_profile?.display_name || "Creator"}
-                          className="w-14 h-14 rounded-full object-cover ring-2 ring-gray-100"
-                        />
+                          <ProfileAvatar
+                            src={resolveImageUrl(r.creator_profile?.profile_image, apiBase)}
+                            alt={r.creator_profile?.display_name || "Creator"}
+                            size={56}
+                            creatorId={r.creator_profile?.user_id}
+                            ringClass="ring-2 ring-gray-100"
+                          />
                         <div className="flex-1">
                           <div className="flex items-start justify-between">
                             <div>
@@ -1864,11 +1918,13 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                 {purchases.map((p) => (
                   <div key={p.id} className="bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 p-6">
                     <div className="flex items-start space-x-4">
-                      <img
-                        src={resolveImageUrl(p.creator_profile?.profile_image, apiBase) || "/sliptail-logo.png"}
-                        alt={p.creator_profile?.display_name || "Creator"}
-                        className="w-14 h-14 rounded-full object-cover ring-2 ring-gray-100"
-                      />
+                          <ProfileAvatar
+                            src={resolveImageUrl(p.creator_profile?.profile_image, apiBase)}
+                            alt={p.creator_profile?.display_name || "Creator"}
+                            size={56}
+                            creatorId={p.creator_profile?.user_id}
+                            ringClass="ring-2 ring-gray-100"
+                          />
                       <div className="flex-1">
                         <h3 className="font-semibold text-lg text-gray-900">{p.product.title}</h3>
                         <p className="text-sm text-gray-600 mt-1">{p.creator_profile?.display_name}</p>
