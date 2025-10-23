@@ -1,35 +1,47 @@
-// components/Toast.tsx
 "use client";
 import { useEffect, useState } from "react";
-import { consumeFlash, consumeUrlToast, type FlashPayload } from "@/lib/flash";
-
-const KEY = "sliptail_flash";
+import { consumeFlash, FlashPayload, setFlash } from "@/lib/flash";
 
 export default function Toast() {
-  const [flash, setFlash] = useState<FlashPayload | null>(null);
+  const [flash, setFlashState] = useState<FlashPayload | null>(null);
 
   useEffect(() => {
-    // 1) Prefer URL-based toast (reliable on iOS), else fall back to storage
-    const fromUrl = consumeUrlToast();
-    if (fromUrl) setFlash(fromUrl);
-    else {
-      const fromStorage = consumeFlash();
-      if (fromStorage) setFlash(fromStorage);
-    }
+    // 1) URL param delivery (iOS-safe)
+    try {
+      const url = new URL(window.location.href);
+      const urlToast = url.searchParams.get("toast");
+      if (urlToast) {
+        // Option A: show immediately (no storage required)
+        setFlashState({ kind: "success", title: urlToast, ts: Date.now() });
 
-    // 2) Listen for future flashes written to localStorage
+        // Optional: also drop into localStorage so other listeners/pages see it
+        try { setFlash({ kind: "success", title: urlToast, ts: Date.now() }); } catch {}
+
+        // Remove the param so it doesn’t reappear on refresh
+        url.searchParams.delete("toast");
+        const clean = `${url.pathname}${url.search ? `?${url.searchParams}` : ""}${url.hash}`;
+        window.history.replaceState(null, "", clean);
+      }
+    } catch {}
+
+    // 2) Flash-from-localStorage (desktop & when storage wins the race)
+    const f = consumeFlash();
+    if (f) setFlashState(f);
+
+    // 3) Listen for storage changes (cross-tab + same-tab shim)
     function onStorage(e: StorageEvent) {
-      if (e.key !== KEY || !e.newValue) return;
-      const f = consumeFlash();
-      if (f) setFlash(f);
+      if (e.key === "sliptail_flash" && e.newValue) {
+        const f = consumeFlash();
+        if (f) setFlashState(f);
+      }
     }
     window.addEventListener("storage", onStorage);
 
-    // 3) Same-tab support: patch setItem to emit a synthetic storage event
-    const origSetItem = localStorage.setItem.bind(localStorage);
-    localStorage.setItem = (key: string, value: string) => {
-      origSetItem(key, value);
-      if (key === KEY) {
+    // Same-tab shim: monkey-patch setItem to emit a storage-like event
+    const origSetItem = localStorage.setItem;
+    localStorage.setItem = function (key: string, value: string) {
+      origSetItem.call(this, key, value);
+      if (key === "sliptail_flash") {
         window.dispatchEvent(new StorageEvent("storage", { key, newValue: value }));
       }
     };
@@ -40,17 +52,22 @@ export default function Toast() {
     };
   }, []);
 
+  // Auto-hide
   useEffect(() => {
     if (!flash) return;
-    const t = setTimeout(() => setFlash(null), 3500);
+    const t = setTimeout(() => setFlashState(null), 3500);
     return () => clearTimeout(t);
   }, [flash]);
 
   if (!flash) return null;
-
   const isSuccess = flash.kind === "success";
+
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-[100] flex justify-center px-4">
+    <div
+      className="pointer-events-none fixed inset-x-0 z-[1100] flex justify-center px-4"
+      // keep clear of iOS safe-area and below any fixed header
+      style={{ top: "max(env(safe-area-inset-top), 1rem)" }}
+    >
       <div
         role="status"
         className={`pointer-events-auto max-w-xl w-full rounded-xl border shadow-lg backdrop-blur px-5 py-4 flex gap-4 items-start ${
@@ -66,13 +83,9 @@ export default function Toast() {
           {isSuccess ? "✔" : "ℹ"}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="font-semibold leading-snug text-sm md:text-base truncate">
-            {flash.title}
-          </div>
+          <div className="font-semibold leading-snug text-sm md:text-base truncate">{flash.title}</div>
           {flash.message ? (
-            <div className="text-xs md:text-sm text-neutral-600 mt-1 line-clamp-3">
-              {flash.message}
-            </div>
+            <div className="text-xs md:text-sm text-neutral-600 mt-1 line-clamp-3">{flash.message}</div>
           ) : null}
         </div>
       </div>
