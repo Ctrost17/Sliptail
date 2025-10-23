@@ -76,7 +76,7 @@ export default function Navbar() {
   const unreadForBadge = Boolean(user) ? unread : 0;
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b bg-white/70 backdrop-blur">
+    <header data-app-nav className="sticky top-0 z-40 w-full border-b bg-white/70 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-3 md:px-4 py-2 md:py-3">
         {/* Left: Logo */}
         <div className="flex items-center gap-3">
@@ -128,7 +128,7 @@ export default function Navbar() {
             {menuOpen && (
               <div
                 role="menu"
-                className="absolute right-0 mt-2 w-60 rounded-2xl border bg-white p-1 shadow-lg"
+                className="absolute right-0 mt-2 w-60 rounded-2xl border bg-white p-1 shadow-lg z-50"
               >
                 {isCreator ? (
                   <>
