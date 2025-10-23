@@ -2,12 +2,14 @@
 "use client";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useSearchParams } from "next/navigation";
 import { consumeFlash, setFlash, type FlashPayload } from "@/lib/flash";
 
 export default function Toast() {
   const [flash, setFlashState] = useState<FlashPayload | null>(null);
   const [mounted, setMounted] = useState(false);
   const [topOffset, setTopOffset] = useState(12);
+  const searchParams = useSearchParams();
 
   // measure navbar so toast sits below it
   useEffect(() => {
@@ -21,36 +23,42 @@ export default function Toast() {
     return () => { window.removeEventListener("resize", calc); ro?.disconnect(); };
   }, []);
 
-  // URL ?toast= + localStorage flash
-  useEffect(() => {
-    // iOS-safe URL param
-    try {
-      const u = new URL(window.location.href);
-      const t = u.searchParams.get("toast");
-      if (t) {
-        setFlashState({ kind: "success", title: t, ts: Date.now() });
-        try { setFlash({ kind: "success", title: t, ts: Date.now() }); } catch {}
-        u.searchParams.delete("toast");
-        window.history.replaceState(null, "", `${u.pathname}${u.search}${u.hash}`);
-      }
-    } catch {}
-    const f = consumeFlash();
-    if (f) setFlashState(f);
+// (A) Re-consume ?toast= whenever search params change (works across app-router navigations)
+useEffect(() => {
+  if (typeof window === "undefined") return;
+  try {
+    const u = new URL(window.location.href);
+    const t = u.searchParams.get("toast");
+    if (!t) return;
+    const payload: FlashPayload = { kind: "success", title: t, ts: Date.now() };
+    setFlashState(payload);
+    try { setFlash(payload); } catch {}
+    u.searchParams.delete("toast");
+    window.history.replaceState(null, "", u.toString());
+  } catch {}
+}, [searchParams]);
 
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "sliptail_flash" && e.newValue) {
-        const f = consumeFlash();
-        if (f) setFlashState(f);
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    const orig = localStorage.setItem;
-    localStorage.setItem = function (k: string, v: string) {
-      orig.call(this, k, v);
-      if (k === "sliptail_flash") window.dispatchEvent(new StorageEvent("storage", { key: k, newValue: v }));
-    };
-    return () => { window.removeEventListener("storage", onStorage); localStorage.setItem = orig; };
-  }, []);
+// (B) One-time: pull from localStorage + listen for future flashes
+useEffect(() => {
+  const f = consumeFlash();
+  if (f) setFlashState(f);
+
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === "sliptail_flash" && e.newValue) {
+      const f = consumeFlash();
+      if (f) setFlashState(f);
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  const orig = localStorage.setItem;
+  localStorage.setItem = function (k: string, v: string) {
+    orig.call(this, k, v);
+    if (k === "sliptail_flash") {
+      window.dispatchEvent(new StorageEvent("storage", { key: k, newValue: v }));
+    }
+  };
+  return () => { window.removeEventListener("storage", onStorage); localStorage.setItem = orig; };
+}, []);
 
   useEffect(() => {
     if (!flash) return;
