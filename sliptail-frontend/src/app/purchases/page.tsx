@@ -2163,15 +2163,6 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
           </div>
         )}
       </div>
-
-      {/* Inline Toast (visual) */}
-      {toastMsg && (
-        <div className="fixed bottom-6 right-6 z-[60]">
-          <div className="bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg">
-            {toastMsg}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
