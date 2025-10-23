@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
+import Image from "next/image";
 
 interface Product { id: number; creator_id: number; title: string | null; description: string | null; created_at?: string; display_name?: string; profile_image?: string; }
 interface Post { id: number; creator_id: number; title: string | null; body: string | null; media_path: string | null; media_poster?: string | null; created_at: string; product_id?: number; profile_image?: string; }
@@ -1302,12 +1303,17 @@ export default function MembershipFeedPage() {
                         {/* Row with avatar + text only */}
                         <div className="p-4 flex gap-3">
                           {/* Avatar */}
-                          <img
-                            src={resolveImageUrl(post.profile_image, apiBase) || post.profile_image}
-                            alt="Profile"
-                            className="h-full w-[50px] rounded-full object-cover"
-                          />
-
+                      <div className="relative h-[50px] w-[50px] rounded-full overflow-hidden bg-neutral-200 ring-1 ring-black/5 shrink-0">
+                        <Image
+                          src={resolveImageUrl(post.profile_image, apiBase) || "/default-avatar.png"}
+                          alt="Profile"
+                          fill
+                          sizes="50px"
+                          className="object-cover object-center"
+                          quality={92}
+                          priority={false}
+                        />
+                      </div>
                           {/* Content (no audio here) */}
                           <div className="flex-1 min-w-0">
                             <div className="min-w-0">

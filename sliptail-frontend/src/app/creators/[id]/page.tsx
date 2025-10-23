@@ -574,9 +574,8 @@ export default function CreatorProfilePage() {
       {/* content above wave + more bottom padding + min height */}
       <div className="relative z-10 mx-auto max-w-6xl px-4 pt-12 sm:pt-14 lg:pt-16 pb-32 sm:pb-36 lg:pb-48 min-h-[380px] sm:min-h-[440px] lg:min-h-[520px]">
           <div className="flex flex-col items-center text-center">
-            {/* Resolution-aware, auto-sized round avatar (no zoom/crop) */}
             <div
-              className="relative rounded-full overflow-hidden ring-4 ring-white shadow-xl"
+              className="relative rounded-full overflow-hidden ring-4 ring-white shadow-xl bg-neutral-200"
               style={{ width: avatarPx, height: avatarPx }}
             >
               {profileUrl ? (
@@ -584,11 +583,12 @@ export default function CreatorProfilePage() {
                   src={profileUrl}
                   alt={creator?.display_name || "Creator"}
                   fill
-                  className="object-contain bg-black"
+                  className="object-cover object-center"
                   priority
                   quality={92}
                   sizes={`${Math.ceil(avatarPx)}px`}
                   onLoadingComplete={handleAvatarLoaded}
+                  style={{ imageOrientation: "from-image" as any }}
                 />
               ) : (
                 <div className="absolute inset-0 grid place-items-center bg-gray-200 text-gray-500">

@@ -152,20 +152,21 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
         {/* ------------------ Front ------------------ */}
         <div className="absolute inset-0 flex flex-col items-center rounded-2xl p-4 [backface-visibility:hidden] bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black backdrop-blur-xl text-black">
           {/* Avatar */}
-          <div
-            className="mb-2 relative overflow-hidden rounded-full"
-            style={{ width: avatarDims.w, height: avatarDims.h }}
-          >
-            <Image
-              src={avatarSrc}
-              alt={creator.displayName}
-              fill
-              className="object-contain"
-              quality={92}
-              sizes={`${Math.ceil(avatarDims.w)}px`}
-              onLoadingComplete={onAvatarLoaded}
-            />
-          </div>
+            <div
+              className="mb-2 relative overflow-hidden rounded-full ring-2 ring-white/70 bg-neutral-200"
+              style={{ width: avatarDims.w, height: avatarDims.h }}
+            >
+              <Image
+                src={avatarSrc}
+                alt={creator.displayName}
+                fill
+                className="object-cover object-center"
+                quality={92}
+                sizes={`${Math.ceil(avatarDims.w)}px`}
+                onLoadingComplete={onAvatarLoaded}
+                style={{ imageOrientation: "from-image" as any }}
+              />
+            </div>
 
           <h3 className="font-semibold text-black tracking-tight truncate max-w-full">
             {creator.displayName}
