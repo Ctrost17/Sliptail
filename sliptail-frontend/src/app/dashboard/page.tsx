@@ -2650,7 +2650,7 @@ useEffect(() => {
                 </div>
 
                 <p className="text-xs text-neutral-500 mt-2">
-                  These appear on the back of your creator card.
+                  These appear on the back of your creator card and public profile.
                 </p>
               </div>
 

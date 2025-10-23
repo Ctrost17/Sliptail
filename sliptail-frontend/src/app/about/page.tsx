@@ -238,7 +238,7 @@ function FAQ() {
     },
     {
       q: "How do buyers access purchases?",
-      a: "After checkout, buyers get a My Purchases area with streaming/viewing or download options, depending on the product.",
+      a: "After checkout, buyers can access 'My Purchases' from the dropdown menu to stream, view, or download products.",
     },
     {
       q: "Why use this platform over others?",

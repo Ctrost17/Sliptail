@@ -10,6 +10,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const storage = require("../storage"); // ← NEW: local or S3 depending on env
+const crypto = require("crypto");
 
 const router = express.Router();
 
@@ -54,13 +55,45 @@ function s3KeyForProfile(userId, originalName) {
   return `creators/${userId}/profile/${ts}${ext}`;
   }
 
-function s3KeyForGallery(userId, index, originalName) {
+// With this (timestamp + short hash → unique key per upload):
+function s3KeyForGallery(userId, index, originalName, buffer) {
   const ext = path.extname(originalName || "").toLowerCase() || ".jpg";
-  return `creators/${userId}/gallery/${index}${ext}`;
+  const ts  = Date.now();
+  const h   = buffer ? crypto.createHash("md5").update(buffer).digest("hex").slice(0,8) : Math.random().toString(36).slice(2,8);
+  return `creators/${userId}/gallery/${index}-${ts}-${h}${ext}`;
 }
 function urlFromUploadedPublic(uploaded) {
   // Prefer driver helpers if available; fall back to key
   return (storage.publicUrl && storage.publicUrl(uploaded.key)) || uploaded.url || uploaded.key;
+}
+
+// --- Cleanup helper: delete older S3 objects for this gallery slot (non-blocking) ---
+async function cleanupOldGalleryObjects(userId, pos, keepKeyOrUrl) {
+  if (!storage.isS3) return; // local driver: nothing to do
+
+  try {
+    // 1) Normalize the "key" we want to keep
+    const keepKey = (typeof storage.keyFromPublicUrl === "function")
+      ? storage.keyFromPublicUrl(keepKeyOrUrl)
+      : (String(keepKeyOrUrl || "").startsWith("http")
+          ? new URL(String(keepKeyOrUrl)).pathname.replace(/^\/+/, "")
+          : String(keepKeyOrUrl || "").replace(/^\/+/, ""));
+
+    // 2) List everything under creators/<userId>/gallery/<pos>-
+    const prefix = `creators/${userId}/gallery/${pos}-`;
+    if (typeof storage.listPublicPrefix !== "function" || typeof storage.deletePublic !== "function") {
+      // If helpers are missing, just exit (safe no-op)
+      return;
+    }
+
+    const keys = await storage.listPublicPrefix(prefix);
+    const toDelete = (keys || []).filter((k) => k !== keepKey);
+
+    // 3) Best-effort delete (don't await every one in series)
+    await Promise.allSettled(toDelete.map((k) => storage.deletePublic(k)));
+  } catch {
+    // Non-blocking: ignore cleanup failures
+  }
 }
 
 // column-existence helper (so we can handle missing categories.slug, users.enabled)
@@ -498,7 +531,7 @@ router.post(
             for (let i = 0; i < gal.length; i += 1) {
               const g = gal[i];
               const up = await storage.uploadPublic({
-                key: s3KeyForGallery(userId, i + 1, g.originalname),
+                key: s3KeyForGallery(userId, i + 1, g.originalname, g.buffer), // ← pass buffer
                 contentType: g.mimetype || "image/jpeg",
                 body: g.buffer,
               });
@@ -512,6 +545,14 @@ router.post(
 
           if (!profilePublic || galleryPublic.length !== 4) {
             return res.status(500).json({ error: "Failed to store images" });
+          }
+
+                    // Fire-and-forget cleanup for each slot (1..4)
+          if (storage.isS3) {
+            for (let i = 0; i < galleryPublic.length; i += 1) {
+              const keep = galleryPublic[i];
+              cleanupOldGalleryObjects(userId, i + 1, keep); // no await
+            }
           }
 
           await db.query("BEGIN");
@@ -622,11 +663,16 @@ router.post(
               for (let i = 0; i < gal.length; i += 1) {
                 const g = gal[i];
                 const up = await storage.uploadPublic({
-                  key: s3KeyForGallery(userId, i + 1, g.originalname),
+                  key: s3KeyForGallery(userId, i + 1, g.originalname, g.buffer), // ← pass buffer
                   contentType: g.mimetype || "image/jpeg",
                   body: g.buffer,
                 });
                 gallery_urls.push(urlFromUploadedPublic(up));
+              }
+
+              // Fire-and-forget cleanup for each slot
+              for (let i = 0; i < gallery_urls.length; i += 1) {
+                cleanupOldGalleryObjects(userId, i + 1, gallery_urls[i]); // no await
               }
             } else {
               profile_image_url = toPublicUrl(prof.path);
@@ -879,7 +925,7 @@ router.patch(
             let url;
             if (storage.isS3) {
               const up = await storage.uploadPublic({
-                key: s3KeyForGallery(userId, pos, req.file.originalname),
+                key: s3KeyForGallery(userId, pos, req.file.originalname, req.file.buffer), // ← pass buffer
                 contentType: req.file.mimetype || "image/jpeg",
                 body: req.file.buffer,
               });
@@ -888,6 +934,9 @@ router.patch(
               url = toPublicUrl(req.file.path);
             }
             if (!url) return res.status(500).json({ error: "Failed to store image" });
+
+              // Fire-and-forget cleanup for this slot
+            cleanupOldGalleryObjects(userId, pos, url);
 
             // Ensure profile row exists (schema-aware minimal insert)
             const { rows: existing } = await db.query(

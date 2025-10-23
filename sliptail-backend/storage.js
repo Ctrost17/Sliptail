@@ -47,6 +47,7 @@ let s3 = null;
 let GetObjectCommand = null;
 let PutObjectCommand = null;
 let DeleteObjectCommand = null;
+let ListObjectsV2Command = null; // ← ADD
 let s3Presign = null;
 let Upload = null;
 
@@ -64,7 +65,7 @@ const S3_SSE_KMS_KEY_ID = process.env.S3_SSE_KMS_KEY_ID || null; // if using KMS
 
 if (DRIVER === "s3") {
   const { S3Client } = require("@aws-sdk/client-s3");
-  ({ GetObjectCommand, PutObjectCommand, DeleteObjectCommand } =
+  ({ GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command} =
     require("@aws-sdk/client-s3"));
   ({ getSignedUrl: s3Presign } = require("@aws-sdk/s3-request-presigner"));
   // Multipart uploader (great for streams/large files)
@@ -443,6 +444,129 @@ async function deletePrivate(key) {
   }
 }
 
+/**
+ * listPublicPrefix(prefix) → Array<string> keys
+ * S3: lists objects under PUBLIC_BUCKET (or PRIVATE if no public bucket).
+ * LOCAL: lists files under uploads/ when the prefix matches; returns paths relative to /uploads.
+ */
+async function listPublicPrefix(prefix) {
+  const pfx = String(prefix || "").replace(/^\/+/, "");
+  if (!pfx) return [];
+
+  if (DRIVER === "s3") {
+    const bucket = PUBLIC_BUCKET  || PRIVATE_BUCKET;
+    const keys = [];
+    let ContinuationToken = undefined;
+
+    do {
+      const resp = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: pfx,
+          ContinuationToken,
+        })
+      );
+      for (const obj of resp.Contents || []) {
+        if (obj && obj.Key) keys.push(String(obj.Key));
+      }
+      ContinuationToken = resp.NextContinuationToken;
+    } while (ContinuationToken);
+
+    return keys;
+  }
+
+  // LOCAL: list from the same root we write to
+  const localPrefix = pfx.startsWith("uploads/") ? pfx.replace(/^uploads\//, "") : pfx;
+  const baseDir = LOCAL_UPLOADS_ROOT;
+  const out = [];
+
+  async function walk(dir, rel) {
+    const full = path.join(dir, rel);
+    let entries = [];
+    try { entries = await fsp.readdir(full, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const nextRel = path.join(rel, e.name);
+      if (e.isDirectory()) await walk(dir, nextRel);
+      else out.push(`uploads/${nextRel.replace(/\\/g, "/")}`);
+    }
+  }
+
+  // If prefix is a directory, walk it; else try to stat the file.
+  const startDir = path.join(baseDir, localPrefix);
+  try {
+    const st = await fsp.stat(startDir);
+    if (st.isDirectory()) {
+      await walk(baseDir, localPrefix);
+      return out;
+    }
+    // single file
+    return [`uploads/${localPrefix}`];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * deletePublic(key)
+ * S3: deletes from PUBLIC_BUCKET if set, else PRIVATE_BUCKET.
+ * LOCAL: deletes from uploads/.
+ */
+async function deletePublic(key) {
+  const k = String(key || "").replace(/^\/+/, "");
+  if (!k) return;
+
+  if (DRIVER === "s3") {
+    const bucket = PUBLIC_BUCKET || PRIVATE_BUCKET;
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: k }));
+    } catch (e) {
+      console.warn("S3 deletePublic failed:", e?.message || e);
+    }
+    return;
+  }
+
+  // LOCAL
+  try {
+    const rel = k.replace(/^uploads\//, "");
+    const abs = path.join(LOCAL_UPLOADS_ROOT, rel);
+    await fsp.unlink(abs);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * keyFromPublicUrl(url) → "<key>"
+ * Extract the S3 key (or local "/uploads/..." path) from a full URL or path.
+ */
+function keyFromPublicUrl(url) {
+  if (!url) return "";
+  const u = String(url);
+
+  // If it's already a "/uploads/..." web path, strip leading slash and return
+  if (/^\/?uploads\//.test(u)) return u.replace(/^\/+/, "");
+
+  // S3 public bucket base
+  if (S3_PUBLIC_BASE_URL && u.startsWith(S3_PUBLIC_BASE_URL)) {
+    return u.slice(S3_PUBLIC_BASE_URL.length).replace(/^\/+/, "");
+  }
+  // Raw S3 bucket URL (public or private)
+  const s3Host = PUBLIC_BUCKET
+    ? `https://${PUBLIC_BUCKET}.s3.${S3_REGION}.amazonaws.com/`
+    : `https://${PRIVATE_BUCKET}.s3.${S3_REGION}.amazonaws.com/`;
+  if (u.startsWith(s3Host)) {
+    return u.slice(s3Host.length);
+  }
+
+  // Fallback: treat it as a path and remove the leading slash
+  try {
+    const parsed = new URL(u);
+    return parsed.pathname.replace(/^\/+/, "");
+  } catch {
+    return u.replace(/^\/+/, "");
+  }
+}
+
 module.exports = {
   DRIVER,
   isS3,
@@ -453,4 +577,7 @@ module.exports = {
   getReadStreamAndMeta,
   deletePrivate, // new
   // normalizeLocalKey is not exported publicly, but add it if you want
+  listPublicPrefix,
+  deletePublic,
+  keyFromPublicUrl,
 };

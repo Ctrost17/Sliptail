@@ -120,7 +120,7 @@ export default function CreatorsExplorePage() {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 space-y-6">
       <header className="space-y-2">
-        <h1 className="text-2xl font-bold">Explore creators</h1>
+        <h1 className="text-2xl font-bold">Explore Creators</h1>
         <p className="text-sm text-neutral-600">
           Discover active creators. Filter by category or search by name.
         </p>

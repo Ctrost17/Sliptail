@@ -109,17 +109,11 @@ export default function NewRequestPage() {
     [search]
   );
 
-  const initialToast = search.get("toast");
-
   const [details, setDetails] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
-
-  useEffect(() => {
-    if (initialToast && initialToast.trim()) success(initialToast);
-  }, [initialToast, success]);
 
   // cleanup object URL when file changes/unmounts
   useEffect(() => {
@@ -229,11 +223,8 @@ export default function NewRequestPage() {
         throw new Error(msg);
       }
 
-      const toastMsg =
-        initialToast && initialToast.includes("Thanks for Supporting")
-          ? initialToast
-          : "Your request was submitted";
-      redirectToPurchases(toastMsg);
+      redirectToPurchases("Your request has been submitted!");
+
     } catch (e: any) {
       if (e?.name === "AbortError") {
         error("Request timed out. Please try again.");
@@ -257,14 +248,7 @@ export default function NewRequestPage() {
   }
 
   function doLater() {
-    const toastMsg =
-      initialToast && initialToast.includes("Thanks for Supporting")
-        ? initialToast
-        : "Thanks for Supporting Your Creator";
-    import("@/lib/flash")
-      .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() }))
-      .catch(() => {});
-    router.replace(`/purchases`);
+    router.replace("/purchases");
     setTimeout(() => {
       if (window.location.pathname.includes("/requests/new")) {
         window.location.href = "/purchases";
