@@ -1375,7 +1375,7 @@ export default function MembershipFeedPage() {
               </div>
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Body</label>
-                <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write something..." rows={5} className="w-full rounded-md border px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write something..." rows={5} className="w-full rounded-md border px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-2">Media</label>
@@ -1428,7 +1428,7 @@ export default function MembershipFeedPage() {
               </div>
               <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-1">Body</label>
-                <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write something..." rows={5} className="w-full rounded-md border px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write something..." rows={5} className="w-full rounded-md border px-3 py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
                  <div>
                 <label className="text-xs font-medium text-neutral-600 block mb-2">Media</label>

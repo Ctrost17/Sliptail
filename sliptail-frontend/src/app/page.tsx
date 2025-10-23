@@ -619,9 +619,12 @@ export default function Home() {
         ) : (
           <div className="flex flex-wrap gap-3">
             {categories.map((cat) => (
-              <a
+              <Link
                 key={cat.id}
-                href={`/creators?categoryId=${encodeURIComponent(cat.id)}`}
+                href={{
+                  pathname: "/creators",
+                  query: { categoryId: cat.id, categorySlug: cat.slug },
+                }}
                 className="rounded-full border border-sky-500 px-5 py-2 capitalize text-sky-700 transition hover:bg-sky-50"
                 title={
                   typeof cat.creators_count === "number"
@@ -630,7 +633,7 @@ export default function Home() {
                 }
               >
                 {cat.name}
-              </a>
+              </Link>
             ))}
             {categories.length === 0 && (
               <div className="text-sm text-neutral-600">No categories yet.</div>

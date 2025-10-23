@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import CreatorCard from "@/components/CreatorCard";
 
 /* -------------------------- Types -------------------------- */
@@ -12,8 +13,8 @@ type Creator = {
   bio: string | null;
   profile_image: string | null;
   gallery: string[];
-  average_rating: number | string;   // ← allow string from PG numeric
-  products_count: number | string;   // ← allow string from PG count
+  average_rating: number | string;
+  products_count: number | string;
   categories: { id: number; name: string; slug: string }[];
 };
 type CreatorsResponse = { creators: Creator[] };
@@ -36,6 +37,8 @@ function toNumber(v: unknown): number {
 
 export default function CreatorsExplorePage() {
   const apiBase = useMemo(() => toApiBase(), []);
+  const searchParams = useSearchParams();
+  const router = useRouter();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [catsLoading, setCatsLoading] = useState(true);
@@ -47,6 +50,45 @@ export default function CreatorsExplorePage() {
   const [categoryId, setCategoryId] = useState<number | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+
+  /* ---- Read categoryId from URL on first render (and when URL changes) ---- */
+      useEffect(() => {
+        // Prefer numeric id; allow slug fallback if provided
+        const idParam = searchParams.get("categoryId");
+        const slugParam = searchParams.get("categorySlug");
+
+        if (idParam) {
+          const parsed = Number(idParam);
+          if (Number.isFinite(parsed) && parsed !== categoryId) {
+            setCategoryId(parsed);
+          }
+        } else if (slugParam && categories.length) {
+          const sp = slugParam.toLowerCase();
+          const match = categories.find((c) => c.slug?.toLowerCase?.() === sp);
+          if (match && match.id !== categoryId) setCategoryId(match.id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [searchParams, categories.length]);
+
+  // Keep URL in sync when local state changes (nice for bookmarking/sharing)
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (categoryId == null) {
+      params.delete("categoryId");
+      params.delete("categorySlug");
+    } else {
+      params.set("categoryId", String(categoryId));
+      const found = categories.find((c) => c.id === categoryId);
+      if (found?.slug) params.set("categorySlug", found.slug);
+    }
+    const qs = params.toString();
+    const next = qs ? `?${qs}` : "";
+    const current = searchParams.toString() ? `?${searchParams.toString()}` : "";
+    if (next !== current) {
+      router.replace(`/creators${next}`, { scroll: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryId, categories]);
 
   // Load categories
   useEffect(() => {
@@ -98,7 +140,6 @@ export default function CreatorsExplorePage() {
           list = (data as CreatorsResponse).creators;
         }
 
-        // ensure products_count is numeric for filtering
         setCreators(list.filter((cr) => toNumber(cr.products_count) > 0));
       } catch (e) {
         if (!(e instanceof DOMException && e.name === "AbortError")) {
@@ -150,10 +191,10 @@ export default function CreatorsExplorePage() {
           aria-pressed={categoryId === null}
           onClick={() => setCategoryId(null)}
           className={`cursor-pointer rounded-full border px-3 py-1 text-sm ${
-          categoryId === null
-            ? "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black border-transparent"
-            : "hover:bg-neutral-100"
-        }`}
+            categoryId === null
+              ? "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black border-transparent"
+              : "hover:bg-neutral-100"
+          }`}
         >
           All
         </button>
@@ -170,10 +211,10 @@ export default function CreatorsExplorePage() {
                 aria-pressed={active}
                 onClick={() => setCategoryId(active ? null : cat.id)}
                 className={`cursor-pointer rounded-full border px-3 py-1 text-sm ${
-                active
-                  ? "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black border-transparent"
-                  : "hover:bg-neutral-100"
-              }`}
+                  active
+                    ? "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 text-black border-transparent"
+                    : "hover:bg-neutral-100"
+                }`}
                 title={cat.name}
               >
                 {cat.name}
@@ -204,11 +245,11 @@ export default function CreatorsExplorePage() {
               creator={{
                 id: creator.creator_id,
                 displayName: creator.display_name,
-                avatar: creator.profile_image,     // relative or absolute; card resolves
+                avatar: creator.profile_image,
                 bio: creator.bio ?? "",
-                rating: creator.average_rating,    // card coerces to number
-                photos: creator.gallery,           // card resolves each image
-                categories: creator.categories,    // card extracts .name
+                rating: creator.average_rating,
+                photos: creator.gallery,
+                categories: creator.categories,
               }}
             />
           ))}
@@ -217,3 +258,4 @@ export default function CreatorsExplorePage() {
     </main>
   );
 }
+
