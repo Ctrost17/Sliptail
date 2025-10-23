@@ -172,18 +172,18 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
             {creator.displayName}
           </h3>
 
-          {categoryNames.length > 0 && (
-            <div className="mt-1 mb-0 h-6 overflow-hidden flex flex-nowrap items-center justify-center gap-1">
-              {categoryNames.map((c, i) => (
-                <span
-                  key={`${c}-${i}`}
-                  className="px-2 py-0.5 text-xs font-medium rounded-full border border-black/20 bg-white/70 backdrop-blur-sm whitespace-nowrap"
-                >
-                  {c}
-                </span>
-              ))}
-            </div>
-          )}
+            {categoryNames.length > 0 && (
+              <div className="mt-1 mb-0 w-full px-2 flex flex-wrap items-center justify-center gap-1 max-w-full">
+                {categoryNames.map((c, i) => (
+                  <span
+                    key={`${c}-${i}`}
+                    className="px-2 py-0.5 text-xs font-medium rounded-full border border-black/20 bg-white/70 backdrop-blur-sm whitespace-nowrap"
+                  >
+                    {c}
+                  </span>
+                ))}
+              </div>
+            )}
 
           <div className="mt-1 h-5 flex items-center text-black/90">
             <svg

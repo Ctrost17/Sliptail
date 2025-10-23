@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback, Children } from "react";
 import CreatorCard from "@/components/CreatorCard";
 import StartSellingButton from "@/components/StartSellingButton";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -285,6 +285,145 @@ function ProductTypesSection() {
 
 /* --------------------------------- Page --------------------------------- */
 
+/** Mobile-only carousel: centers one card; arrows only if another card exists off-screen */
+function FeaturedCarousel({ children }: { children: React.ReactNode }) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [pad, setPad] = useState(0);
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(false);
+
+  const getCards = useCallback(() => {
+    const el = trackRef.current;
+    return el ? el.querySelectorAll<HTMLElement>('[data-card="1"]') : ([] as any);
+  }, []);
+
+  const getCenteredIndex = useCallback(() => {
+    const el = trackRef.current;
+    const cards = getCards();
+    if (!el || !cards.length) return -1;
+    const cx = el.scrollLeft + el.clientWidth / 2;
+    let best = 0, bestDist = Number.POSITIVE_INFINITY;
+    cards.forEach((n, i) => {
+      const mid = n.offsetLeft + n.offsetWidth / 2;
+      const d = Math.abs(mid - cx);
+      if (d < bestDist) { best = i; bestDist = d; }
+    });
+    return best;
+  }, [getCards]);
+
+  const centerIndex = useCallback((idx: number, behavior: ScrollBehavior) => {
+    const el = trackRef.current;
+    const cards = getCards();
+    if (!el || !cards.length) return;
+    const i = Math.max(0, Math.min(idx, cards.length - 1));
+    const n = cards[i];
+    const left = n.offsetLeft + n.offsetWidth / 2 - el.clientWidth / 2;
+    el.scrollTo({ left, behavior });
+  }, [getCards]);
+
+  const update = useCallback(() => {
+    const el = trackRef.current;
+    const cards = getCards();
+    if (!el || !cards.length) { setPad(0); setCanLeft(false); setCanRight(false); return; }
+
+    // spacer so first/last can center (not used for single-card case below)
+    const first = cards[0];
+    setPad(Math.max(0, (el.clientWidth - first.offsetWidth) / 2));
+
+    const idx = getCenteredIndex();
+    setCanLeft(idx > 0);
+    setCanRight(idx >= 0 && idx < cards.length - 1);
+  }, [getCards, getCenteredIndex]);
+
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+
+    const onScroll = () => update();
+    el.addEventListener("scroll", onScroll, { passive: true });
+
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    const firstCard = getCards()[0];
+    if (firstCard) ro.observe(firstCard);
+
+    update();
+    const i = getCenteredIndex();
+    if (i >= 0) centerIndex(i, "auto");
+
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, [centerIndex, getCards, getCenteredIndex, update]);
+
+  const go = (dir: "left" | "right") => {
+    const idx = getCenteredIndex();
+    if (idx < 0) return;
+    centerIndex(dir === "left" ? idx - 1 : idx + 1, "smooth");
+  };
+
+  // NEW: detect single-card layout and hard-center it (no spacers)
+  const isSingle = Children.count(children) <= 1;
+
+  return (
+    // NEW: overflow-visible + extra bottom space so shadows never get clipped
+    <div className="relative -mx-6 overflow-visible">
+      {canLeft && !isSingle && (
+        <button
+          type="button"
+          aria-label="Previous"
+          onClick={() => go("left")}
+          className="absolute left-2 top-1/2 -translate-y-1/2 z-10 rounded-full bg-white p-2 shadow border"
+        >
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M12.5 15L7.5 10l5-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+      )}
+      {canRight && !isSingle && (
+        <button
+          type="button"
+          aria-label="Next"
+          onClick={() => go("right")}
+          className="absolute right-2 top-1/2 -translate-y-1/2 z-10 rounded-full bg-white p-2 shadow border"
+        >
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M7.5 5l5 5-5 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+      )}
+
+      <div
+        ref={trackRef}
+        className={[
+          "flex items-center gap-4 snap-x snap-mandatory scroll-smooth",
+          "overflow-x-auto overflow-y-visible",
+          // ↑ keep overflow-y-visible, but give more bottom padding so the card's drop shadow can render fully
+          "pt-6 pb-16 min-h-[24rem]",
+          "px-6",
+          isSingle ? "justify-center" : "justify-start",
+        ].join(" ")}
+        style={{
+          scrollbarWidth: "none",
+          WebkitOverflowScrolling: "touch",
+          // spacer padding only matters when there’s more than one card
+          scrollPaddingLeft: isSingle ? undefined : `${pad}px`,
+          scrollPaddingRight: isSingle ? undefined : `${pad}px`,
+        }}
+      >
+        <style>{`div::-webkit-scrollbar { display: none; }`}</style>
+
+        {/* Spacers only when there’s more than one card */}
+        {!isSingle && <div aria-hidden className="shrink-0" style={{ width: `${pad}px` }} />}
+        {children}
+        {!isSingle && <div aria-hidden className="shrink-0" style={{ width: `${pad}px` }} />}
+      </div>
+    </div>
+  );
+}
+
+
 export default function Home() {
   const [featured, setFeatured] = useState<FeaturedApiCreator[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
@@ -372,23 +511,73 @@ export default function Home() {
       </section>
 
       {/* Featured Creators */}
-      <section className="bg-gray-50 py-16">
-        <div className="mx-auto max-w-6xl px-6">
-          <h2 className="relative mb-10 text-center text-4xl font-bold text-black">
-            Featured Creators
-            <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
-          </h2>
-          {loading ? (
-            <div className="mt-6 grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-64 w-full max-w-sm animate-pulse rounded-2xl bg-white p-4 shadow" />
-              ))}
-            </div>
-          ) : (
-            <div className="mt-6 grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
-              {featured.map((c) => (
+<section className="bg-gray-50 py-16">
+  <div className="mx-auto max-w-6xl px-6">
+    <h2 className="relative mb-10 text-center text-4xl font-bold text-black">
+      Featured Creators
+      <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
+    </h2>
+
+    {/* Desktop/laptop: keep the grid */}
+    {loading ? (
+      <div className="hidden md:grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
+        {[...Array(3)].map((_, i) => (
+          <div key={i} className="h-64 w-full max-w-sm animate-pulse rounded-2xl bg-white p-4 shadow" />
+        ))}
+      </div>
+    ) : (
+      <div className="hidden md:grid justify-items-center gap-6 sm:grid-cols-2 md:grid-cols-3">
+        {featured.map((c) => (
+          <CreatorCard
+            key={c.creator_id}
+            creator={{
+              id: String(c.creator_id),
+              displayName: c.display_name,
+              avatar: c.profile_image ?? "",
+              bio: c.bio ?? "",
+              rating:
+                typeof c.average_rating === "string"
+                  ? parseFloat(c.average_rating) || 0
+                  : Number(c.average_rating || 0),
+              photos: (c.gallery ?? []).slice(0, 4),
+              categories: c.categories ?? [],
+            }}
+          />
+        ))}
+        {featured.length === 0 && (
+          <div className="col-span-full text-center text-sm text-neutral-600">
+            No featured creators yet.
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* Mobile: one-card centered carousel with arrows */}
+    {loading ? (
+      <div className="md:hidden">
+        <FeaturedCarousel>
+          {[...Array(3)].map((_, i) => (
+            <div
+              key={i}
+              data-card="1"
+              className="snap-center shrink-0 w-[90vw] max-w-sm h-64 rounded-2xl bg-white p-4 shadow animate-pulse"
+            />
+          ))}
+        </FeaturedCarousel>
+      </div>
+    ) : (
+      <div className="md:hidden">
+        {featured.length === 0 ? (
+          <div className="text-center text-sm text-neutral-600">No featured creators yet.</div>
+        ) : (
+          <FeaturedCarousel>
+            {featured.map((c) => (
+              <div
+                key={c.creator_id}
+                data-card="1"
+                 className="snap-center shrink-0 w-[90vw] min-w-[90vw] basis-[90vw] max-w-sm p-1"
+              >
                 <CreatorCard
-                  key={c.creator_id}
                   creator={{
                     id: String(c.creator_id),
                     displayName: c.display_name,
@@ -402,16 +591,14 @@ export default function Home() {
                     categories: c.categories ?? [],
                   }}
                 />
-              ))}
-              {featured.length === 0 && (
-                <div className="col-span-full text-center text-sm text-neutral-600">
-                  No featured creators yet.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
+              </div>
+            ))}
+          </FeaturedCarousel>
+        )}
+      </div>
+    )}
+  </div>
+</section>
 
       {/* Categories */}
       <section className="mx-auto max-w-6xl px-6 py-16">
