@@ -10,6 +10,9 @@ const { validate } = require("../middleware/validate");
 const { authSignup, authLogin } = require("../validators/schemas");
 const { strictLimiter } = require("../middleware/rateLimit");
 const { notify } = require("../services/notifications"); // ⬅️ add notifications
+const { OAuth2Client } = require("google-auth-library");
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 const router = express.Router();
 
@@ -130,6 +133,50 @@ async function sendVerifyNewEmail(userId, pendingEmail) {
     html: msg.html,
     text: msg.text,
   });
+}
+
+async function verifyGoogleIdToken(idToken) {
+  if (!googleClient) throw new Error("Google not configured");
+  const ticket = await googleClient.verifyIdToken({
+    idToken,
+    audience: GOOGLE_CLIENT_ID,
+  });
+  const payload = ticket.getPayload(); // { sub, email, email_verified, ... }
+  return {
+    sub: payload.sub,
+    email: (payload.email || "").toLowerCase(),
+    email_verified: !!payload.email_verified,
+  };
+}
+
+async function issueReauthToken(userId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expires = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+  await db.query(
+    `INSERT INTO user_tokens (user_id, token, token_type, expires_at, created_at)
+     VALUES ($1, $2, 'reauth', $3, NOW())`,
+    [userId, token, expires]
+  );
+  return token;
+}
+
+async function consumeReauthToken(userId, token) {
+  const { rows } = await db.query(
+    `SELECT token, expires_at, consumed_at
+       FROM user_tokens
+      WHERE user_id=$1 AND token=$2 AND token_type='reauth' LIMIT 1`,
+    [userId, token]
+  );
+  const t = rows[0];
+  if (!t) return false;
+  if (t.consumed_at) return false;
+  if (new Date(t.expires_at) < new Date()) return false;
+
+  await db.query(
+    `UPDATE user_tokens SET consumed_at=NOW() WHERE user_id=$1 AND token=$2`,
+    [userId, token]
+  );
+  return true;
 }
 
 // Use shared middleware for consistency
@@ -463,6 +510,41 @@ router.post("/reset", strictLimiter, async (req, res) => {
 });
 
 /**
+ * POST /api/auth/reauth/google
+ * Body: { id_token }  // Google ID token from client
+ * Requires auth (the currently logged-in user).
+ *
+ * Verifies the Google token belongs to *this* user (by email match),
+ * then returns a short-lived reauth_token you can use for sensitive actions.
+ */
+router.post("/reauth/google", requireAuth, async (req, res) => {
+  try {
+    const { id_token } = req.body || {};
+    if (!id_token) return res.status(400).json({ error: "Missing id_token" });
+
+    const { rows } = await db.query(
+      `SELECT id, email FROM users WHERE id=$1 LIMIT 1`,
+      [req.user.id]
+    );
+    const me = rows[0];
+    if (!me) return res.status(401).json({ error: "Unauthorized" });
+
+    const verified = await verifyGoogleIdToken(id_token);
+    // Since we don't store Google's sub, we at least require matching email.
+    if (!verified.email || verified.email !== String(me.email).toLowerCase()) {
+      return res.status(403).json({ error: "Google account does not match your Sliptail email" });
+    }
+
+    const reauth = await issueReauthToken(me.id);
+    return res.json({ reauth_token: reauth, expires_in_seconds: 300 });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("reauth/google error:", e?.message || e);
+    return res.status(400).json({ error: "Failed to verify Google token" });
+  }
+});
+
+/**
  * PATCH /api/auth/change-email
  * Body: { new_email, password }
  * Requires auth (Bearer or cookie)
@@ -470,10 +552,10 @@ router.post("/reset", strictLimiter, async (req, res) => {
  */
 router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
   try {
-    const { new_email, password } = req.body || {};
-    if (!new_email || !password) {
-      return res.status(400).json({ error: "new_email and password are required" });
-    }
+    const { new_email, password, reauth_token } = req.body || {};
+      if (!new_email) {
+        return res.status(400).json({ error: "new_email is required" });
+      }
     const lower = String(new_email).toLowerCase();
 
     // Block if someone else already owns that email
@@ -485,16 +567,27 @@ router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Email already in use" });
     }
 
-    // Check current password
-    const { rows } = await db.query(
-      `SELECT id, email, password_hash FROM users WHERE id=$1 LIMIT 1`,
-      [req.user.id]
-    );
-    const me = rows[0];
-    if (!me || !me.password_hash) return res.status(401).json({ error: "Unauthorized" });
+    // Decide which proof to require
+      const { rows: meRows } = await db.query(
+        `SELECT id, email, password_hash FROM users WHERE id=$1 LIMIT 1`,
+        [req.user.id]
+      );
+      const me = meRows[0];
+      if (!me) return res.status(401).json({ error: "Unauthorized" });
 
-    const ok = await bcrypt.compare(String(password), me.password_hash || "");
-    if (!ok) return res.status(400).json({ error: "Invalid password" });
+      let proofOk = false;
+      if (me.password_hash && password) {
+        proofOk = await bcrypt.compare(String(password), me.password_hash || "");
+      } else if (reauth_token) {
+        proofOk = await consumeReauthToken(req.user.id, String(reauth_token));
+      }
+
+      if (!proofOk) {
+        return res.status(401).json({
+          error:
+            "Provide your current password or verify with Google to change email",
+        });
+      }
 
     // SET pending_email + timestamp
     const pendingCol = await getPendingSetAtColumn();
@@ -531,11 +624,8 @@ router.patch("/change-email", strictLimiter, requireAuth, async (req, res) => {
  */
 router.patch("/change-password", strictLimiter, requireAuth, async (req, res) => {
   try {
-    const { current_password, new_password } = req.body || {};
-    if (!current_password || !new_password) {
-      return res.status(400).json({ error: "current_password and new_password are required" });
-    }
-    if (String(new_password).length < 8) {
+    const { current_password, new_password, reauth_token} = req.body || {};
+    if (!new_password || String(new_password).length < 8) {
       return res.status(400).json({ error: "new_password must be at least 8 characters" });
     }
 
@@ -544,10 +634,30 @@ router.patch("/change-password", strictLimiter, requireAuth, async (req, res) =>
       [req.user.id]
     );
     const me = rows[0];
-    if (!me || !me.password_hash) return res.status(401).json({ error: "Unauthorized" });
+    if (!me) return res.status(401).json({ error: "Unauthorized" });
 
-    const ok = await bcrypt.compare(String(current_password), me.password_hash || "");
-    if (!ok) return res.status(400).json({ error: "Current password is incorrect" });
+      let proofOk = false;
+      if (me.password_hash) {
+        // Changing an existing password: require current_password (or allow Google reauth)
+        if (current_password) {
+          proofOk = await bcrypt.compare(String(current_password), me.password_hash || "");
+        } else if (reauth_token) {
+          proofOk = await consumeReauthToken(req.user.id, String(reauth_token));
+        }
+      } else {
+        // Creating first password for a Google-only account: require Google reauth
+        if (reauth_token) {
+          proofOk = await consumeReauthToken(req.user.id, String(reauth_token));
+        }
+      }
+
+      if (!proofOk) {
+        if (!me.password_hash) {
+          return res.status(401).json({ error: "Reauthenticate with Google to set a password" });
+        }
+        return res.status(400).json({ error: "Current password is incorrect" });
+      }
+
 
     const hashed = await bcrypt.hash(String(new_password), 10);
     await db.query(`UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2`, [hashed, req.user.id]);
@@ -576,7 +686,19 @@ router.get("/me", requireAuth, async (req, res) => {
     [id]
   );
   if (!rows.length) return res.status(404).json({ error: "Not found" });
-  return res.json({ user: rows[0] });
+
+ const u = rows[0];
+  return res.json({
+    user: {
+      id: u.id,
+      email: u.email,
+      username: u.username,
+      role: u.role,
+      email_verified_at: u.email_verified_at,
+      created_at: u.created_at,
+      has_password: !!u.password_hash,
+    },
+  });
 });
 
 module.exports = router;

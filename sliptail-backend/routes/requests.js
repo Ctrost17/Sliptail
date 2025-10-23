@@ -12,6 +12,7 @@ const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/no
 const { needsTranscode, transcodeToMp4 } = require("../utils/video");
 const storage = require("../storage");
 const { makeAndStorePoster } = require("../utils/videoPoster");
+const os = require("os");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -56,8 +57,19 @@ const allowed = new Set([
   "audio/webm",
 ]);
 
+// Use disk storage to avoid buffering GB files in RAM.
+// We’ll pass req.file.path to storage.uploadPrivate so it can stream/multipart to S3.
+const tmpDisk = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, os.tmpdir()),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || "");
+    cb(null, `req-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
+});
+
 const baseMulter = {
-  storage: multer.memoryStorage(),
+  storage: tmpDisk,
+  // Keep your generous cap, or tighten it if you want to save bandwidth/S3 PUT$:
   limits: { fileSize: 2500 * 1024 * 1024 }, // 2.5GB
   fileFilter: (req, file, cb) => {
     if (!allowed.has(file.mimetype)) return cb(new Error("Unsupported file type"));
@@ -156,11 +168,13 @@ router.post(
     let attachment_path = null;
     if (req.file) {
       const key = newKey("requests", req.file.originalname);
-      const uploaded = await storage.uploadPrivate({
-        key,
-        contentType: req.file.mimetype || "application/octet-stream",
-        body: req.file.buffer,
-      });
+        const uploaded = await storage.uploadPrivate({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
+        });
+        // cleanup tmp if we wrote to disk
+        if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
       attachment_path = uploaded.key;
       const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
       if (!isAudio) {
@@ -252,21 +266,22 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
     if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
     if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
 
-    let attachment_path = null;
-    if (req.file) {
-      const key = newKey("requests", req.file.originalname);
-      const uploaded = await storage.uploadPrivate({
-        key,
-        contentType: req.file.mimetype || "application/octet-stream",
-        body: req.file.buffer,
-      });
-      attachment_path = uploaded.key;
-      const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
-      if (!isAudio) {
-        try { await makeAndStorePoster(attachment_path, { private: true }); }
-        catch (e) { console.warn("buyer attachment poster (legacy) failed:", e?.message || e); }
+      let attachment_path = null;
+      if (req.file) {
+        const key = newKey("requests", req.file.originalname);
+        const uploaded = await storage.uploadPrivate({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
+        });
+        if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
+        attachment_path = uploaded.key;
+        const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
+        if (!isAudio) {
+          try { await makeAndStorePoster(attachment_path, { private: true }); }
+          catch (e) { console.warn("buyer attachment poster (legacy) failed:", e?.message || e); }
+        }
       }
-    }
 
     const { rows: existing } = await db.query(
       `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
@@ -469,16 +484,18 @@ router.post(
       let key;
 
       if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
-        const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
-        const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
-        fs.writeFileSync(inTmp, req.file.buffer);
+        // If multer wrote a tmp file, use it directly as input; else write buffer to tmp
+        const inTmp = req.file.path || path.join(os.tmpdir(), `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
+        if (!req.file.path) fs.writeFileSync(inTmp, req.file.buffer);
+
+        const outTmp = path.join(os.tmpdir(), `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
         await transcodeToMp4(inTmp, outTmp);
 
         const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, "");
         key = `${baseKey}.mp4`;
 
-        const outBuf = fs.readFileSync(outTmp);
-        await storage.uploadPrivate({ key, contentType: "video/mp4", body: outBuf });
+        // Upload by PATH so storage.js can multipart/stream
+        await storage.uploadPrivate({ key, contentType: "video/mp4", body: outTmp });
 
         try {
           await makeAndStorePoster(key, { private: true });
@@ -490,11 +507,12 @@ router.post(
         try { fs.unlinkSync(outTmp); } catch {}
       } else {
         key = newKey("requests", req.file.originalname);
-        await storage.uploadPrivate({
-          key,
-          contentType: mime || "application/octet-stream",
-          body: req.file.buffer,
-        });
+      await storage.uploadPrivate({
+        key,
+        contentType: mime || "application/octet-stream",
+        body: req.file.path || req.file.buffer,
+      });
+      if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
       }
       if (!isAudio) {
         try {
@@ -588,20 +606,19 @@ router.post(
           const isAudio = mime.startsWith("audio/");
 
           if (!isAudio && needsTranscode(mime, path.extname(req.file.originalname))) {
-            const inTmp = path.join("/tmp", `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
-            const outTmp = path.join("/tmp", `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
-            fs.writeFileSync(inTmp, req.file.buffer);
+            const inTmp = req.file.path || path.join(os.tmpdir(), `in-${crypto.randomBytes(8).toString("hex")}${path.extname(req.file.originalname)}`);
+            if (!req.file.path) fs.writeFileSync(inTmp, req.file.buffer);
 
+            const outTmp = path.join(os.tmpdir(), `out-${crypto.randomBytes(8).toString("hex")}.mp4`);
             await transcodeToMp4(inTmp, outTmp);
 
             const baseKey = newKey("requests", req.file.originalname).replace(/\.[^./\\]+$/, "");
             const key = `${baseKey}.mp4`;
 
-            const outBuf = fs.readFileSync(outTmp);
             await storage.uploadPrivate({
               key,
               contentType: "video/mp4",
-              body: outBuf,
+              body: outTmp, // path, not buffer
             });
 
             newAttachment = key;
@@ -617,8 +634,9 @@ router.post(
             await storage.uploadPrivate({
               key,
               contentType: mime || "application/octet-stream",
-              body: req.file.buffer,
+              body: req.file.path || req.file.buffer,
             });
+            if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
             newAttachment = key;
               if (!isAudio && newAttachment) {
                 try {
@@ -1067,8 +1085,10 @@ router.post(
         const uploaded = await storage.uploadPrivate({
           key,
           contentType: req.file.mimetype || "application/octet-stream",
-        body: req.file.buffer,
+          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
         });
+        // cleanup tmp if we wrote to disk
+        if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
         attachment_path = uploaded.key;
         const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
         if (!isAudio) {

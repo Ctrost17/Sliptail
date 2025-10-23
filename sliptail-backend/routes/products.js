@@ -524,14 +524,13 @@ router.post(
             if (storage.isS3) {
               const key = s3KeyForProduct(user_id, ".mp4");
               try {
-                const data = await fs.promises.readFile(outputPath);
                 await storage.uploadPrivate({
                   key,
                   contentType: "video/mp4",
-                  body: data,
+                  body: outputPath,        // <<< pass the file path so storage.js streams/multipart-uploads
                 });
                 await fs.promises.unlink(outputPath).catch(() => {});
-                return finalizeCreate(outputFilename); // store S3 key in products.filename
+                return finalizeCreate(key); // store the S3 key in DB
               } catch (e) {
                 console.error("S3 upload (video) failed:", e);
                 return res.status(500).json({ error: "Video upload failed" });
@@ -558,7 +557,7 @@ router.post(
             contentType: mimeType || "application/octet-stream",
             body: req.file.buffer,
           });
-          return finalizeCreate(outputFilename); // store S3 key in products.filename
+          return finalizeCreate(key); // ✅ store S3 key in products.filename
         } catch (e) {
           console.error("S3 upload (non-video) failed:", e);
           return res.status(500).json({ error: "File upload failed" });
@@ -910,11 +909,15 @@ router.put(
 
         // delete the old file best-effort
         if (oldName && oldName !== newName) {
+          if (storage.isS3) {
+            try { await storage.deletePrivate(oldName); } catch (e) { console.warn("s3 delete old:", e?.message || e); }
+          } else {
           const oldPath = path.join(uploadDir, oldName.replace(/^\/?uploads\//, ""));
           if (fs.existsSync(oldPath)) {
             fs.unlink(oldPath, (e) => e && console.warn("unlink old file:", e.message));
           }
         }
+      }
         return res.json({ success: true, product: linkify(rows[0]) });
       } catch (e) {
         console.error("File update DB error:", e);
@@ -1011,7 +1014,7 @@ router.put(
                 console.error("Rename error:", err.message || err);
                 return res.status(500).json({ error: "File save failed" });
               }
-              return finalizeCreate(finalName);
+              return saveNewFilename(finalName);
             });
           }
         }

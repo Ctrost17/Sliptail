@@ -1,3 +1,5 @@
+// src/app/settings/page.tsx
+
 "use client";
 
 import { useState } from "react";
@@ -7,7 +9,8 @@ import { useAuth } from "@/components/auth/AuthProvider";
 
 interface ChangeEmailBody {
   new_email: string;
-  password: string;
+  password?: string;
+  reauth_token?: string;
 }
 
 interface ChangeEmailOk {
@@ -23,8 +26,9 @@ interface ChangeEmailErr {
 type ChangeEmailResponse = ChangeEmailOk | ChangeEmailErr;
 
 interface ChangePasswordBody {
-  current_password: string;
+  current_password?: string;
   new_password: string;
+  reauth_token?: string;
 }
 
 interface ChangePasswordOk {
@@ -46,8 +50,10 @@ interface AuthShape {
 
 /* --------------------------- API helpers --------------------------- */
 
+/** IMPORTANT: also support NEXT_PUBLIC_API_URL (your current env) */
 const API_BASE =
-  (process.env.NEXT_PUBLIC_API_BASE ||
+  (process.env.NEXT_PUBLIC_API_URL ||
+    process.env.NEXT_PUBLIC_API_BASE ||
     process.env.NEXT_PUBLIC_API_BASE_URL ||
     "")?.replace(/\/$/, "") || "";
 
@@ -83,6 +89,143 @@ function resolveToken(maybeToken?: string | null): string | null {
   return null;
 }
 
+/* ------------------------- Google ID helper ------------------------- */
+/** We keep this here so you don't need another file. */
+declare global {
+  interface Window {
+    google?: any;
+  }
+}
+
+const GIS_SRC = "https://accounts.google.com/gsi/client";
+
+function loadGis(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined") return reject(new Error("No window"));
+    if (window.google?.accounts?.id) return resolve();
+
+    const s = document.createElement("script");
+    s.src = GIS_SRC;
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Failed to load Google Identity Services"));
+    document.head.appendChild(s);
+  });
+}
+
+/** Get a fresh Google ID token from GIS with FedCM → legacy prompt fallback */
+async function getGoogleIdTokenOnClient(): Promise<string> {
+  if (typeof window === "undefined") throw new Error("Must be called in the browser");
+  const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+  if (!clientId) throw new Error("Missing NEXT_PUBLIC_GOOGLE_CLIENT_ID");
+
+  await loadGis();
+
+  async function tryPrompt(useFedCM: boolean): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+
+      const cleanup = () => {
+        try {
+          window.google?.accounts?.id?.cancel?.();
+        } catch {}
+      };
+
+      // (Re)initialize with desired FedCM setting
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        // This callback gives us the ID token (JWT) in resp.credential
+        callback: (resp: { credential?: string }) => {
+          if (settled) return;
+          if (resp?.credential) {
+            settled = true;
+            cleanup();
+            resolve(resp.credential);
+          } else {
+            settled = true;
+            cleanup();
+            reject(new Error("No credential returned from Google"));
+          }
+        },
+        // UX knobs
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        // Key line: toggle FedCM usage
+        use_fedcm_for_prompt: useFedCM,
+        // Helps in Safari/ITP contexts
+        itp_support: true,
+      });
+
+      window.google.accounts.id.prompt((notification: any) => {
+        const notDisplayed = notification?.getNotDisplayedReason?.();
+        const skipped = notification?.getSkippedReason?.();
+        const reason = notDisplayed || skipped;
+
+        // If it never displayed or was skipped, treat as failure so we can fallback
+        if (!settled && reason) {
+          settled = true;
+          cleanup();
+          reject(new Error(String(reason)));
+        }
+      });
+
+      // Safety timeout
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error("Google reauth timed out"));
+        }
+      }, 30_000);
+    });
+  }
+
+  // 1) Try with FedCM (modern path)
+  try {
+    return await tryPrompt(true);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+
+    // 2) If FedCM is disabled / blocked / network-rejected, retry without FedCM
+    // Common reasons: "user_cancel", "opt_out_or_no_session", "unknown_reason",
+    // "suppressed_by_user", "browser_not_supported", or the console's NetworkError
+    const looksLikeFedCMBlock =
+      /fedcm|networkerror|notdisplayed|skipped|suppressed|unknown|browser|disabled/i.test(msg);
+
+    if (looksLikeFedCMBlock) {
+      try {
+        return await tryPrompt(false); // legacy prompt path
+      } catch (e2) {
+        throw new Error(
+          "Google reauth was blocked or dismissed. Please allow third-party sign-in for this site (key/person icon near the URL), or try again."
+        );
+      }
+    }
+
+    // If the error wasn't FedCM-related, surface it
+    throw e;
+  }
+}
+
+/** Exchange a Google ID token for a short-lived reauth_token on your backend */
+async function mintReauthToken(idToken: string, bearer?: string | null): Promise<string> {
+  const res = await fetch(api("/api/auth/reauth/google"), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+    body: JSON.stringify({ id_token: idToken }),
+  });
+  const data = await safeJson<{ reauth_token?: string; error?: string }>(res);
+  if (!res.ok || !data?.reauth_token) {
+    throw new Error(data?.error || "Google reauth failed");
+  }
+  return data.reauth_token;
+}
+
 /* --------------------------------- Page --------------------------------- */
 
 export default function SettingsPage() {
@@ -109,6 +252,8 @@ export default function SettingsPage() {
   const [showCurrentPw, setShowCurrentPw] = useState(false);
   const [showNewPw, setShowNewPw] = useState(false);
 
+  /* ----------------------- Password-path submitters ----------------------- */
+
   async function submitEmail(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setEmailBusy(true);
@@ -134,7 +279,9 @@ export default function SettingsPage() {
       if (!res.ok) {
         const message =
           (data && "error" in data && typeof data.error === "string" && data.error) ||
-          (res.status === 404 ? "Endpoint not found (check API path / auth header)" : `Failed to change email (status ${res.status})`);
+          (res.status === 404
+            ? "Endpoint not found (check API path / auth header)"
+            : `Failed to change email (status ${res.status})`);
         throw new Error(message);
       }
 
@@ -181,7 +328,9 @@ export default function SettingsPage() {
       if (!res.ok) {
         const message =
           (data && "error" in data && typeof data.error === "string" && data.error) ||
-          (res.status === 404 ? "Endpoint not found (check API path / auth header)" : `Failed to change password (status ${res.status})`);
+          (res.status === 404
+            ? "Endpoint not found (check API path / auth header)"
+            : `Failed to change password (status ${res.status})`);
         throw new Error(message);
       }
 
@@ -194,6 +343,83 @@ export default function SettingsPage() {
       setNewPassword("");
     } catch (err: unknown) {
       setPwErr(getErrorMessage(err, "Failed to change password"));
+    } finally {
+      setPwBusy(false);
+    }
+  }
+
+  /* --------------------- Google-reauth submitters --------------------- */
+
+  async function verifyWithGoogleAndSaveEmail() {
+    setEmailBusy(true);
+    setEmailErr(null);
+    setEmailMsg(null);
+    try {
+      const idToken = await getGoogleIdTokenOnClient();
+      const reauth = await mintReauthToken(idToken, bearer);
+
+      const res = await fetch(api("/api/auth/change-email"), {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        },
+        body: JSON.stringify({
+          new_email: newEmail,
+          reauth_token: reauth,
+        } satisfies ChangeEmailBody),
+      });
+
+      const data = await safeJson<ChangeEmailResponse>(res);
+      if (!res.ok) throw new Error((data as any)?.error || "Failed to change email");
+
+      const msg =
+        (data && "message" in data && typeof data.message === "string" && data.message) ||
+        (data && "requires_email_verify" in data && data.requires_email_verify
+          ? "Email updated. Please check your inbox to verify the new address."
+          : "Email updated.");
+      setEmailMsg(msg);
+      setEmailPassword("");
+    } catch (e) {
+      setEmailErr(getErrorMessage(e, "Failed to change email"));
+    } finally {
+      setEmailBusy(false);
+    }
+  }
+
+  async function verifyWithGoogleAndSavePassword() {
+    setPwBusy(true);
+    setPwErr(null);
+    setPwMsg(null);
+    try {
+      const idToken = await getGoogleIdTokenOnClient();
+      const reauth = await mintReauthToken(idToken, bearer);
+
+      const res = await fetch(api("/api/auth/change-password"), {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        },
+        body: JSON.stringify({
+          new_password: newPassword,
+          reauth_token: reauth,
+        } satisfies ChangePasswordBody),
+      });
+
+      const data = await safeJson<ChangePasswordResponse>(res);
+      if (!res.ok) throw new Error((data as any)?.error || "Failed to change password");
+
+      const msg =
+        (data && "message" in data && typeof data.message === "string" && data.message) ||
+        "Password updated. Please sign in again.";
+      setPwMsg(msg);
+      setCurrentPassword("");
+      setNewPassword("");
+    } catch (e) {
+      setPwErr(getErrorMessage(e, "Failed to change password"));
     } finally {
       setPwBusy(false);
     }
@@ -262,15 +488,30 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+
             {emailErr && <p className="text-sm text-red-600">{emailErr}</p>}
             {emailMsg && <p className="text-sm text-green-700">{emailMsg}</p>}
-            <button
-              type="submit"
-              disabled={emailBusy}
-              className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
-            >
-              {emailBusy ? "Saving..." : "Save Email"}
-            </button>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={emailBusy}
+                className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+              >
+                {emailBusy ? "Saving..." : "Save with Password"}
+              </button>
+
+              <button
+                type="button"
+                onClick={verifyWithGoogleAndSaveEmail}
+                disabled={emailBusy}
+                className="cursor-pointer rounded bg-neutral-800 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+                title="Verify with Google instead of entering current password"
+              >
+                {emailBusy ? "Verifying..." : "Verify with Google & Save"}
+              </button>
+            </div>
+
             <p className="mt-2 text-xs text-neutral-600">
               Your email will not update until you verify the new email address.
             </p>
@@ -358,15 +599,30 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
+
             {pwErr && <p className="text-sm text-red-600">{pwErr}</p>}
             {pwMsg && <p className="text-sm text-green-700">{pwMsg}</p>}
-            <button
-              type="submit"
-              disabled={pwBusy}
-              className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
-            >
-              {pwBusy ? "Saving..." : "Save Password"}
-            </button>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={pwBusy}
+                className="cursor-pointer rounded bg-blue-700 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+              >
+                {pwBusy ? "Saving..." : "Save with Password"}
+              </button>
+
+              <button
+                type="button"
+                onClick={verifyWithGoogleAndSavePassword}
+                disabled={pwBusy || newPassword.length < 8}
+                className="cursor-pointer rounded bg-neutral-800 px-4 py-2 font-semibold text-white transition hover:brightness-110 disabled:opacity-60"
+                title="Verify with Google instead of entering current password"
+              >
+                {pwBusy ? "Verifying..." : "Verify with Google & Save"}
+              </button>
+            </div>
+
             <p className="mt-2 text-xs text-neutral-600">
               After clicking Save Password, your password is automatically changed.
             </p>

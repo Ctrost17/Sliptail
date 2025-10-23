@@ -1428,6 +1428,7 @@ function VideoPreviewWithThumbnail({ url }: { url: string }) {
         playsInline
         preload="metadata"
         crossOrigin="use-credentials"
+        controlsList="nodownload noplaybackrate nofullscreen"  // ⬅️ add this
         poster={effectiveThumbnail || undefined}
         className={`block w-full object-contain bg-black ${
           isFullscreen 

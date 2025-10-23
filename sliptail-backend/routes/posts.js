@@ -12,8 +12,23 @@ const os = require("os");
 
 // Generic storage layer (local or S3)
 const storage = require("../storage");
-// For signing private reads (only used in S3 mode)
-const s3storage = storage.isS3 ? require("../storage/s3") : null;
+
+// ---- add this helper right here ----
+const TMP_DIR = os.tmpdir();
+async function uploadBufferSmart({ key, contentType, buffer }) {
+  // For large payloads, write to a tmp file and let storage.js stream it.
+  const BIG = 8 * 1024 * 1024; // 8MB threshold
+  if (buffer.length <= BIG) {
+    return storage.uploadPrivate({ key, contentType, body: buffer });
+  }
+  const tmpPath = path.join(TMP_DIR, `post-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await fs.promises.writeFile(tmpPath, buffer);
+  try {
+    return await storage.uploadPrivate({ key, contentType, body: tmpPath });
+  } finally {
+    fs.promises.unlink(tmpPath).catch(() => {});
+  }
+}
 
 const router = express.Router();
 
@@ -25,11 +40,19 @@ if (!fs.existsSync(postUploadsDir)) fs.mkdirSync(postUploadsDir, { recursive: tr
 // In S3 mode we buffer in memory then push to S3; local mode keeps disk storage
 let upload;
 if (storage.isS3) {
+  const s3TmpStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, os.tmpdir()),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || "");
+      cb(null, `upload-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    },
+  });
   upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB cap for posts
+    storage: s3TmpStorage,
+    limits: { fileSize: 50 * 1024 * 1024 }, // keep your 50MB for posts (or raise if you want)
   });
 } else {
+  // (keep your existing local disk storage for non-S3)
   const diskStorage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, postUploadsDir),
     filename: (req, file, cb) => {
@@ -124,13 +147,14 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
   if (req.file) {
     if (storage.isS3) {
       // PRIVATE upload — save the KEY in DB
-      const key = newKeyForPost(req.file.originalname);
-      await storage.uploadPrivate({
-        key,
-        contentType: req.file.mimetype || "application/octet-stream",
-        body: req.file.buffer,
-      });
-      media_path = key; // store KEY (not URL)
+        const key = newKeyForPost(req.file.originalname);
+        await storage.uploadPrivate({
+          key,
+          contentType: req.file.mimetype || "application/octet-stream",
+          body: req.file.path,   // <-- PATH triggers streaming/multipart
+        });
+        await fs.promises.unlink(req.file.path).catch(() => {}); // cleanup tmp
+        media_path = key;
     } else {
       // Local: keep on disk and store a public path
       media_path = buildLocalPublicUrl(req.file.filename);
@@ -269,8 +293,9 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
         await storage.uploadPrivate({
           key,
           contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.buffer,
+          body: req.file.path,   // <-- PATH
         });
+        await fs.promises.unlink(req.file.path).catch(() => {});
         media_path = key;
       } else {
         media_path = buildLocalPublicUrl(req.file.filename);
