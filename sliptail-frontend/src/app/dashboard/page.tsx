@@ -527,16 +527,35 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
     const container = containerRef.current;
     if (!container) return;
 
-    // Check if we're currently in fullscreen
-    const isCurrentlyFullscreen = !!(
+    // Detect specific devices for better handling
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log('[VideoWithPoster] Dashboard fullscreen toggle - isIOS:', isIOS, 'isMobile:', isMobile, 'current state:', isFullscreen);
+
+    // For iPhone/iOS, always use CSS-only approach since Fullscreen API is unreliable
+    if (isIOS) {
+      console.log('[VideoWithPoster] iOS detected - using CSS-only fullscreen toggle');
+      setIsFullscreen(!isFullscreen);
+      return;
+    }
+
+    // Check if we're currently in fullscreen (document API)
+    const isDocumentFullscreen = !!(
       document.fullscreenElement ||
       (document as any).webkitFullscreenElement ||
       (document as any).mozFullScreenElement ||
       (document as any).msFullscreenElement
     );
 
-    if (!isCurrentlyFullscreen) {
-      // Enter fullscreen - try different methods for cross-browser support
+    if (!isFullscreen) {
+      // Entering fullscreen - use CSS fallback directly for mobile
+      if (isMobile || !container.requestFullscreen) {
+        console.log('[VideoWithPoster] Using CSS fallback for mobile/unsupported browser');
+        setIsFullscreen(true);
+        return;
+      }
+
+      // Try native fullscreen API for desktop
       const requestFullscreen = 
         container.requestFullscreen ||
         (container as any).webkitRequestFullscreen ||
@@ -548,17 +567,21 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
         requestFullscreen.call(container).then(() => {
           setIsFullscreen(true);
         }).catch((err: any) => {
-          console.error('Error attempting to enable fullscreen:', err);
-          // Fallback for mobile: simulate fullscreen with CSS
+          console.log('Native fullscreen failed, using CSS fallback:', err.message);
           setIsFullscreen(true);
         });
       } else {
-        // Fallback for browsers that don't support fullscreen API (like iOS Safari)
-        console.log('Fullscreen API not supported, using CSS fallback');
         setIsFullscreen(true);
       }
     } else {
-      // Exit fullscreen
+      // Exiting fullscreen - for mobile, always use direct state toggle
+      if (isMobile || !isDocumentFullscreen) {
+        console.log('[VideoWithPoster] Mobile/CSS fullscreen exit');
+        setIsFullscreen(false);
+        return;
+      }
+
+      // Try native fullscreen exit for desktop
       const exitFullscreen = 
         document.exitFullscreen ||
         (document as any).webkitExitFullscreen ||
@@ -570,25 +593,40 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
         exitFullscreen.call(document).then(() => {
           setIsFullscreen(false);
         }).catch((err: any) => {
-          console.error('Error attempting to exit fullscreen:', err);
+          console.log('Native exit failed, forcing state change:', err.message);
           setIsFullscreen(false);
         });
       } else {
         setIsFullscreen(false);
       }
     }
-  }, []);
+  }, [isFullscreen]);
 
   // Listen for fullscreen changes - handle all browser prefixes
   React.useEffect(() => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
     const handleFullscreenChange = () => {
+      // iOS devices don't reliably support fullscreen events, skip entirely
+      if (isIOS) {
+        console.log('[VideoWithPoster] iOS detected - ignoring native fullscreen events');
+        return;
+      }
+
       const isFullscreenNow = !!(
         document.fullscreenElement ||
         (document as any).webkitFullscreenElement ||
         (document as any).mozFullScreenElement ||
         (document as any).msFullscreenElement
       );
-      setIsFullscreen(isFullscreenNow);
+      
+      console.log('[VideoWithPoster] Dashboard fullscreen change detected:', isFullscreenNow);
+      
+      // On mobile, primarily rely on CSS state, but update if native fullscreen changes
+      if (!isMobile || isFullscreenNow) {
+        setIsFullscreen(isFullscreenNow);
+      }
     };
 
     // Add listeners for all browser prefixes
@@ -604,6 +642,24 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
     };
   }, []);
+
+  // Add ESC key listener for exiting fullscreen
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        console.log('[VideoWithPoster] Dashboard ESC key pressed - exiting fullscreen');
+        setIsFullscreen(false);
+      }
+    };
+
+    if (isFullscreen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isFullscreen]);
 
   const togglePlayback = () => {
     const v = videoRef.current;
@@ -660,6 +716,60 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
           zIndex: 9999,
         } : undefined}
       >
+        {/* Mobile Fullscreen Exit Helper - tap anywhere to exit */}
+        {isFullscreen && (
+          <div 
+            className="absolute inset-0 z-[1] bg-transparent cursor-pointer md:hidden"
+            onClick={(e) => {
+              // Only handle background clicks, not clicks on video or controls
+              if (e.target === e.currentTarget) {
+                console.log('[VideoWithPoster] Dashboard mobile background tap detected - exiting fullscreen');
+                setIsFullscreen(false);
+              }
+            }}
+            onTouchEnd={(e) => {
+              // iOS-specific touch handler for better reliability
+              if (e.target === e.currentTarget) {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[VideoWithPoster] Dashboard iOS background touch detected - exiting fullscreen');
+                setIsFullscreen(false);
+              }
+            }}
+          />
+        )}
+
+        {/* Mobile Fullscreen Exit Instructions */}
+        {isFullscreen && (
+          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-[10] md:hidden pointer-events-none">
+            <div className="bg-black/70 text-white text-sm px-4 py-2 rounded-full backdrop-blur-sm">
+              Tap outside video to exit fullscreen
+            </div>
+          </div>
+        )}
+
+        {/* iOS-Specific Large Exit Button */}
+        {isFullscreen && /iPad|iPhone|iPod/.test(navigator.userAgent) && (
+          <button
+            className="absolute top-4 right-4 z-[15] w-12 h-12 bg-black/80 text-white rounded-full flex items-center justify-center backdrop-blur-sm border-2 border-white/30 md:hidden touch-manipulation"
+            onClick={(e) => {
+              e.stopPropagation();
+              console.log('[VideoWithPoster] Dashboard iOS large exit button clicked');
+              setIsFullscreen(false);
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              console.log('[VideoWithPoster] Dashboard iOS large exit button touched');
+              setIsFullscreen(false);
+            }}
+            aria-label="Exit fullscreen"
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+              <path d="M18 6L6 18M6 6l12 12"></path>
+            </svg>
+          </button>
+        )}
         <div
           className="relative group"
           onMouseEnter={() => isPlaying && setOverlayVisible(true)}
@@ -990,9 +1100,31 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
                 aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleFullscreen();
+                  // iOS-specific direct toggle for better reliability
+                  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                  if (isIOS) {
+                    console.log('[VideoWithPoster] Dashboard iOS fullscreen button - direct toggle');
+                    setIsFullscreen(!isFullscreen);
+                  } else {
+                    handleFullscreen();
+                  }
                 }}
-                className="w-8 h-8 rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 flex items-center justify-center"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // iOS-specific touch handler
+                  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                  if (isIOS) {
+                    console.log('[VideoWithPoster] Dashboard iOS touch end - direct toggle');
+                    setIsFullscreen(!isFullscreen);
+                  } else {
+                    handleFullscreen();
+                  }
+                }}
+                className={`${isFullscreen ? 'w-12 h-12' : 'w-8 h-8'} rounded-md bg-black/60 text-white backdrop-blur-sm shadow ring-1 ring-white/20 hover:bg-black/75 active:bg-black/80 flex items-center justify-center touch-manipulation transition-all duration-200`}
               >
                 {isFullscreen ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

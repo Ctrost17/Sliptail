@@ -351,9 +351,17 @@ function PostMedia({
     const container = containerRef.current;
     if (!container) return;
 
-    // Detect mobile devices for better fallback handling
+    // Detect specific devices for better handling
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    console.log('[PostMedia] Fullscreen toggle - isMobile:', isMobile, 'current state:', isFullscreen);
+    console.log('[PostMedia] Fullscreen toggle - isIOS:', isIOS, 'isMobile:', isMobile, 'current state:', isFullscreen);
+
+    // For iPhone/iOS, always use CSS-only approach since Fullscreen API is unreliable
+    if (isIOS) {
+      console.log('[PostMedia] iOS detected - using CSS-only fullscreen toggle');
+      setIsFullscreen(!isFullscreen);
+      return;
+    }
 
     if (!isFullscreen) {
       // Entering fullscreen - use CSS fallback directly for mobile
