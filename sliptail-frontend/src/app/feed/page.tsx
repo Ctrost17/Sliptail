@@ -11,6 +11,84 @@ interface Product { id: number; creator_id: number; title: string | null; descri
 interface Post { id: number; creator_id: number; title: string | null; body: string | null; media_path: string | null; media_poster?: string | null; created_at: string; product_id?: number; profile_image?: string; }
 interface MeResponse { user?: { id: number; role?: string; }; }
 
+// === Direct-to-S3 upload helpers (ADD THIS) ===
+
+/** Low-level PUT upload with progress + cancel support. */
+function putFileWithProgress(
+  url: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        const pct = Math.max(0, Math.min(100, Math.round((e.loaded / e.total) * 100)));
+        onProgress(pct);
+      }
+    };
+
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Upload failed with status ${xhr.status}`));
+    };
+
+    if (signal) {
+      if (signal.aborted) return reject(new DOMException("Aborted", "AbortError"));
+      signal.addEventListener(
+        "abort",
+        () => {
+          try { xhr.abort(); } catch {}
+          reject(new DOMException("Aborted", "AbortError"));
+        },
+        { once: true }
+      );
+    }
+
+    xhr.send(file);
+  });
+}
+
+/** Presign on your API, then upload the file directly to S3. Returns the S3 object key. */
+async function presignAndUploadToS3(opts: {
+  apiBase: string;
+  token?: string;
+  file: File;
+  onProgress?: (pct: number) => void;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const { apiBase, token, file, onProgress, signal } = opts;
+
+  // 1) Ask backend for a presigned PUT URL
+  const presignRes = await fetch(`${apiBase}/api/uploads/presign-post`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
+  if (!presignRes.ok) throw new Error(`Presign failed (${presignRes.status})`);
+  const presign = await presignRes.json(); // { key, url, contentType }
+
+  if (!presign?.url || !presign?.key) throw new Error("Invalid presign response");
+
+  // 2) Upload directly to S3
+  await putFileWithProgress(presign.url, file, onProgress, signal);
+
+  // 3) Return the S3 object key for /api/posts
+  return presign.key;
+}
+
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
   let s = src.trim();
@@ -904,6 +982,9 @@ export default function MembershipFeedPage() {
   const [error, setError] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [uploadPct, setUploadPct] = useState<number>(0);
+  const [uploading, setUploading] = useState<boolean>(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [tab, setTab] = useState<"mine" | "others">("mine");
   const [isCreator, setIsCreator] = useState<boolean>(false);
   const [otherProducts, setOtherProducts] = useState<Product[]>([]);
@@ -1089,39 +1170,122 @@ export default function MembershipFeedPage() {
 
   const saveEdit = async () => {
     if (!editingPost) return;
+    setError(null);
+
     try {
-      const changedMedia = draftFile != null; // blob indicates new upload
-      const fd = new FormData();
-      fd.append("title", draftTitle.trim());
-      fd.append("body", draftBody.trim());
-      if (changedMedia && draftFile) fd.append("media", draftFile);
-      if (!changedMedia && mediaRemoved && !draftMediaPreview) {
-        fd.append("media_remove", "1");
+      let media_path: string | null | undefined = undefined; // undefined = leave as-is
+
+      // If user picked a replacement file, upload first
+      if (draftFile) {
+        setUploading(true);
+        setUploadPct(0);
+        uploadAbortRef.current = new AbortController();
+
+        media_path = await presignAndUploadToS3({
+          apiBase,
+          token,
+          file: draftFile,
+          onProgress: (pct) => setUploadPct(pct),
+          signal: uploadAbortRef.current.signal,
+        });
+      } else if (mediaRemoved && !draftMediaPreview) {
+        // Explicitly remove media
+        media_path = null;
       }
-      const updated = await fetchApi<{ post: Post }>(`/api/posts/${editingPost.id}`, { method: "PUT", token, body: fd });
-      setPosts(prev => prev.map(p => p.id === editingPost.id ? updated.post : p));
+
+      const body: any = {
+        title: draftTitle.trim(),
+        body: draftBody.trim(),
+      };
+      if (media_path !== undefined) {
+        body.media_path = media_path;
+        if (media_path === null) body.media_remove = "1";
+      }
+
+      const updateRes = await fetch(`${apiBase}/api/posts/${editingPost.id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!updateRes.ok) {
+        const t = await updateRes.text().catch(() => "");
+        throw new Error(t || `Update failed (${updateRes.status})`);
+      }
+
+      const updated = await updateRes.json(); // { post }
+      setPosts((prev) => prev.map((p) => (p.id === editingPost.id ? updated.post : p)));
+
+      setUploading(false);
+      setUploadPct(0);
+      uploadAbortRef.current = null;
       closeEdit();
     } catch (e: any) {
-      setError(e?.message || "Failed to update post");
+      if (e?.name !== "AbortError") setError(e?.message || "Failed to update post");
+      setUploading(false);
     }
   };
+
 
   const saveAdd = async () => {
     if (!addingProduct) return;
     setAddingSaving(true);
+    setError(null);
+
     try {
-      const fd = new FormData();
-      fd.append("product_id", String(addingProduct.id));
-      fd.append("title", draftTitle.trim());
-      fd.append("body", draftBody.trim());
-      if (draftFile) fd.append("media", draftFile);
-      const res = await fetchApi<{ post: Post }>("/api/posts", { method: "POST", token, body: fd });
-      if (res?.post) {
-        setPosts(prev => [res.post, ...prev]);
+      let media_path: string | null = null;
+
+      // If a file is chosen, upload it first (direct to S3 with progress)
+      if (draftFile) {
+        setUploading(true);
+        setUploadPct(0);
+        uploadAbortRef.current = new AbortController();
+
+        media_path = await presignAndUploadToS3({
+          apiBase,
+          token,
+          file: draftFile,
+          onProgress: (pct) => setUploadPct(pct),
+          signal: uploadAbortRef.current.signal,
+        });
       }
+
+      // Create the post with JSON (tiny payload)
+      const createRes = await fetch(`${apiBase}/api/posts`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          product_id: String(addingProduct.id),
+          title: draftTitle.trim() || null,
+          body: draftBody.trim() || null,
+          ...(media_path ? { media_path } : {}),
+        }),
+      });
+
+      if (!createRes.ok) {
+        const t = await createRes.text().catch(() => "");
+        throw new Error(t || `Create failed (${createRes.status})`);
+      }
+
+      const { post } = await createRes.json();
+      if (post) setPosts((prev) => [post, ...prev]);
+
+      // reset UI
+      setUploading(false);
+      setUploadPct(0);
+      uploadAbortRef.current = null;
       closeAdd();
     } catch (e: any) {
-      setError(e?.message || "Failed to create post.");
+      if (e?.name !== "AbortError") setError(e?.message || "Failed to create post.");
+      setUploading(false);
     } finally {
       setAddingSaving(false);
     }
@@ -1406,10 +1570,44 @@ export default function MembershipFeedPage() {
                   </div>
                 )}
               </div>
+              {/* Upload progress (ADD THIS) */}
+                  {uploading && (
+                    <div className="mt-2">
+                      <div className="text-xs mb-1 text-neutral-600">Uploading… {uploadPct}%</div>
+                      <div className="h-2 w-full bg-neutral-200 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-500 transition-all"
+                          style={{ width: `${uploadPct}%` }}
+                        />
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[10px] rounded-md border hover:bg-neutral-100"
+                          onClick={() => {
+                            uploadAbortRef.current?.abort();
+                            setUploading(false);
+                            setUploadPct(0);
+                          }}
+                        >
+                          Cancel upload
+                        </button>
+                        <span className="text-[11px] text-neutral-500">
+                          We’ll create the post when the upload finishes.
+                        </span>
+                      </div>
+                    </div>
+                  )}
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button onClick={closeAdd} className="cursor-pointer px-3 h-8 rounded-md text-xs border hover:bg-neutral-100">Cancel</button>
-              <button onClick={saveAdd} className="cursor-pointer px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50" disabled={addingSaving || (!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview)}>{addingSaving ? 'Creating...' : 'Create'}</button>
+              <button
+                onClick={saveAdd}
+                className="cursor-pointer px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
+                disabled={addingSaving || uploading || (!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview)}
+              >
+                {addingSaving ? "Creating..." : uploading ? `Uploading ${uploadPct}%…` : "Create"}
+              </button>
             </div>
           </div>
         </div>
@@ -1459,10 +1657,44 @@ export default function MembershipFeedPage() {
                   </div>
                 )}
               </div>
+              {/* Upload progress (ADD THIS) */}
+              {uploading && (
+                <div className="mt-2">
+                  <div className="text-xs mb-1 text-neutral-600">Uploading… {uploadPct}%</div>
+                  <div className="h-2 w-full bg-neutral-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all"
+                      style={{ width: `${uploadPct}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="px-2 py-1 text-[10px] rounded-md border hover:bg-neutral-100"
+                      onClick={() => {
+                        uploadAbortRef.current?.abort();
+                        setUploading(false);
+                        setUploadPct(0);
+                      }}
+                    >
+                      Cancel upload
+                    </button>
+                    <span className="text-[11px] text-neutral-500">
+                      We’ll create the post when the upload finishes.
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button onClick={closeEdit} className="px-3 h-8 rounded-md text-xs border hover:bg-neutral-100">Cancel</button>
-              <button onClick={saveEdit} className="px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50" disabled={!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview}>Save</button>
+              <button
+                onClick={saveEdit}
+                className="px-3 h-8 rounded-md text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
+                disabled={uploading || (!draftTitle.trim() && !draftBody.trim() && !draftMediaPreview)}
+              >
+                {uploading ? `Uploading ${uploadPct}%…` : "Save"}
+              </button>
             </div>
           </div>
         </div>
