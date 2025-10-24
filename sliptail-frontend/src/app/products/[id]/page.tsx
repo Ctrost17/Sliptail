@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+
 
 /** Types */
 type ProductType = "purchase" | "membership" | "request";
@@ -53,15 +54,14 @@ export default function ProductEditPage() {
   const routeId = params?.id;
   const productId = Array.isArray(routeId) ? routeId[0] : routeId;
 
-  const apiBase = useMemo(
-    () => (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, ""),
-    []
-  );
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [replacingFile, setReplacingFile] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadPct, setUploadPct] = useState<number>(0);
+  const [stage, setStage] = useState<"idle" | "presigning" | "uploading" | "finalizing">("idle");
 
   // Editable fields
   const [title, setTitle] = useState("");
@@ -84,7 +84,7 @@ export default function ProductEditPage() {
       setError(null);
       setLoading(true);
       try {
-        const res = await fetch(`${apiBase}/api/products/${encodeURIComponent(productId)}`, {
+        const res = await fetch(`${API_BASE}/api/products/${encodeURIComponent(productId)}`, {
           credentials: "include",
         });
         if (!res.ok) {
@@ -119,7 +119,7 @@ export default function ProductEditPage() {
     return () => {
       cancelled = true;
     };
-  }, [apiBase, productId]);
+  }, [API_BASE, productId]);
 
   async function saveDetails(e: React.FormEvent) {
     e.preventDefault();
@@ -142,7 +142,7 @@ export default function ProductEditPage() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      const res = await fetch(`${apiBase}/api/products/${encodeURIComponent(productId)}`, {
+      const res = await fetch(`${API_BASE}/api/products/${encodeURIComponent(productId)}`, {
         method: "PUT",
         credentials: "include",
         headers,
@@ -166,43 +166,181 @@ export default function ProductEditPage() {
     }
   }
 
-  async function replaceFile(e: React.FormEvent) {
-    e.preventDefault();
-    if (!productId) return;
-    if (!file) {
-      setError("Please choose a file to upload.");
-      return;
-    }
-    setError(null);
-    setReplacingFile(true);
-    try {
-      const token = loadAuthSafe()?.token ?? null;
+  async function xhrPutWithProgress(opts: {
+    url: string;
+    file: File | Blob;
+    contentType: string;
+    onProgress?: (pct: number) => void;
+    }): Promise<void> {
+      const { url, file, contentType, onProgress } = opts;
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", url);
+        xhr.setRequestHeader("Content-Type", contentType);
 
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const headers: Record<string, string> = {};
-      if (token) headers.Authorization = `Bearer ${token}`;
-
-      const res = await fetch(`${apiBase}/api/products/${encodeURIComponent(productId)}/file`, {
-        method: "PUT",
-        credentials: "include",
-        headers,
-        body: formData,
+        xhr.upload.onprogress = (evt) => {
+          if (!evt.lengthComputable) return;
+          const pct = Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100));
+          onProgress?.(pct);
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`S3 upload failed (${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+        xhr.send(file);
       });
+    }
 
-      if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        throw new Error(extractMessage(payload, "Failed to update product file"));
+    async function xhrFormPutWithProgress(opts: {
+        url: string;
+        formData: FormData;
+        authToken?: string;
+        onProgress?: (pct: number) => void;
+      }): Promise<Response> {
+        return await new Promise<Response>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", opts.url);
+          // match your fetch credentials behavior
+          xhr.withCredentials = true;
+          if (opts.authToken) {
+            xhr.setRequestHeader("Authorization", `Bearer ${opts.authToken}`);
+          }
+          xhr.upload.onprogress = (evt) => {
+            if (!evt.lengthComputable) return;
+            const pct = Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100));
+            opts.onProgress?.(pct);
+          };
+          xhr.onload = () => {
+            // build a Response-like object so the caller can .ok/.status if needed
+            const res = new Response(xhr.response, { status: xhr.status, statusText: xhr.statusText });
+            if (xhr.status >= 200 && xhr.status < 300) resolve(res);
+            else reject(new Error(`Upload failed (${xhr.status})`));
+          };
+          xhr.onerror = () => reject(new Error("Network error during upload"));
+          xhr.send(opts.formData);
+        });
       }
 
-      router.push("/dashboard");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to replace file");
-    } finally {
-      setReplacingFile(false);
+
+    async function replaceFile(e: React.FormEvent) {
+      e.preventDefault();
+      if (!productId) return;
+      if (!file) {
+        setError("Please choose a file to upload.");
+        return;
+      }
+
+      setError(null);
+      setReplacingFile(true);
+      setStage("presigning");
+      setUploadPct(0);
+
+      const token = loadAuthSafe()?.token ?? null;
+
+      // small helper: direct upload fallback to the multer route with progress
+      const fallbackDirectUpload = async () => {
+        setStage("uploading");
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+          await xhrFormPutWithProgress({
+            url: `${API_BASE}/api/products/${encodeURIComponent(productId)}/file`,
+            formData,
+            authToken: token || undefined,
+            onProgress: (pct) => setUploadPct(pct),
+          });
+          router.push("/dashboard");
+        } catch (err) {
+          throw err; // bubble up to the outer catch
+        }
+      };
+
+      try {
+        // 1) presign
+        const presignRes = await fetch(`${API_BASE}/api/uploads/presign-product`, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            filename: file.name,
+            contentType: file.type || "application/octet-stream",
+          }),
+        });
+
+        // If requireCreator blocks (401/403), fall back to direct upload
+        if (!presignRes.ok) {
+          if (presignRes.status === 401 || presignRes.status === 403) {
+            // fallback path
+            return await fallbackDirectUpload();
+          }
+          // other presign errors -> surface message
+          const payload = await presignRes.json().catch(() => ({}));
+          throw new Error(extractMessage(payload, "Could not presign upload"));
+        }
+
+        const { key, url, contentType } = (await presignRes.json()) as {
+          key: string;
+          url: string;
+          contentType: string;
+        };
+        if (!key || !url) throw new Error("Presign response missing key or url");
+
+        // 2) upload to S3 with progress
+        setStage("uploading");
+        await xhrPutWithProgress({
+          url,
+          file,
+          contentType: contentType || file.type || "application/octet-stream",
+          onProgress: (pct) => setUploadPct(pct),
+        });
+
+        // 3) finalize on server
+        setStage("finalizing");
+        const finalizeRes = await fetch(
+          `${API_BASE}/api/products/${encodeURIComponent(productId)}/file-from-s3`,
+          {
+            method: "PUT",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ key }),
+          }
+        );
+
+        if (!finalizeRes.ok) {
+          // If finalize rejects with 403 (ownership, etc.), there’s no point falling back now,
+          // because the file is already in S3 but DB update failed. Show message.
+          const payload = await finalizeRes.json().catch(() => ({}));
+          throw new Error(extractMessage(payload, "Failed to update product file"));
+        }
+
+        router.push("/dashboard");
+      } catch (e) {
+        // If S3 PUT itself failed for a network reason, the file hasn't been attached yet.
+        // Try a last-chance fallback to direct upload.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (stage === "uploading") {
+          try {
+            await fallbackDirectUpload();
+            return; // success via fallback
+          } catch (fallbackErr) {
+            setError(fallbackErr instanceof Error ? fallbackErr.message : "Failed to replace file");
+          }
+        } else {
+          setError(msg || "Failed to replace file");
+        }
+      } finally {
+        setReplacingFile(false);
+        setStage("idle");
+      }
     }
-  }
 
   const priceLabel =
     productType === "membership" ? "Price per month (USD)" : "Price (USD)";
@@ -339,16 +477,38 @@ export default function ProductEditPage() {
             <p className="text-xs text-neutral-600">
               PDF, images, video, text and other common formats supported.
             </p>
+            {stage !== "idle" && (
+            <div className="mt-2 space-y-1">
+              <div className="text-xs text-neutral-700">
+                {stage === "presigning" && "Preparing upload…"}
+                {stage === "uploading" && `Uploading… ${uploadPct.toFixed(0)}%`}
+                {stage === "finalizing" && "Finalizing…"}
+              </div>
+              {(stage === "uploading" || stage === "finalizing") && (
+                <div className="h-2 w-full rounded-full bg-neutral-200 overflow-hidden">
+                  <div
+                    className="h-2 bg-black transition-all"
+                    style={{ width: `${stage === "finalizing" ? 100 : Math.min(100, uploadPct)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
           </div>
-          <button
-            type="submit"
-            disabled={replacingFile}
-            className={`rounded-xl px-4 py-2 text-sm ${
-              replacingFile ? "bg-neutral-300 text-neutral-600" : "cursor-pointer bg-black text-white"
-            }`}
-          >
-            {replacingFile ? "Updating…" : "Replace File"}
-          </button>
+        <button
+          type="submit"
+          disabled={replacingFile || stage !== "idle"}
+          className={`rounded-xl px-4 py-2 text-sm ${
+            replacingFile || stage !== "idle"
+              ? "bg-neutral-300 text-neutral-600"
+              : "cursor-pointer bg-black text-white"
+          }`}
+        >
+          {stage === "presigning" && "Preparing…"}
+          {stage === "uploading" && `Uploading… ${uploadPct.toFixed(0)}%`}
+          {stage === "finalizing" && "Finalizing…"}
+          {stage === "idle" && (replacingFile ? "Updating…" : "Replace File")}
+        </button>
         </form>
       )}
     </main>

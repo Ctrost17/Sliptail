@@ -95,6 +95,32 @@ async function apiFetch(
   return { ok: res.ok, status: res.status, statusText: res.statusText, payload };
 }
 
+async function xhrPutWithProgress(opts: {
+  url: string;
+  file: File | Blob;
+  contentType: string;
+  onProgress?: (pct: number) => void;
+}): Promise<void> {
+  const { url, file, contentType, onProgress } = opts;
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", contentType);
+
+    xhr.upload.onprogress = (evt) => {
+      if (!evt.lengthComputable) return;
+      const pct = Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100));
+      onProgress?.(pct);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`S3 upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+    xhr.send(file);
+  });
+}
+
 export default function NewProductPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -113,6 +139,8 @@ export default function NewProductPage() {
   });
 
   const [file, setFile] = useState<File | null>(null);
+  const [uploadPct, setUploadPct] = useState<number>(0);
+  const [stage, setStage] = useState<"idle" | "presigning" | "uploading" | "finalizing">("idle");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -210,66 +238,107 @@ export default function NewProductPage() {
       const token = loadAuthSafe()?.token ?? null;
 
       if (productType === "purchase" && file) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("title", title);
-        formData.append("description", description);
-        formData.append("product_type", productType);
-        formData.append("productType", productType);
-        formData.append("price", String(cents));
-        formData.append("price_cents", String(cents));
+  // 1) presign
+  setStage("presigning");
+  const presignRes = await apiFetch("/api/uploads/presign-product", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
 
-        const { ok, status, statusText, payload } = await apiFetch(
-          "/api/products/upload",
-          {
-            method: "POST",
-            credentials: "include",
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            body: formData,
-          }
-        );
+  if (!presignRes.ok) {
+    const msg = extractServerError(
+      presignRes.payload,
+      "Could not presign upload"
+    );
+    setError(`Presign failed — ${msg}`);
+    setSaving(false);
+    setStage("idle");
+    return;
+  }
 
-        if (!ok) {
-          if (status === 403 && isRecord(payload)) {
-            const missing = getArrayOfStrings(payload, "missing");
-            const detail = getStringProp(payload, "detail");
-            const base = extractServerError(
-              payload,
-              "Failed to create product with file"
-            );
-            const more =
-              (missing && missing.length ? `\n• ${missing.join("\n• ")}` : "") +
-              (detail ? `\n(${detail})` : "");
-            setError(
-              `Create failed (403 Forbidden) — ${base}${more ? `\n${more}` : ""}`
-            );
-          } else {
-            const msg = extractServerError(
-              payload,
-              "Failed to create product with file"
-            );
-            setError(
-              `Upload failed (${status}${
-                statusText ? " " + statusText : ""
-              }) — ${msg}`
-            );
-          }
-          setSaving(false);
-          return;
-        }
+  const { key, url, contentType } = (presignRes.payload ?? {}) as {
+    key: string;
+    url: string;
+    contentType: string;
+  };
+  if (!key || !url) {
+    setError("Presign response missing key or url");
+    setSaving(false);
+    setStage("idle");
+    return;
+  }
 
-        const productId = getProductId(payload);
-        if (fromSetup) {
-          router.push(
-            `/creator/success${
-              productId ? `?pid=${encodeURIComponent(productId)}` : ""
-            }`
-          );
-        } else {
-          router.push("/dashboard");
-        }
-        return;
-      }
+  // 2) direct upload to S3 with progress
+  setStage("uploading");
+  setUploadPct(0);
+  try {
+    await xhrPutWithProgress({
+      url,
+      file,
+      contentType: contentType || file.type || "application/octet-stream",
+      onProgress: (pct) => setUploadPct(pct),
+    });
+  } catch (e) {
+    setError(getErrorMessage(e));
+    setSaving(false);
+    setStage("idle");
+    return;
+  }
+
+  // 3) finalize: create the product pointing at the S3 key
+  setStage("finalizing");
+  const finalizeRes = await apiFetch("/api/products/upload-from-s3", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      key, // S3 key we just uploaded
+      title,
+      description,
+      product_type: productType,
+      productType,
+      price: cents,
+      price_cents: cents,
+    }),
+  });
+
+  if (!finalizeRes.ok) {
+    const base = extractServerError(finalizeRes.payload, "Failed to create product with file");
+    if (finalizeRes.status === 403 && isRecord(finalizeRes.payload)) {
+      const missing = getArrayOfStrings(finalizeRes.payload, "missing");
+      const detail = getStringProp(finalizeRes.payload, "detail");
+      const more =
+        (missing && missing.length ? `\n• ${missing.join("\n• ")}` : "") +
+        (detail ? `\n(${detail})` : "");
+      setError(`Create failed (403 Forbidden) — ${base}${more ? `\n${more}` : ""}`);
+    } else {
+      setError(`Create failed (${finalizeRes.status}${finalizeRes.statusText ? " " + finalizeRes.statusText : ""}) — ${base}`);
+    }
+    setSaving(false);
+    setStage("idle");
+    return;
+  }
+
+  const productId = getProductId(finalizeRes.payload);
+  if (fromSetup) {
+    router.push(`/creator/success${productId ? `?pid=${encodeURIComponent(productId)}` : ""}`);
+  } else {
+    router.push("/dashboard");
+  }
+  return;
+}
+
 
       const jsonPayload = {
         title,
@@ -490,34 +559,52 @@ export default function NewProductPage() {
             <label htmlFor={IDS.file} className="block text-sm font-medium">
               Upload File (delivered to buyers)
             </label>
-              <div className="flex items-center gap-3">
-                {/* Styled button that triggers the hidden file input */}
-                <label
-                  htmlFor="file"
-                  className="inline-flex items-center rounded-lg bg-black text-white px-3 py-2 text-sm font-medium cursor-pointer"
-                >
-                  Choose file
-                </label>
 
-                {/* Visually hidden input; still accessible via the label above */}
-                <input
-                  id="file"
-                  name="file"
-                  type="file"
-                  className="sr-only"
-                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                />
+            <div className="flex items-center gap-3">
+              <label
+                htmlFor="file"
+                className="inline-flex items-center rounded-lg bg-black text-white px-3 py-2 text-sm font-medium cursor-pointer"
+              >
+                Choose file
+              </label>
 
-                {/* File name stays visible */}
-                <span className="text-sm text-neutral-800 truncate">
-                  {file?.name ?? "No file chosen"}
-                </span>
-              </div>
+              <input
+                id="file"
+                name="file"
+                type="file"
+                className="sr-only"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+
+              <span className="text-sm text-neutral-800 truncate">
+                {file?.name ?? "No file chosen"}
+              </span>
+            </div>
+
             <p id={IDS.fileHelp} className="text-xs text-neutral-600">
               PDF, images, video, text and other common formats supported.
             </p>
+
+            {stage !== "idle" && (
+              <div className="mt-2 space-y-1">
+                <div className="text-xs text-neutral-700">
+                  {stage === "presigning" && "Preparing upload…"}
+                  {stage === "uploading" && `Uploading… ${uploadPct.toFixed(0)}%`}
+                  {stage === "finalizing" && "Finalizing…"}
+                </div>
+                {(stage === "uploading" || stage === "finalizing") && (
+                  <div className="h-2 w-full rounded-full bg-neutral-200 overflow-hidden">
+                    <div
+                      className="h-2 bg-black transition-all"
+                      style={{ width: `${stage === "finalizing" ? 100 : Math.min(100, uploadPct)}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        )}
+        )}  {/* ✅ close the purchase-only wrapper AND the conditional */}
+
 
         {error && (
           <div

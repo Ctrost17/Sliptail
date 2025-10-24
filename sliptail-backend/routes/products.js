@@ -577,6 +577,60 @@ router.post(
   }
 );
 
+/* ------------------------ CREATE (file already in S3 via presign) ------------------------ */
+router.post(
+  "/upload-from-s3",
+  requireAuth,
+  standardLimiter,
+  async (req, res) => {
+    const user_id = String(req.user.id || "").trim();
+
+    const key = String(req.body.key || "").trim(); // S3 key from presign step
+    const title = (req.body.title || "").toString();
+    const description = (req.body.description || "").toString();
+    const product_type = (req.body.product_type || req.body.productType || "").toString();
+    const priceRaw = req.body.price ?? req.body.price_cents ?? 0;
+    const priceNum = Number(priceRaw);
+
+    if (!key) return res.status(400).json({ error: "S3 key required" });
+    if (!title.trim()) return res.status(400).json({ error: "Title is required" });
+    if (Number.isNaN(priceNum)) return res.status(400).json({ error: "Price must be a number" });
+    if (!["purchase", "membership", "request"].includes(product_type)) {
+      return res.status(400).json({ error: "Invalid product_type" });
+    }
+
+    const ready = await ensureCreationReadinessSafe(db, user_id, recomputeCreatorActive);
+    if (!ready.ok) {
+      return res.status(403).json({
+        error: "Finish profile and connect Stripe before creating a product.",
+        missing: ready.missing,
+        ...(ready.error ? { detail: ready.error } : {}),
+      });
+    }
+
+    try {
+      const created = await insertProduct({
+        userIdText: user_id,
+        title,
+        description,
+        product_type,
+        price_cents: priceNum,
+        filename: key, // ✅ store the S3 key directly
+      });
+
+      // ensure profile + activate + refresh cookie (same flow you already use)
+      await ensureCreatorProfileRow(user_id).catch(() => {});
+      try { await activateCreatorNow(user_id); } catch (e) { console.warn("activateCreatorNow failed:", e?.message || e); }
+      await promoteAndRefreshAuth(req.user.id, res);
+
+      res.status(201).json({ success: true, product: linkify(created) });
+    } catch (err) {
+      console.error("DB insert error (upload-from-s3):", err?.message || err, err?.detail || "");
+      res.status(500).json({ error: "Database insert failed" });
+    }
+  }
+);
+
 /* ------------------------ CREATE (no file) ------------------------ */
 router.post(
   "/new",
@@ -1024,6 +1078,49 @@ router.put(
       } 
   }
 );
+
+/* ------------------------------ UPDATE FILE (file already in S3 via presign) ------------------------------ */
+router.put("/:id/file-from-s3", requireAuth, async (req, res) => {
+  const rawId = String(req.params.id || "").trim();
+  const key = String(req.body.key || "").trim(); // S3 key from presign step
+  if (!key) return res.status(400).json({ error: "S3 key required" });
+
+  // ownership check
+  const ownership = await assertOwner(rawId, req.user.id);
+  if (ownership.error) return res.status(ownership.code).json({ error: ownership.error });
+
+  // product must exist and be a purchase
+  const { rows: prodRows } = await db.query(
+    `SELECT id, filename, product_type FROM products WHERE id::text = $1`,
+    [rawId]
+  );
+  if (!prodRows.length) return res.status(404).json({ error: "Product not found" });
+  if (prodRows[0].product_type !== "purchase") {
+    return res.status(400).json({ error: "Only purchase products have a replaceable file" });
+  }
+
+  const oldName = prodRows[0].filename || null;
+
+  try {
+    const sets = ["filename = $1"];
+    if (await hasColumn("products", "updated_at")) sets.push("updated_at = NOW()");
+    const { rows } = await db.query(
+      `UPDATE products SET ${sets.join(", ")} WHERE id::text = $2 RETURNING *`,
+      [key, rawId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Product not found" });
+
+    // best-effort delete of old file
+    if (oldName && oldName !== key) {
+      try { await storage.deletePrivate(oldName); } catch (e) { console.warn("delete old file:", e?.message || e); }
+    }
+
+    return res.json({ success: true, product: linkify(rows[0]) });
+  } catch (e) {
+    console.error("file-from-s3 DB error:", e);
+    return res.status(500).json({ error: "Failed to update product file" });
+  }
+});
 
 /* ------------------------------ UPDATE META ------------------------------ */
 router.put("/:id", requireAuth, standardLimiter, validate(productUpdate), async (req, res) => {

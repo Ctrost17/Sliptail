@@ -31,4 +31,20 @@ router.post("/presign-post", requireAuth, requireCreator, async (req, res) => {
   }
 });
 
+router.post("/presign-product", requireAuth, requireCreator, async (req, res) => {
+  const { filename, contentType } = req.body || {};
+  if (!filename || !contentType) return res.status(400).json({ error: "filename and contentType required" });
+
+  try {
+    // keep files grouped by user
+    const ext = path.extname(filename || "") || ".bin";
+    const key = `products/${req.user.id}/${crypto.randomUUID?.() || crypto.randomBytes(16).toString("hex")}${ext}`;
+    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
+    res.json({ key, url, contentType });
+  } catch (e) {
+    console.error("presign-product error:", e);
+    res.status(500).json({ error: "Could not presign product upload" });
+  }
+});
+
 module.exports = router;

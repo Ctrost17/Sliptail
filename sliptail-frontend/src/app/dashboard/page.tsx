@@ -141,20 +141,23 @@ function resolveImageUrl(src: string | null | undefined, apiBase: string): strin
   if (!s.startsWith("/")) s = `/${s}`;
   return `${apiBase}${s}`;
 }
-function guessFromExtension(url: string): "image" | "video" | "audio" | null {
+function guessFromExtension(url: string): "image" | "video" | "audio" | "document" | "other" | null {
   const clean = url.split("?")[0].toLowerCase();
   if (/\.(png|jpe?g|webp|gif|bmp|svg)$/.test(clean)) return "image";
   if (/\.(mp4|m4v|mov|webm|avi|mkv)$/.test(clean)) return "video";
   if (/\.(mp3|wav|m4a|aac|ogg|webm)$/.test(clean)) return "audio";
+  if (/\.(pdf|csv|xlsx?|xls)$/.test(clean)) return "document";
   return null;
 }
 
-function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "other" {
+function typeFromContentType(ct: string | null): "image" | "video" | "audio" | "document" | "other" {
   if (!ct) return "other";
   const low = ct.toLowerCase();
   if (low.startsWith("image/")) return "image";
   if (low.startsWith("video/")) return "video";
   if (low.startsWith("audio/")) return "audio";
+  if (low.includes("pdf") || low.includes("spreadsheet") || low.includes("ms-excel") || low.includes("csv"))
+   return "document";
   return "other";
 }
 
@@ -1157,7 +1160,7 @@ function AttachmentViewer({
   src,
   className = "w-full rounded-lg border overflow-hidden bg-black/5", posterUrl,
 }: { src: string; className?: string ; posterUrl?: string}) {
-  const [kind, setKind] = React.useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
+  const [kind, setKind] = React.useState<"image" | "video" | "audio" | "document" | "other" | null>(guessFromExtension(src));
   const [errored, setErrored] = React.useState(false);
 
   React.useEffect(() => {
@@ -1201,6 +1204,33 @@ function AttachmentViewer({
     );
   }
 
+   if (kind === "document") {
+   const lower = src.toLowerCase();
+   const isPdf = lower.endsWith(".pdf");
+   // Try inline preview for PDFs; otherwise show a simple card with a download link
+   return isPdf ? (
+     <iframe
+       src={src}
+       className={`${className} bg-white`}
+       style={{ height: 480 }}
+       title="Document preview"
+       onError={() => setErrored(true)}
+     />
+   ) : (
+     <div className={`${className} p-4 bg-white flex items-center justify-between`}>
+       <div className="text-sm text-neutral-800 truncate">Document: {src.split("/").pop()}</div>
+       <a
+         href={src}
+         target="_blank"
+         rel="noopener noreferrer"
+         className="rounded-md px-3 py-1 text-xs font-medium bg-neutral-900 text-white"
+       >
+         Download
+       </a>
+     </div>
+   );
+ }
+
   // Unknown: optimistically try video; fallback becomes link via onError.
   return <VideoWithPoster src={src} poster={posterUrl} className={className} />;
 }
@@ -1214,6 +1244,8 @@ function LocalAttachmentPreview({ file, url }: { file: File | null; url: string 
   const isVideo = mime.startsWith("video/") || /\.(mp4|webm|ogg|m4v|mov)$/.test(name);
   const isAudio = mime.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg|webm)$/.test(name);
   const isImage = mime.startsWith("image/") || /\.(png|jpe?g|webp|gif|svg)$/.test(name);
+  const isPdf = mime === "application/pdf" || name.endsWith(".pdf");
+  const isSpreadsheet = /(?:application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet)/.test(mime) || /\.(xlsx?|csv)$/.test(name);
 
   if (isAudio) {
     return <audio src={url} controls preload="metadata" className="block w-full bg-black" />;
@@ -1224,6 +1256,16 @@ function LocalAttachmentPreview({ file, url }: { file: File | null; url: string 
   if (isImage) {
     return <img src={url} alt="preview" className="block w-full h-auto object-contain bg-black" />;
   }
+  if (isPdf) {
+   return <iframe src={url} className="block w-full bg-white" style={{ height: 320 }} />;
+ }
+ if (isSpreadsheet) {
+   return (
+     <div className="p-3 rounded border bg-white text-sm text-neutral-800">
+       {file.name} selected. Preview not supported — it’ll be sent as an attachment.
+     </div>
+   );
+ }
   return <div className="text-sm text-neutral-700">{file.name}</div>;
 }
 
@@ -2965,7 +3007,17 @@ useEffect(() => {
   id="complete-files"
   ref={completeFilesRef}
   type="file"
-  accept="image/*,video/*,audio/*,.mp3,.wav,.m4a,.aac,.ogg,.webm"
+   accept={[+  "image/*",
+      "video/*",
+      "audio/*",
+      ".mp3,.wav,.m4a,.aac,.ogg,.webm",
+      "application/pdf,.pdf",
+      // Excel (both legacy and OOXML)
+    "application/vnd.ms-excel,.xls",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx",
+      // CSV
+      "text/csv,.csv"
+    ].join(",")}
   multiple
   className="hidden"
   onChange={(e) => {
