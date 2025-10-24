@@ -133,6 +133,53 @@ function buildAuthHeaders(extra?: Record<string, string>): HeadersInit {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
+
+async function presignAndUploadToPrivateBucket(apiBase: string, file: File) {
+  // 1) Ask backend for a presigned target
+  const presignRes = await fetch(`${apiBase}/api/uploads/presign`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+      private: true,
+      prefix: "requests",
+    }),
+  });
+
+  if (!presignRes.ok) {
+    const text = await presignRes.text().catch(() => "");
+    throw new Error(text || `Presign failed (${presignRes.status})`);
+  }
+
+  const presign: any = await presignRes.json();
+
+  // 2) Handle common S3 styles: POST (fields) or PUT (no fields)
+  if (presign?.fields && presign?.url) {
+    // S3 POST form
+    const form = new FormData();
+    Object.entries(presign.fields).forEach(([k, v]) => form.append(k, String(v)));
+    form.append("file", file);
+    const up = await fetch(presign.url, { method: "POST", body: form });
+    if (!up.ok) throw new Error(`Upload failed (POST) ${up.status}`);
+    return { key: presign.key ?? presign.fields?.key ?? null, contentType: file.type || null };
+  }
+
+  if (presign?.url) {
+    // PUT style
+    const up = await fetch(presign.url, {
+      method: presign.method || "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!up.ok) throw new Error(`Upload failed (PUT) ${up.status}`);
+    return { key: presign.key ?? null, contentType: file.type || null };
+  }
+
+  throw new Error("Unknown presign response");
+}
+
 function resolveImageUrl(src: string | null | undefined, apiBase: string): string | null {
   if (!src) return null;
   let s = src.trim();
@@ -182,6 +229,87 @@ async function sniffContentType(url: string): Promise<"image"|"video"|"audio"|"o
   } catch {/* ignore */}
 
   return "other";
+}
+function xhrUpload({ url, method, headers, body, onProgress }: {
+  url: string; method: string; headers?: Record<string,string>;
+  body: Document | BodyInit | null; onProgress?: (sent:number,total:number)=>void;
+}): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    if (headers) for (const [k,v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onload  = () => resolve(new Response(xhr.response, { status: xhr.status, statusText: xhr.statusText }));
+
+    // Note: do NOT set xhr.responseType for S3 POST/PUT
+    xhr.send(body);
+  });
+}
+
+/** Same signature as your existing presign; now accepts onProgress and uses XHR for the upload step. */
+async function presignAndUploadToPrivateBucketWithProgress(
+  apiBase: string,
+  file: File,
+  onProgress?: (sent:number,total:number)=>void
+) {
+  // 1) Presign
+  const presignRes = await fetch(`${apiBase}/api/uploads/presign`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      filename: file.name,
+      contentType: file.type || "application/octet-stream",
+      private: true,
+      prefix: "requests",
+    }),
+  });
+  if (!presignRes.ok) throw new Error(await presignRes.text().catch(() => `Presign failed (${presignRes.status})`));
+  const presign: any = await presignRes.json();
+
+  // 2) Upload with progress (S3 POST form or PUT)
+  if (presign?.fields && presign?.url) {
+    const form = new FormData();
+    Object.entries(presign.fields).forEach(([k, v]) => form.append(k, String(v)));
+    form.append("file", file);
+
+    const upRes = await xhrUpload({ url: presign.url, method: "POST", body: form, onProgress });
+    if (!upRes.ok) throw new Error(`Upload failed (POST) ${upRes.status}`);
+    return { key: presign.key ?? presign.fields?.key ?? null, contentType: file.type || null };
+  }
+
+  if (presign?.url) {
+    const upRes = await xhrUpload({
+      url: presign.url,
+      method: presign.method || "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+      onProgress,
+    });
+    if (!upRes.ok) throw new Error(`Upload failed (PUT) ${upRes.status}`);
+    return { key: presign.key ?? null, contentType: file.type || null };
+  }
+
+  throw new Error("Unknown presign response");
+}
+
+/** Legacy multipart to your API with progress via XHR */
+async function uploadCompleteMultipartWithProgress(
+  url: string,
+  fd: FormData,
+  headers: Record<string,string>,
+  onProgress?: (sent:number,total:number)=>void
+) {
+  const res = await xhrUpload({ url, method: "POST", headers, body: fd, onProgress });
+  const text = await res.text();
+  let json: any = {};
+  try { json = JSON.parse(text); } catch {/* non-json */}
+  if (!res.ok) throw new Error(extractMessage(json, `Upload failed (${res.status})`));
+  return json;
 }
 
 function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?: string; className?: string }) {
@@ -1810,6 +1938,9 @@ export default function DashboardPage() {
   const [completeFileNames, setCompleteFileNames] = useState<string[]>([]);
   const [completePreviewUrl, setCompletePreviewUrl] = useState<string | null>(null);
 const [completePreviewFile, setCompletePreviewFile] = useState<File | null>(null);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<null | "presigning" | "uploading" | "finalizing">(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
 useEffect(() => {
   return () => {
@@ -1824,6 +1955,9 @@ useEffect(() => {
   setActiveCompleteRequest(null);
   setCompleteDesc("");
   setCompleteFileNames([]);
+  setUploadPct(null);
+  setUploadPhase(null);
+  setUploadError(null);
   if (completeFilesRef.current) completeFilesRef.current.value = "";
 
   // also clear/revoke the preview
@@ -1832,33 +1966,80 @@ useEffect(() => {
   setCompletePreviewFile(null);
 }
 
-  async function submitComplete() {
-    if (!activeCompleteRequest) return;
-    setCompleting(true);
-    try {
-      const fd = new FormData();
-      fd.append("description", completeDesc || "");
-      const files = completeFilesRef.current?.files;
-      if (files && files.length > 0) {
-        for (let i = 0; i < files.length; i++) fd.append("media", files[i]);
-      }
-      const res = await fetch(
-        `${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`,
-        { method: "POST", credentials: "include", headers: buildAuthHeaders(), body: fd }
-      );
-      const payload: any = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`));
+    async function submitComplete() {
+      if (!activeCompleteRequest) return;
+      setCompleting(true);
+      setUploadError(null);
+      setUploadPct(null);
 
-      setPendingRequests((prev) => prev.filter((r) => String(r.id) !== String(activeCompleteRequest.id)));
-      closeComplete();
-      showToast("Request marked complete");
-    } catch (err) {
-      console.error("complete request error", err);
-      showToast(err instanceof Error ? err.message : "Could not complete request");
-    } finally {
-      setCompleting(false);
+      try {
+        const files = completeFilesRef.current?.files;
+        const firstFile = files && files.length > 0 ? files[0] : null;
+
+        if (firstFile) {
+          // Try presigned path with progress
+          try {
+            setUploadPhase("presigning");
+            const onProgress = (sent: number, total: number) => {
+              setUploadPhase("uploading");
+              if (total > 0) setUploadPct(Math.max(0, Math.min(100, Math.round((sent / total) * 100))));
+            };
+            const { key, contentType } = await presignAndUploadToPrivateBucketWithProgress(apiBase, firstFile, onProgress);
+            if (!key) throw new Error("No key returned from presign/upload");
+
+            setUploadPhase("finalizing");
+            const res = await fetch(`${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`, {
+              method: "POST",
+              credentials: "include",
+              headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ message: completeDesc || "", attachment_key: key, content_type: contentType || undefined }),
+            });
+            const payload: any = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(extractMessage(payload, `Failed to complete request ${activeCompleteRequest.id}`));
+
+            setPendingRequests((prev) => prev.filter((r) => String(r.id) !== String(activeCompleteRequest.id)));
+            closeComplete();
+            showToast("Request marked complete");
+            return;
+          } catch (presignErr) {
+            console.warn("Presigned upload failed, falling back to direct upload:", presignErr);
+          }
+        }
+
+        // Legacy fallback (multipart) with progress
+        const fd = new FormData();
+        fd.append("description", completeDesc || "");
+        const filesAll = completeFilesRef.current?.files;
+        if (filesAll && filesAll.length > 0) fd.append("media", filesAll[0]);
+
+        const onProgress = (sent: number, total: number) => {
+          setUploadPhase("uploading");
+          if (total > 0) setUploadPct(Math.max(0, Math.min(100, Math.round((sent / total) * 100))));
+        };
+
+        setUploadPhase(firstFile ? "uploading" : "finalizing");
+        const payload: any = await uploadCompleteMultipartWithProgress(
+          `${apiBase}/api/requests/${encodeURIComponent(activeCompleteRequest.id)}/complete`,
+          fd,
+          buildAuthHeaders() as Record<string,string>,
+          onProgress,
+        );
+
+        if (!payload || payload.error) throw new Error(extractMessage(payload, "Could not complete request"));
+
+        setPendingRequests((prev) => prev.filter((r) => String(r.id) !== String(activeCompleteRequest.id)));
+        closeComplete();
+        showToast("Request marked complete");
+      } catch (err) {
+        console.error("complete request error", err);
+        setUploadError(err instanceof Error ? err.message : "Could not complete request");
+        showToast(err instanceof Error ? err.message : "Could not complete request");
+      } finally {
+        setCompleting(false);
+        setUploadPhase(null);
+        setUploadPct(null);
+      }
     }
-  }
 
   // Load profile + products
   useEffect(() => {
@@ -3003,33 +3184,32 @@ useEffect(() => {
   </label>
 
   {/* Hidden native input */}
-<input
-  id="complete-files"
-  ref={completeFilesRef}
-  type="file"
-   accept={[+  "image/*",
-      "video/*",
-      "audio/*",
-      ".mp3,.wav,.m4a,.aac,.ogg,.webm",
-      "application/pdf,.pdf",
-      // Excel (both legacy and OOXML)
-    "application/vnd.ms-excel,.xls",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx",
-      // CSV
-      "text/csv,.csv"
-    ].join(",")}
-  multiple
-  className="hidden"
-  onChange={(e) => {
-    const files = Array.from(e.target.files ?? []);
-    setCompleteFileNames(files.map((f) => f.name));
+    <input
+      id="complete-files"
+      ref={completeFilesRef}
+      type="file"
+      accept={[
+        "image/*",
+        "video/*",
+        "audio/*",
+        ".mp3,.wav,.m4a,.aac,.ogg,.webm",
+        "application/pdf,.pdf",
+        "application/vnd.ms-excel,.xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx",
+        "text/csv,.csv",
+      ].join(",")}
+      multiple={false}
+      className="hidden"
+      onChange={(e) => {
+        const files = Array.from(e.target.files ?? []);
+        setCompleteFileNames(files.map((f) => f.name));
 
-    if (completePreviewUrl?.startsWith("blob:")) URL.revokeObjectURL(completePreviewUrl);
-    const first = files[0] || null;
-    setCompletePreviewFile(first);
-    setCompletePreviewUrl(first ? URL.createObjectURL(first) : null);
-  }}
-/>
+        if (completePreviewUrl?.startsWith("blob:")) URL.revokeObjectURL(completePreviewUrl);
+        const first = files[0] || null;
+        setCompletePreviewFile(first);
+        setCompletePreviewUrl(first ? URL.createObjectURL(first) : null);
+      }}
+    />
 {completePreviewUrl && (
   <div className="mt-3">
     <LocalAttachmentPreview file={completePreviewFile} url={completePreviewUrl} />
@@ -3062,19 +3242,60 @@ useEffect(() => {
     You can attach images or a short video.
   </p>
 </div>
+    {/* ✅ PROGRESS GOES HERE */}
+    {(uploadPhase || uploadPct !== null || uploadError) && (
+      <div className="mt-3 space-y-2">
+        {uploadPhase && (
+          <div className="text-xs text-neutral-600">
+            {uploadPhase === "presigning" && "Preparing upload…"}
+            {uploadPhase === "uploading" && "Uploading…"}
+            {uploadPhase === "finalizing" && "Finalizing…"}
+          </div>
+        )}
 
-              <div className="flex items-center justify-end gap-2">
-                <button onClick={closeComplete} className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95" disabled={completing}>Cancel</button>
-                <button
-                  onClick={submitComplete}
-                  className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-black ${
-                    completing ? "bg-neutral-300" : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
-                  }`}
-                  disabled={completing || !completeDesc.trim()}
-                >
-                  {completing ? "Submitting…" : "Submit & Mark Complete"}
-                </button>
-              </div>
+        {uploadPct !== null && (
+          <div className="w-full h-2 rounded bg-neutral-200 overflow-hidden">
+            <div
+              className="h-2 bg-emerald-400 transition-all"
+              style={{ width: `${uploadPct}%` }}
+            />
+          </div>
+        )}
+
+        {uploadError && (
+          <div className="text-xs text-red-600">{uploadError}</div>
+        )}
+      </div>
+    )}
+    {/* ✅ END PROGRESS */}
+
+    <div className="flex items-center justify-end gap-2">
+      <button
+        onClick={closeComplete}
+        className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+        disabled={completing}
+      >
+        Cancel
+      </button>
+
+      <button
+        onClick={submitComplete}
+        className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-black ${
+          completing
+            ? "bg-neutral-300"
+            : "bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+        }`}
+        disabled={completing || !completeDesc.trim()}
+      >
+        {completing
+          ? uploadPct !== null
+            ? `Uploading ${uploadPct}%…`
+            : uploadPhase === "finalizing"
+              ? "Finalizing…"
+              : "Submitting…"
+          : "Submit & Mark Complete"}
+      </button>
+    </div>
             </div>
           </div>
           </div>

@@ -12,6 +12,13 @@ function newPostKey(originalName) {
   return `posts/${id}${ext}`;
 }
 
+function newRequestKey(originalName) {
+  const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString("hex");
+  const ext = path.extname(originalName || "");
+  return `requests/${id}${ext}`;
+}
+
+
 /**
  * POST /api/uploads/presign-post
  * Body: { filename: string, contentType: string }
@@ -44,6 +51,26 @@ router.post("/presign-product", requireAuth, requireCreator, async (req, res) =>
   } catch (e) {
     console.error("presign-product error:", e);
     res.status(500).json({ error: "Could not presign product upload" });
+  }
+});
+
+/**
+ * POST /api/uploads/presign-request
+ * Body: { filename: string, contentType: string }
+ * Returns: { key, url, contentType }
+ */
+router.post("/presign-request", requireAuth, async (req, res) => {
+  const { filename, contentType } = req.body || {};
+  if (!filename || !contentType) {
+    return res.status(400).json({ error: "filename and contentType required" });
+  }
+  try {
+    const key = newRequestKey(filename);
+    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
+    res.json({ key, url, contentType });
+  } catch (e) {
+    console.error("presign-request error:", e);
+    res.status(500).json({ error: "Could not presign request upload" });
   }
 });
 

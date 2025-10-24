@@ -145,7 +145,7 @@ function PostMedia({
     
     (async () => {
       try {
-        const res = await fetch(url, { credentials: "include", cache: "no-store" });
+        const res = await fetch(url, { cache: "no-store", mode: "cors" });
         if (!res.ok) {
           console.warn('[PostMedia] Poster fetch failed:', res.status, res.statusText);
           setPosterLoading(false);
@@ -675,8 +675,8 @@ function PostMedia({
               ref={videoRef}
               src={src}
               playsInline
-              preload="metadata"
-              crossOrigin="use-credentials"
+              preload={src?.startsWith("blob:") ? "auto" : "metadata"}
+              crossOrigin={src?.startsWith("blob:") ? undefined : "anonymous"}
               poster={effectivePoster || poster}
               onLoadedMetadata={() => {
                 const v = videoRef.current;
@@ -1220,6 +1220,13 @@ export default function MembershipFeedPage() {
       const updated = await updateRes.json(); // { post }
       setPosts((prev) => prev.map((p) => (p.id === editingPost.id ? updated.post : p)));
 
+        const next = draftFile && draftMediaPreview
+          ? { ...updated.post, media_path: draftMediaPreview, media_poster: null }
+          : updated.post;
+
+        setPosts(prev => prev.map(p => (p.id === editingPost.id ? next : p)));
+        if (draftFile) setTimeout(() => { load(); }, 2000)
+                
       setUploading(false);
       setUploadPct(0);
       uploadAbortRef.current = null;
@@ -1277,6 +1284,14 @@ export default function MembershipFeedPage() {
 
       const { post } = await createRes.json();
       if (post) setPosts((prev) => [post, ...prev]);
+
+      const optimistic = draftMediaPreview
+        ? { ...post, media_path: draftMediaPreview, media_poster: null }
+        : post;
+
+      setPosts(prev => [optimistic, ...prev]);
+      // silent refresh to pick up CloudFront URL + poster
+      setTimeout(() => { load(); }, 2000);
 
       // reset UI
       setUploading(false);

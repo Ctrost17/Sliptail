@@ -9,6 +9,7 @@ const { notifyPostToMembers } = require("../utils/notify");
 const mime = require("mime-types");
 const { makeAndStorePoster } = require("../utils/videoPoster");
 const os = require("os");
+const { ensureFastStart } = require("../utils/faststart");
 
 // Generic storage layer (local or S3)
 const storage = require("../storage");
@@ -97,6 +98,10 @@ function normalizeKeyOrUrl(v) {
   return String(v);
 }
 
+function isPostsKey(raw) {
+  return typeof raw === "string" && raw.replace(/^\/+/, "").startsWith("posts/");
+}
+
 async function addSignedUrl(post) {
   if (!post) return post;
   const out = { ...post };
@@ -104,13 +109,25 @@ async function addSignedUrl(post) {
   async function sign(field) {
     const raw = normalizeKeyOrUrl(post[field]);
     if (!raw) return null;
-    if (/^https?:\/\//i.test(raw)) return raw; // don’t re-sign full URLs
+
+    // Already a full URL? Don't re-sign.
+    if (/^https?:\/\//i.test(raw)) return raw;
+
+    let url;
     try {
-      return await storage.getPrivateUrl(raw, { expiresIn: 3600 });
+      // storage.getPrivateUrl will CloudFront-sign posts/* and S3-presign everything else
+      url = await storage.getPrivateUrl(raw, { expiresIn: 3600 });
     } catch (e) {
       console.warn(`sign ${field} failed:`, e?.message || e);
       return null;
     }
+
+    // Add a tiny cache-buster ONLY for posts/* (CloudFront). Do NOT touch S3-presigned links.
+    if (isPostsKey(raw)) {
+      const v = Math.floor(new Date(post.updated_at || post.created_at || Date.now()).getTime() / 1000);
+      url += (url.includes("?") ? "&" : "?") + "v=" + v;
+    }
+    return url;
   }
 
   if (post.media_path)   out.media_path   = await sign("media_path");
@@ -199,6 +216,7 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
           /\.(mp4|webm|mov|m4v)$/i.test(String(media_path).split("?")[0]);
 
         if ((req.file && isVideoUpload(req.file)) || (!req.file && isVideoByKey)) {
+          // 1) Poster
           const posterResult = await makeAndStorePoster(media_path, { private: true });
           const posterValue = posterResult?.key || posterResult;
           if (posterValue) {
@@ -207,9 +225,16 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
               [posterValue, postRow.id]
             );
           }
+
+          // 2) Fast-start MP4 (lossless remux)
+          if (/\.mp4$/i.test(String(media_path))) {
+            await ensureFastStart(media_path);
+            // bump updated_at so clients naturally pick up the new edge object
+            await db.query(`UPDATE posts SET updated_at = NOW() WHERE id = $1`, [postRow.id]);
+          }
         }
       } catch (e) {
-        console.warn("poster generation failed:", e?.message || e);
+        console.warn("post-processing failed:", e?.message || e);
       }
 
       try {
@@ -225,6 +250,7 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
         console.warn("notify failed:", e?.message || e);
       }
     });
+
   } catch (e) {
     console.error("create post error:", e);
     if (!res.headersSent) res.status(500).json({ error: "Could not create post" });
@@ -365,6 +391,20 @@ router.put("/:id", requireAuth, requireCreator, upload.single("media"), async (r
       );
       finalRow = upd2[0];
     }
+  
+      // If a new file was uploaded and it's an MP4, do fast-start and bump updated_at
+      if (req.file && /\.mp4$/i.test(String(media_path))) {
+        try {
+          await ensureFastStart(media_path);
+          const { rows: upd3 } = await db.query(
+            `UPDATE posts SET updated_at = NOW() WHERE id = $1 RETURNING *`,
+            [postId]
+          );
+          if (upd3?.[0]) finalRow = upd3[0];
+        } catch (e) {
+          console.warn("fast-start (update) failed:", e?.message || e);
+        }
+      }
 
     const postWithUrl = await addSignedUrl(finalRow);
     return res.json({ post: postWithUrl });

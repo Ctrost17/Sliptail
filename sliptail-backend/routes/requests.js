@@ -164,17 +164,28 @@ router.post(
       return res.status(400).json({ error: "You cannot request your own product" });
     }
 
-    // attachment path if provided (store only basename)
+    // Prefer presigned flow: client already PUT to S3 and sends us the key
     let attachment_path = null;
-    if (req.file) {
+    const presignedKey = (req.body.attachment_key || "").trim();
+
+    if (presignedKey) {
+      attachment_path = presignedKey;
+      // best-effort poster (skip for audio)
+      const ct = String(req.body.attachment_content_type || "").toLowerCase();
+      const isAudio = ct.startsWith("audio/");
+      if (!isAudio) {
+        try { await makeAndStorePoster(attachment_path, { private: true }); }
+        catch (e) { console.warn("buyer attachment poster (create presigned) failed:", e?.message || e); }
+      }
+    } else if (req.file) {
+      // fallback: old multipart path
       const key = newKey("requests", req.file.originalname);
-        const uploaded = await storage.uploadPrivate({
-          key,
-          contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
-        });
-        // cleanup tmp if we wrote to disk
-        if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
+      const uploaded = await storage.uploadPrivate({
+        key,
+        contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.path || req.file.buffer,
+      });
+      if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
       attachment_path = uploaded.key;
       const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
       if (!isAudio) {
@@ -267,12 +278,22 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
     if (row.product_type !== "request") return res.status(400).json({ ok: false, error: "Not a request order" });
 
       let attachment_path = null;
-      if (req.file) {
+
+      const presignedKey = (req.body.attachment_key || "").trim();
+      if (presignedKey) {
+        attachment_path = presignedKey;
+        const ct = String(req.body.attachment_content_type || "").toLowerCase();
+        const isAudio = ct.startsWith("audio/");
+        if (!isAudio) {
+          try { await makeAndStorePoster(attachment_path, { private: true }); }
+          catch (e) { console.warn("buyer attachment poster (legacy presigned) failed:", e?.message || e); }
+        }
+      } else if (req.file) {
         const key = newKey("requests", req.file.originalname);
         const uploaded = await storage.uploadPrivate({
           key,
           contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
+          body: req.file.path || req.file.buffer,
         });
         if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
         attachment_path = uploaded.key;
@@ -458,6 +479,40 @@ router.post(
   async (req, res) => {
     const creatorId = req.user.id;
     const requestId = parseInt(req.params.id, 10);
+    // Fast path: presigned delivery from client (no server relay)
+const creatorKey = (req.body.creator_attachment_key || "").trim();
+if (creatorKey) {
+  try {
+    if (!String(req.body.content_type || "").toLowerCase().startsWith("audio/")) {
+      try { await makeAndStorePoster(creatorKey, { private: true }); }
+      catch (e) { console.warn("request deliver: poster (presigned) failed:", e?.message || e); }
+    }
+
+    await db.query("BEGIN");
+    const { rows: updated } = await db.query(
+      `UPDATE custom_requests
+          SET creator_attachment_path = $1,
+              status = 'complete'
+        WHERE id = $2
+        RETURNING *`,
+      [creatorKey, requestId]
+    );
+    await db.query(`UPDATE orders SET status = 'complete' WHERE id = $1`, [r.order_id]);
+    await db.query("COMMIT");
+
+    res.json({ success: true, request: normalizeStatus(updated[0]) });
+
+    if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
+      notify(Number(r.buyer_id), "request_ready", "Your request is ready! 🎉", "Check it out on your My Purchases page!", { request_id: requestId }).catch(console.error);
+      notifyRequestDelivered({ requestId }).catch(console.error);
+    }
+    return; // done
+  } catch (err) {
+    try { await db.query("ROLLBACK"); } catch {}
+    console.error("Deliver (presigned) error:", err);
+    return res.status(500).json({ error: "Failed to deliver file" });
+  }
+}
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -595,13 +650,27 @@ router.post(
       if (r.status === "complete") return res.status(400).json({ error: "Request already complete" });
       if (r.status === "declined") return res.status(400).json({ error: "Declined request cannot be completed" });
 
-      // For safety require order to be paid
-      if (r.order_status !== "paid") {
-        return res.status(400).json({ error: "Order is not paid yet" });
-      }
+          // For safety require order to be paid
+          if (r.order_status !== "paid") {
+            return res.status(400).json({ error: "Order is not paid yet" });
+          }
 
-        let newAttachment = null;
-        if (req.file) {
+          // --- Presigned replace/attach on complete (no server relay) ---
+          const presignedKey = (req.body.attachment_key || "").trim();
+          let newAttachment = null;
+
+          if (presignedKey) {
+            newAttachment = presignedKey;
+            const ct = String(req.body.content_type || "").toLowerCase();
+            const isAudio = ct.startsWith("audio/");
+            if (!isAudio) {
+              try { await makeAndStorePoster(newAttachment, { private: true }); }
+              catch (e) { console.warn("request complete: poster (presigned) failed:", e?.message || e); }
+            }
+          }
+          // --- end presigned block ---
+
+          if (!newAttachment && req.file) {
           const mime = req.file?.mimetype || "";
           const isAudio = mime.startsWith("audio/");
 
@@ -1079,23 +1148,32 @@ router.post(
       if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
       if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
 
-      let attachment_path = null;
-      if (req.file) {
-        const key = newKey("requests", req.file.originalname);
-        const uploaded = await storage.uploadPrivate({
-          key,
-          contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.path || req.file.buffer, // prefer PATH -> streams/multipart
-        });
-        // cleanup tmp if we wrote to disk
-        if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
-        attachment_path = uploaded.key;
-        const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
-        if (!isAudio) {
-          try { await makeAndStorePoster(attachment_path, { private: true }); }
-          catch (e) { console.warn("buyer attachment poster (from-session) failed:", e?.message || e); }
+        let attachment_path = null;
+        const presignedKey = (req.body.attachment_key || "").trim();
+
+        if (presignedKey) {
+          attachment_path = presignedKey;
+          const ct = String(req.body.attachment_content_type || "").toLowerCase();
+          const isAudio = ct.startsWith("audio/");
+          if (!isAudio) {
+            try { await makeAndStorePoster(attachment_path, { private: true }); }
+            catch (e) { console.warn("buyer attachment poster (from-session presigned) failed:", e?.message || e); }
+          }
+        } else if (req.file) {
+          const key = newKey("requests", req.file.originalname);
+          const uploaded = await storage.uploadPrivate({
+            key,
+            contentType: req.file.mimetype || "application/octet-stream",
+            body: req.file.path || req.file.buffer,
+          });
+          if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
+          attachment_path = uploaded.key;
+          const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
+          if (!isAudio) {
+            try { await makeAndStorePoster(attachment_path, { private: true }); }
+            catch (e) { console.warn("buyer attachment poster (from-session) failed:", e?.message || e); }
+          }
         }
-      }
 
       // Upsert custom_request for (order_id, buyer_id)
       const existing = await db.query(

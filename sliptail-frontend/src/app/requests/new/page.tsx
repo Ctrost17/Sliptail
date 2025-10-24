@@ -114,6 +114,9 @@ export default function NewRequestPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<"uploading" | "finalizing" | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // cleanup object URL when file changes/unmounts
   useEffect(() => {
@@ -149,11 +152,53 @@ export default function NewRequestPage() {
     }, 150);
   }
 
+  function postFormWithProgress(opts: {
+    url: string;
+    formData: FormData;
+    headers?: Record<string, string>;
+    withCredentials?: boolean;
+    onProgress?: (pct: number) => void;
+  }): Promise<{ ok: boolean; status: number; statusText: string; body: string }> {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", opts.url, true);
+
+      if (opts.withCredentials) xhr.withCredentials = true;
+      if (opts.headers) {
+        for (const [k, v] of Object.entries(opts.headers)) xhr.setRequestHeader(k, v);
+      }
+
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return;
+        const pct = Math.max(0, Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
+        opts.onProgress?.(pct);
+      };
+
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300,
+            status: xhr.status,
+            statusText: xhr.statusText,
+            body: xhr.responseText || "",
+          });
+        }
+      };
+
+      xhr.send(opts.formData);
+    });
+  }
+
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (submittingRef.current) return;
+
     setSubmitting(true);
     submittingRef.current = true;
+    setUploadError(null);
+    setUploadPct(0);
+    setUploadPhase("uploading");
 
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 20000);
@@ -176,15 +221,17 @@ export default function NewRequestPage() {
       const headers: Record<string, string> = { Accept: "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
 
-      let res = await fetch(url, {
-        method: "POST",
-        credentials: "include",
+      // First try main request
+      let res = await postFormWithProgress({
+        url,
+        formData,
         headers,
-        body: formData,
-        signal: ac.signal,
+        withCredentials: true,
+        onProgress: (pct) => setUploadPct(pct),
       });
 
-      if (res.status === 401 || res.status === 403) {
+      // Auth redirect if needed
+      if ((res.status === 401 || res.status === 403)) {
         const params = new URLSearchParams();
         if (orderId) params.set("orderId", String(orderId));
         if (sessionId) params.set("session_id", sessionId);
@@ -193,49 +240,58 @@ export default function NewRequestPage() {
         return;
       }
 
+      // Fallback to orderId flow if session flow failed with 5xx
       if (!res.ok && useSessionFlow && res.status >= 500 && orderId) {
         const fd2 = new FormData();
         fd2.append("orderId", String(orderId));
         fd2.append("details", details || "");
         if (file) fd2.append("attachment", file);
-        res = await fetch(`${API_BASE}/api/requests`, {
-          method: "POST",
-          credentials: "include",
+
+        setUploadPct(0);
+        setUploadPhase("uploading");
+        res = await postFormWithProgress({
+          url: `${API_BASE}/api/requests`,
+          formData: fd2,
           headers,
-          body: fd2,
-          signal: ac.signal,
+          withCredentials: true,
+          onProgress: (pct) => setUploadPct(pct),
         });
       }
 
       if (!res.ok) {
         let msg = `${res.status} ${res.statusText}`;
         try {
-          const text = await res.text();
-          if (text) {
-            try {
-              const j = JSON.parse(text);
-              msg = j?.error || j?.message || text;
-            } catch {
-              msg = text;
-            }
-          }
-        } catch {}
+          const j = JSON.parse(res.body || "{}");
+          msg = j?.error || j?.message || msg;
+        } catch {
+          if (res.body) msg = res.body;
+        }
         throw new Error(msg);
       }
 
+      setUploadPhase("finalizing");
       redirectToPurchases("Your request has been submitted!");
 
     } catch (e: any) {
       if (e?.name === "AbortError") {
         error("Request timed out. Please try again.");
+        setUploadError("Timed out");
       } else {
         const msg = e instanceof Error ? e.message : "Could not submit your request.";
         error(msg);
+        setUploadError(msg);
       }
     } finally {
       clearTimeout(t);
       setSubmitting(false);
       submittingRef.current = false;
+      // leave the bar visible if there's an error; otherwise reset after a short delay
+      if (!uploadError) {
+        setTimeout(() => {
+          setUploadPct(null);
+          setUploadPhase(null);
+        }, 600);
+      }
     }
   }
 
@@ -317,14 +373,42 @@ export default function NewRequestPage() {
           {/* Inline media preview (image / video / audio) */}
           <AttachmentPreview file={file} url={previewUrl} />
         </label>
+        {(uploadPhase || uploadPct !== null || uploadError) && (
+          <div className="mt-2 space-y-2">
+            {uploadPhase && (
+              <div className="text-xs text-neutral-600">
+                {uploadPhase === "uploading" && "Uploading…"}
+                {uploadPhase === "finalizing" && "Finalizing…"}
+              </div>
+            )}
 
+            {uploadPct !== null && (
+              <div className="w-full h-2 rounded bg-neutral-200 overflow-hidden">
+                <div
+                  className="h-2 bg-emerald-400 transition-all"
+                  style={{ width: `${uploadPct}%` }}
+                />
+              </div>
+            )}
+
+            {uploadError && (
+              <div className="text-xs text-red-600">{uploadError}</div>
+            )}
+          </div>
+        )}
         <div className="mt-4 flex gap-3">
           <button
             type="submit"
             disabled={submitting}
             className="cursor-pointer rounded bg-green-600 px-5 py-2 font-semibold text-white disabled:opacity-60"
           >
-            {submitting ? "Submitting…" : "Submit Request"}
+            {submitting
+              ? uploadPhase === "finalizing"
+                ? "Finalizing…"
+                : uploadPct !== null
+                  ? `Uploading ${uploadPct}%…`
+                  : "Submitting…"
+              : "Submit Request"}
           </button>
           <button
             type="button"
