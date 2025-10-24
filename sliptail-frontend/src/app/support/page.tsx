@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Mail, ArrowRight, Users, ExternalLink } from "lucide-react";
 
+const gmailCompose = `https://mail.google.com/mail/?view=cm&to=info@sliptail.com&su=${encodeURIComponent("Sliptail Support Request")}`;
+
 export const metadata: Metadata = {
   title: "Support • Sliptail",
   description:
@@ -43,7 +45,15 @@ export default function SupportPage() {
                     Send email
                     <ArrowRight className="ml-1.5 h-4 w-4" />
                   </a>
-
+                  <a
+                    href={gmailCompose}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-neutral-100 ml-0 sm:ml-3 mt-3 sm:mt-0"
+                  >
+                    Use Gmail
+                    <ExternalLink className="ml-1.5 h-4 w-4" />
+                  </a>
                   <p className="mt-3 sm:mt-0 text-sm">
                     Or click the address:{" "}
                     <a

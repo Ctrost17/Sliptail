@@ -567,6 +567,17 @@ function keyFromPublicUrl(url) {
   }
 }
 
+// --- ADD at bottom with module.exports:
+async function getPresignedPutUrl(key, { contentType = "application/octet-stream", expiresIn = 3600 } = {}) {
+  if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3");
+  const cmd = new PutObjectCommand({
+    Bucket: PRIVATE_BUCKET,
+    Key: String(key).replace(/^\/+/, ""),
+    ContentType: contentType,
+  });
+  return await s3Presign(s3, cmd, { expiresIn });
+}
+
 module.exports = {
   DRIVER,
   isS3,
@@ -580,4 +591,5 @@ module.exports = {
   listPublicPrefix,
   deletePublic,
   keyFromPublicUrl,
+  getPresignedPutUrl,
 };

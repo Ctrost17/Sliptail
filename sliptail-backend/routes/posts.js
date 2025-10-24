@@ -143,48 +143,41 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
     return res.status(400).json({ error: "product_id required" });
   }
 
-  // Handle upload
+  // Handle upload (multipart) or direct path/key
   if (req.file) {
     if (storage.isS3) {
-      // PRIVATE upload — save the KEY in DB
-        const key = newKeyForPost(req.file.originalname);
-        await storage.uploadPrivate({
-          key,
-          contentType: req.file.mimetype || "application/octet-stream",
-          body: req.file.path,   // <-- PATH triggers streaming/multipart
-        });
-        await fs.promises.unlink(req.file.path).catch(() => {}); // cleanup tmp
-        media_path = key;
+      const key = newKeyForPost(req.file.originalname);
+      await storage.uploadPrivate({
+        key,
+        contentType: req.file.mimetype || "application/octet-stream",
+        body: req.file.path,
+      });
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      media_path = key;          // S3 KEY in DB
     } else {
-      // Local: keep on disk and store a public path
-      media_path = buildLocalPublicUrl(req.file.filename);
+      media_path = buildLocalPublicUrl(req.file.filename); // local path
     }
   } else if (req.body.media_path) {
-    // If caller already provided a path/key (advanced use)
-    media_path = req.body.media_path;
+    media_path = req.body.media_path; // presigned flow sends this
   }
 
   try {
-    // Ensure product exists and belongs to this creator
+    // Product ownership checks (unchanged)...
     const { rows: prodRows } = await db.query(
       `SELECT id, user_id AS creator_id, product_type, title, COALESCE(active, TRUE) AS active
-         FROM products
-        WHERE id = $1
-        LIMIT 1`,
+         FROM products WHERE id = $1 LIMIT 1`,
       [productId]
     );
     if (!prodRows.length) return res.status(404).json({ error: "Product not found" });
     if (String(prodRows[0].creator_id) !== String(creatorId)) {
       return res.status(403).json({ error: "Not your product" });
     }
-
     const product = prodRows[0];
-
     if (product.product_type === "membership" && !product.active) {
       return res.status(403).json({ error: "This membership is inactive; cannot add new posts." });
     }
 
-    // Create post (store media_path: disk URL in local mode, S3 KEY in S3 mode)
+    // 1) create post
     const { rows } = await db.query(
       `INSERT INTO posts (product_id, creator_id, title, body, media_path)
        VALUES ($1,$2,$3,$4,$5)
@@ -192,51 +185,52 @@ router.post("/", requireAuth, requireCreator, upload.single("media"), async (req
       [productId, creatorId, title || null, body || null, media_path || null]
     );
 
-    // If a video was uploaded, make a poster now and save it
-    let postRow = rows[0];
-    if (req.file && media_path && isVideoUpload(req.file)) {
-      try {
-        // makeAndStorePoster reads from storage (media_path key) and generates a poster
-        const posterResult = await makeAndStorePoster(media_path, { private: true });
-        
-        // Get the poster key from the result
-        const posterValue =
-          typeof posterResult === "string"
-            ? posterResult
-            : (posterResult && (posterResult.key || posterResult.path)) || null;
+    // 2) reply immediately (fast)
+    const postRow = rows[0];
+    const postWithUrl = await addSignedUrl(postRow);
+    res.status(201).json({ post: postWithUrl });
 
-        if (posterValue) {
-          // Save on the post
-          const { rows: upd } = await db.query(
-            `UPDATE posts SET media_poster = $1 WHERE id = $2 RETURNING *`,
-            [posterValue, postRow.id]
-          );
-          postRow = upd[0];
+    // 3) background work: generate poster (for videos) & notify
+    setImmediate(async () => {
+      try {
+        // decide if it’s a video by simple extension check when we don't have req.file
+        const isVideoByKey =
+          media_path &&
+          /\.(mp4|webm|mov|m4v)$/i.test(String(media_path).split("?")[0]);
+
+        if ((req.file && isVideoUpload(req.file)) || (!req.file && isVideoByKey)) {
+          const posterResult = await makeAndStorePoster(media_path, { private: true });
+          const posterValue = posterResult?.key || posterResult;
+          if (posterValue) {
+            await db.query(
+              `UPDATE posts SET media_poster = $1 WHERE id = $2`,
+              [posterValue, postRow.id]
+            );
+          }
         }
       } catch (e) {
         console.warn("poster generation failed:", e?.message || e);
       }
-    }
 
-    // IMPORTANT: return the updated row (with poster), not rows[0]
-    const postWithUrl = await addSignedUrl(postRow);
-    res.status(201).json({ post: postWithUrl });
-
-
-    // Notify members for membership products
-    if (product.product_type === "membership") {
-      notifyPostToMembers({
-        creatorId,
-        productId,
-        postId: rows[0].id,
-        title: rows[0].title,
-      }).catch(console.error);
-    }
+      try {
+        if (product.product_type === "membership") {
+          await notifyPostToMembers({
+            creatorId,
+            productId,
+            postId: postRow.id,
+            title: postRow.title,
+          });
+        }
+      } catch (e) {
+        console.warn("notify failed:", e?.message || e);
+      }
+    });
   } catch (e) {
     console.error("create post error:", e);
-    res.status(500).json({ error: "Could not create post" });
+    if (!res.headersSent) res.status(500).json({ error: "Could not create post" });
   }
 });
+
 
 /**
  * PUT /api/posts/:id
