@@ -125,7 +125,7 @@ async function addSignedUrl(post) {
     // Add a tiny cache-buster ONLY for posts/* (CloudFront). Do NOT touch S3-presigned links.
     if (isPostsKey(raw)) {
       const v = Math.floor(new Date(post.updated_at || post.created_at || Date.now()).getTime() / 1000);
-      url += (url.includes("?") ? "&" : "?") + "v=" + v;
+      url += (url.includes("?") ? "&" : "?");
     }
     return url;
   }
