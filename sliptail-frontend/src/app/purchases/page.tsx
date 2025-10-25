@@ -12,6 +12,12 @@ import {
   Calendar, CreditCard, Shield, ArrowRight
 } from "lucide-react";
 
+const isPdfCT   = (ct?: string | null) => ct?.toLowerCase() === "application/pdf";
+const isCsvCT   = (ct?: string | null) =>
+  /(^text\/csv$)|(^application\/csv$)/i.test(ct || "");
+const isSheetCT = (ct?: string | null) =>
+  /spreadsheetml|application\/vnd\.ms-excel/i.test(ct || "");
+
 // Toast hook (console fallback)
 function useToast() {
   return {
@@ -1118,83 +1124,95 @@ function AttachmentViewer({
   posterSrc,
   className = "w-full rounded-lg border overflow-hidden bg-black/5",
 }: { src: string; posterSrc?: string; className?: string }) {
-  const [kind, setKind] = useState<"image" | "video" | "audio" | "other" | null>(guessFromExtension(src));
+  const [kind, setKind] = useState<"image"|"video"|"audio"|"other" | null>(guessFromExtension(src));
   const [errored, setErrored] = useState(false);
+  const [contentType, setContentType] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-   let aborted = false;
-   setErrored(false);
+    let aborted = false;
+    setErrored(false);
 
-   if (!kind) {
-     (async () => {
-       try {
-         // src looks like: /api/requests/:id/delivery
-         const m = /\/api\/requests\/(\d+)\/delivery\b/.exec(src);
-         if (m) {
-           const id = m[1];
-          const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
-           const res = await fetch(`${apiBase}/api/requests/${id}/delivery/meta`, {
-             credentials: "include"
-           });
-           if (aborted) return;
-           if (res.ok) {
-             const { contentType } = await res.json();
-             setKind(typeFromContentType(contentType));
-             return;
-           }
-         }
-         // Fallback: if we can’t get meta, treat as "other"
-         setKind("other");
-       } catch {
-        if (!aborted) setKind("other");
-       }
-     })();
-   } else {
-     setKind(kind);
-   }
+    (async () => {
+      // Try to resolve the true content-type from /delivery/meta
+      const m = /\/api\/requests\/(\d+)\/delivery\b/.exec(src);
+      if (m) {
+        const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
+        try {
+          const res = await fetch(`${apiBase}/api/requests/${m[1]}/delivery/meta`, { credentials: "include" });
+          if (!aborted && res.ok) {
+            const { contentType: ct } = await res.json();
+            setContentType(ct || undefined);
+            setKind(typeFromContentType(ct) ?? "other");
+            return;
+          }
+        } catch { /* ignore, fall through */ }
+      }
+      // Fallback: keep existing guess (may be null)
+      if (!aborted && !kind) setKind("other");
+    })();
 
     return () => { aborted = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src]);
 
   if (errored) {
-    return (
-      <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">
-        Open attachment
-      </a>
-    );
+    // last-ditch: give them a link
+    return <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Open attachment</a>;
   }
 
   if (kind === "image") {
-    return (
-      <img
-        src={src}
-        alt="attachment"
-        className={`${className} object-contain`}
-        onError={() => setErrored(true)}
-      />
-    );
+    return <img src={src} alt="attachment" className={`${className} object-contain`} onError={() => setErrored(true)} />;
   }
 
   if (kind === "video") {
+    // only pass posterSrc for videos
     return <VideoWithPoster src={src} posterSrc={posterSrc} className={className} />;
   }
 
   if (kind === "audio") {
+    return <audio src={src} controls preload="metadata" className={`${className} block`} onError={() => setErrored(true)} />;
+  }
+
+  // ---------- OTHER (PDF/CSV/XLSX/etc.) ----------
+  // Prefer inline PDF preview; otherwise show a clean download/open UI.
+  if (isPdfCT(contentType ?? undefined)) {
     return (
-      <audio
-        src={src}
-        controls
-        preload="metadata"
-        className={`${className} block`}
-        onError={() => setErrored(true)}
-      />
+      <div className={className}>
+        <iframe
+          src={src} // 302 → signed CF URL with application/pdf; renders inline
+          title="PDF"
+          className="w-full h-[70vh] bg-white"
+        />
+      </div>
     );
   }
 
-  // Unknown? Try video first (your deliveries are usually video), fall back on error.
+  // For CSV/XLS/XLSX just provide an open/download action (embedding spreadsheets is messy)
+  if (isCsvCT(contentType ?? undefined) || isSheetCT(contentType ?? undefined)) {
+    return (
+      <div className={`${className} p-4 flex items-center justify-between bg-white`}>
+        <div className="text-sm text-gray-700">
+          {contentType?.includes("spreadsheet") ? "Spreadsheet" : "Data file"} ready.
+        </div>
+        <a
+          href={src}
+          className="inline-flex items-center px-3 py-2 rounded-md bg-emerald-600 text-white text-sm"
+          rel="noopener"
+        >
+          Download
+        </a>
+      </div>
+    );
+  }
+
+  // Unknown generic file
   return (
-    <VideoWithPoster src={src} posterSrc={posterSrc} className={className} />
+    <div className={`${className} p-4 flex items-center justify-between bg-white`}>
+      <div className="text-sm text-gray-700">File ready.</div>
+      <a href={src} className="inline-flex items-center px-3 py-2 rounded-md bg-emerald-600 text-white text-sm" rel="noopener">
+        Download
+      </a>
+    </div>
   );
 }
 
