@@ -97,6 +97,14 @@ function posterKeyFor(videoKey) {
   return String(videoKey || "").replace(/\.[^./\\]+$/, "") + ".jpg";
 }
 
+function looksVideoContentType(ct) {
+  return typeof ct === "string" && ct.toLowerCase().startsWith("video/");
+}
+function looksVideoKey(key) {
+  const ext = String(key || "").toLowerCase().split(".").pop() || "";
+  return ["mp4", "mov", "m4v", "webm", "avi", "mkv"].includes(ext);
+}
+
 /* --------------------------- Helper functions --------------------------- */
 
 // Ensure a product is a 'request' product that belongs to creator_id
@@ -171,12 +179,11 @@ router.post(
 
     if (presignedKey) {
       attachment_path = presignedKey;
-      // best-effort poster (skip for audio)
+      // best-effort poster (video only)
       const ct = String(req.body.attachment_content_type || "").toLowerCase();
-      const isAudio = ct.startsWith("audio/");
-      if (!isAudio) {
+      if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
         try { await makeAndStorePoster(attachment_path, { private: true }); }
-        catch (e) { console.warn("buyer attachment poster (create presigned) failed:", e?.message || e); }
+        catch (e) { console.warn("buyer attachment poster (create presigned) skipped:", e?.message || e); }
       }
     } else if (req.file) {
       // fallback: old multipart path
@@ -188,11 +195,11 @@ router.post(
       });
       if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
       attachment_path = uploaded.key;
-      const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
-      if (!isAudio) {
-        try { await makeAndStorePoster(attachment_path, { private: true }); }
-        catch (e) { console.warn("buyer attachment poster (create) failed:", e?.message || e); }
-      }
+        const ct = String(req.file.mimetype || "").toLowerCase();
+        if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
+          try { await makeAndStorePoster(attachment_path, { private: true }); }
+          catch (e) { console.warn("buyer attachment poster (create) skipped:", e?.message || e); }
+        }
     }
     try {
       // 1) validate that product_id is a request product of this creator
@@ -284,10 +291,9 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
       if (presignedKey) {
         attachment_path = presignedKey;
         const ct = String(req.body.attachment_content_type || "").toLowerCase();
-        const isAudio = ct.startsWith("audio/");
-        if (!isAudio) {
+        if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
           try { await makeAndStorePoster(attachment_path, { private: true }); }
-          catch (e) { console.warn("buyer attachment poster (legacy presigned) failed:", e?.message || e); }
+          catch (e) { console.warn("buyer attachment poster (legacy presigned) skipped:", e?.message || e); }
         }
       } else if (req.file) {
         const key = newKey("requests", req.file.originalname);
@@ -298,10 +304,10 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
         });
         if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
         attachment_path = uploaded.key;
-        const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
-        if (!isAudio) {
+        const ct = String(req.file.mimetype || "").toLowerCase();
+        if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
           try { await makeAndStorePoster(attachment_path, { private: true }); }
-          catch (e) { console.warn("buyer attachment poster (legacy) failed:", e?.message || e); }
+          catch (e) { console.warn("buyer attachment poster (legacy) skipped:", e?.message || e); }
         }
       }
 
@@ -491,10 +497,11 @@ router.post("/:id/deliver", requireAuth, requireCreator, standardLimiter, upload
   const creatorKey = (req.body.creator_attachment_key || "").trim();
   if (creatorKey) {
     try {
-      if (!String(req.body.content_type || "").toLowerCase().startsWith("audio/")) {
-        try { await makeAndStorePoster(creatorKey, { private: true }); } catch (e) { console.warn("poster (presigned) failed:", e?.message || e); }
-      }
-
+        const ct = String(req.body.content_type || "").toLowerCase();
+        if (looksVideoContentType(ct) || (!ct && looksVideoKey(creatorKey))) {
+          try { await makeAndStorePoster(creatorKey, { private: true }); }
+          catch (e) { console.warn("poster (presigned) skipped:", e?.message || e); }
+        }
       await db.query("BEGIN");
       const { rows: updated } = await db.query(
         `UPDATE custom_requests
@@ -576,13 +583,10 @@ router.post("/:id/deliver", requireAuth, requireCreator, standardLimiter, upload
       });
       if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
       }
-      if (!isAudio) {
-        try {
-          await makeAndStorePoster(key, { private: true });
-        } catch (e) {
-          console.warn("request deliver: poster generation failed:", e?.message || e);
-        }
-      }      
+        if (looksVideoContentType(mime) || (!mime && looksVideoKey(key))) {
+          try { await makeAndStorePoster(key, { private: true }); }
+          catch (e) { console.warn("request deliver: poster skipped:", e?.message || e); }
+        }     
 
       // ⬇️ Persist delivery and mark COMPLETE (single terminal state)
       await db.query("BEGIN");
@@ -669,11 +673,10 @@ router.post(
           if (presignedKey) {
             newAttachment = presignedKey;
             const ct = String(req.body.content_type || "").toLowerCase();
-            const isAudio = ct.startsWith("audio/");
-            if (!isAudio) {
+            if (looksVideoContentType(ct) || (!ct && looksVideoKey(newAttachment))) {
               try { await makeAndStorePoster(newAttachment, { private: true }); }
-              catch (e) { console.warn("request complete: poster (presigned) failed:", e?.message || e); }
-            }
+              catch (e) { console.warn("request complete: poster (presigned) skipped:", e?.message || e); }
+            }   
           }
           // --- end presigned block ---
 
@@ -714,13 +717,10 @@ router.post(
             });
             if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
             newAttachment = key;
-              if (!isAudio && newAttachment) {
-                try {
-                  await makeAndStorePoster(newAttachment, { private: true });
-                } catch (e) {
-                  console.warn("request complete: poster generation failed:", e?.message || e);
-                }
-              }
+            if (looksVideoContentType(mime) || (!mime && looksVideoKey(newAttachment))) {
+              try { await makeAndStorePoster(newAttachment, { private: true }); }
+              catch (e) { console.warn("request complete: poster skipped:", e?.message || e); }
+            }
           }
         }
 
@@ -947,6 +947,39 @@ router.get("/:id/attachment/poster", requireAuth, requireCreator, async (req, re
   }
 });
 
+// BUYER: inline stream of creator’s delivery (only when complete)
+router.get("/:id/delivery", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const buyerId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT buyer_id, status, creator_attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(buyerId))
+      return res.status(403).json({ error: "Not your request" });
+
+    const s = String(r.status || "").toLowerCase();
+    if (s !== "complete")
+      return res.status(403).json({ error: "Not ready yet" });
+
+    const key = (r.creator_attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No delivery file" });
+
+    // Redirect to short-lived private URL (S3/CF)
+    const url = await storage.getPrivateUrl(key, { expiresIn: 300 });
+    return res.redirect(302, url);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Delivery view failed" });
+  }
+});
+
 // BUYER: inline stream of creator’s delivery (status must be delivered|complete)
 router.get("/:id/delivery/poster", requireAuth, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
@@ -1028,10 +1061,9 @@ router.post(
         if (presignedKey) {
           attachment_path = presignedKey;
           const ct = String(req.body.attachment_content_type || "").toLowerCase();
-          const isAudio = ct.startsWith("audio/");
-          if (!isAudio) {
+          if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
             try { await makeAndStorePoster(attachment_path, { private: true }); }
-            catch (e) { console.warn("buyer attachment poster (from-session presigned) failed:", e?.message || e); }
+            catch (e) { console.warn("buyer attachment poster (from-session presigned) skipped:", e?.message || e); }
           }
         } else if (req.file) {
           const key = newKey("requests", req.file.originalname);
@@ -1042,10 +1074,10 @@ router.post(
           });
           if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
           attachment_path = uploaded.key;
-          const isAudio = String(req.file.mimetype || "").toLowerCase().startsWith("audio/");
-          if (!isAudio) {
+          const ct = String(req.file.mimetype || "").toLowerCase();
+          if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
             try { await makeAndStorePoster(attachment_path, { private: true }); }
-            catch (e) { console.warn("buyer attachment poster (from-session) failed:", e?.message || e); }
+            catch (e) { console.warn("buyer attachment poster (from-session) skipped:", e?.message || e); }
           }
         }
 
