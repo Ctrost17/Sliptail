@@ -13,6 +13,7 @@ const { needsTranscode, transcodeToMp4 } = require("../utils/video");
 const storage = require("../storage");
 const { makeAndStorePoster } = require("../utils/videoPoster");
 const os = require("os");
+const mime = require("mime-types");
 
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
@@ -977,6 +978,39 @@ router.get("/:id/delivery", requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Delivery view failed" });
+  }
+});
+
+// BUYER: get delivery metadata (content-type) without following redirects
+router.get("/:id/delivery/meta", requireAuth, async (req, res) => {
+  const requestId = parseInt(req.params.id, 10);
+  const buyerId = req.user.id;
+
+  try {
+    const { rows } = await db.query(
+      `SELECT buyer_id, status, creator_attachment_path
+         FROM custom_requests
+        WHERE id = $1`,
+      [requestId]
+    );
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: "Request not found" });
+    if (Number(r.buyer_id) !== Number(buyerId)) {
+      return res.status(403).json({ error: "Not your request" });
+    }
+
+    const s = String(r.status || "").toLowerCase();
+    if (s !== "complete") return res.status(403).json({ error: "Not ready yet" });
+
+    const key = (r.creator_attachment_path || "").trim();
+    if (!key) return res.status(404).json({ error: "No delivery file" });
+
+    // Infer from filename (good enough since you keep the original extension)
+    const contentType = mime.lookup(key) || "application/octet-stream";
+    res.json({ contentType });
+  } catch (e) {
+    console.error("delivery/meta error:", e);
+    res.status(500).json({ error: "Failed to load meta" });
   }
 });
 

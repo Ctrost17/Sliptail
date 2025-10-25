@@ -1,3 +1,4 @@
+// app/purchases/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState,useCallback, useRef } from "react";
@@ -1121,23 +1122,36 @@ function AttachmentViewer({
   const [errored, setErrored] = useState(false);
 
   useEffect(() => {
-    let aborted = false;
-    setErrored(false);
+   let aborted = false;
+   setErrored(false);
 
-    // If extension didn’t tell us, do a quick HEAD to read Content-Type
-    if (!kind) {
-      (async () => {
-        try {
-          const res = await fetch(src, { method: "HEAD", credentials: "include", redirect: "manual" });
-          const ct = res.headers.get("content-type");
-          if (!aborted) setKind(typeFromContentType(ct));
-        } catch {
-          if (!aborted) setKind("other");
-        }
-      })();
-    } else {
-      setKind(kind);
-    }
+   if (!kind) {
+     (async () => {
+       try {
+         // src looks like: /api/requests/:id/delivery
+         const m = /\/api\/requests\/(\d+)\/delivery\b/.exec(src);
+         if (m) {
+           const id = m[1];
+          const apiBase = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000").replace(/\/$/, "");
+           const res = await fetch(`${apiBase}/api/requests/${id}/delivery/meta`, {
+             credentials: "include"
+           });
+           if (aborted) return;
+           if (res.ok) {
+             const { contentType } = await res.json();
+             setKind(typeFromContentType(contentType));
+             return;
+           }
+         }
+         // Fallback: if we can’t get meta, treat as "other"
+         setKind("other");
+       } catch {
+        if (!aborted) setKind("other");
+       }
+     })();
+   } else {
+     setKind(kind);
+   }
 
     return () => { aborted = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
