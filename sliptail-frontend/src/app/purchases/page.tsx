@@ -114,50 +114,12 @@ function VideoWithPoster({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hasPosterProp = Boolean(posterSrc?.trim());
   
-  // Resolve poster via fetch (handles protected endpoints with credentials)
-  useEffect(() => {
-    let revoke: string | null = null;
-    setResolvedPoster(null);
-    const url = posterSrc?.trim();
-    if (!url) {
-      console.log('[VideoWithPoster] No poster URL provided from backend for:', src);
-      return;
-    }
-    
-    setPosterLoading(true);
-    console.log('[VideoWithPoster] Fetching poster with credentials:', url);
-    
-    (async () => {
-      try {
-        const res = await fetch(url, { credentials: "include", cache: "no-store" });
-        if (!res.ok) {
-          console.warn('[VideoWithPoster] Poster fetch failed:', res.status, res.statusText);
-          setPosterLoading(false);
-          return;
-        }
-        const ct = res.headers.get("content-type") || "";
-        if (!ct.toLowerCase().startsWith("image/")) {
-          console.warn('[VideoWithPoster] Poster is not an image, content-type:', ct);
-          setPosterLoading(false);
-          return;
-        }
-        const blob = await res.blob();
-        const obj = URL.createObjectURL(blob);
-        revoke = obj;
-        setResolvedPoster(obj);
-        setPosterLoading(false);
-        console.log('[VideoWithPoster] ✓ Poster blob created successfully');
-      } catch (err) {
-        console.error('[VideoWithPoster] Error fetching poster:', err);
-        setPosterLoading(false);
-      }
-    })();
-    
-    return () => { 
-      if (revoke) URL.revokeObjectURL(revoke);
-      setPosterLoading(false);
-    };
-  }, [posterSrc, src]);
+// Resolve poster by using the API URL directly (let <img>/<video> follow 302s)
+useEffect(() => {
+  const url = posterSrc?.trim() || null;
+  setResolvedPoster(url);
+  setPosterLoading(false);
+}, [posterSrc]);
 
   // Generate client-side poster from video first frame if no backend poster
   const generateClientPoster = useCallback(() => {
@@ -307,23 +269,12 @@ function VideoWithPoster({
   }, [hasPosterProp, src, generateClientPoster]);
 
   // Use resolved poster (blob URL) if available, otherwise client-generated, otherwise undefined
-  const effectivePoster = useMemo(() => {
-    if (pausedFramePoster && !isPlaying) {
-      console.log('[VideoWithPoster] ✓ Using paused frame poster');
-      return pausedFramePoster;
-    }
-    if (resolvedPoster) {
-      console.log('[VideoWithPoster] ✓ Using resolved backend poster blob');
-      return resolvedPoster;
-    }
-    if (clientGeneratedPoster) {
-      console.log('[VideoWithPoster] ✓ Using client-generated poster');
-      return clientGeneratedPoster;
-    }
-    // If no poster available and not loading, rely on browser's preload
-    console.log('[VideoWithPoster] ✗ No poster available - posterLoading:', posterLoading, 'hasPosterProp:', hasPosterProp);
-    return undefined;
-  }, [resolvedPoster, clientGeneratedPoster, pausedFramePoster, isPlaying, posterLoading, hasPosterProp]);
+    const effectivePoster = useMemo(() => {
+      if (pausedFramePoster && !isPlaying) return pausedFramePoster;
+      if (resolvedPoster) return resolvedPoster;         // now the API URL
+      if (clientGeneratedPoster) return clientGeneratedPoster;
+      return undefined;
+    }, [resolvedPoster, clientGeneratedPoster, pausedFramePoster, isPlaying])
 
   // Cleanup client-generated poster on unmount
   useEffect(() => {
@@ -808,7 +759,6 @@ function VideoWithPoster({
             src={src}
             playsInline
             preload="metadata"
-            crossOrigin="use-credentials"
             poster={effectivePoster || posterSrc}
             onLoadedMetadata={() => {
               const v = videoRef.current;
@@ -1178,7 +1128,7 @@ function AttachmentViewer({
     if (!kind) {
       (async () => {
         try {
-          const res = await fetch(src, { method: "HEAD", credentials: "include" });
+          const res = await fetch(src, { method: "HEAD", credentials: "include", redirect: "manual" });
           const ct = res.headers.get("content-type");
           if (!aborted) setKind(typeFromContentType(ct));
         } catch {
@@ -1531,22 +1481,10 @@ export default function PurchasesPage() {
     if (lastErr) throw lastErr;
   }
 
-const downloadRequestDelivery = async (requestId: number, filenameHint?: string) => {
-  const apiBase = toApiBase();
-  const url = `${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`;
-
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const blob = await res.blob();
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filenameHint || "delivery";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 0);
-};
+    const downloadRequestDelivery = (requestId: number) => {
+      const apiBase = toApiBase();
+      window.location.href = `${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`;
+    };
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
   const handleSubmitReview = async () => {
@@ -1600,25 +1538,12 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
       showError(message);
     }
   };
-
- const handleDownload = async (item: Order) => {
-  if (!item.product_id) return;
-
-  const apiBase = toApiBase();
-  const url = `${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`;
-
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const blob = await res.blob();
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = item.product.filename || `${item.product.title || "download"}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 0);
-};
+    const handleDownload = (item: Order) => {
+      if (!item.product_id) return;
+      const apiBase = toApiBase();
+      const url = `${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`;
+      window.location.href = url; // or window.open(url, '_blank', 'noopener');
+    };
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
   try {
@@ -2030,23 +1955,9 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                         <div className="space-y-3">
                           <button
                             type="button"
-                            onClick={async () => {
+                            onClick={() => {
                               const url = `${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`;
-                              try {
-                                const res = await fetch(url, { credentials: "include" });
-                                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                                const blob = await res.blob();
-                                const name = "attachment";
-                                const a = document.createElement("a");
-                                a.href = URL.createObjectURL(blob);
-                                a.download = name;
-                                document.body.appendChild(a);
-                                a.click();
-                                a.remove();
-                                setTimeout(() => URL.revokeObjectURL(a.href), 0);
-                              } catch (e) {
-                                console.warn(e);
-                              }
+                              window.location.href = url; // or window.open(url, '_blank', 'noopener');
                             }}
                             className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
                           >
@@ -2076,9 +1987,7 @@ const downloadRequestDelivery = async (requestId: number, filenameHint?: string)
                         <button
                           type="button"
                           onClick={() => {
-                            const name =
-                              (selectedItem.request_media_url || "").split("?")[0].split("/").pop() || "delivery";
-                            downloadRequestDelivery(selectedItem.request_id!, name);
+                          downloadRequestDelivery(selectedItem.request_id!);
                           }}
                           className="inline-flex items-center bg-green-100 text-green-800 px-4 py-2.5 rounded-lg hover:bg-green-200 transition-colors"
                         >
