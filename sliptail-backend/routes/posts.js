@@ -121,13 +121,7 @@ async function addSignedUrl(post) {
       console.warn(`sign ${field} failed:`, e?.message || e);
       return null;
     }
-
-    // Add a tiny cache-buster ONLY for posts/* (CloudFront). Do NOT touch S3-presigned links.
-    if (isPostsKey(raw)) {
-      const v = Math.floor(new Date(post.updated_at || post.created_at || Date.now()).getTime() / 1000);
-      url += (url.includes("?") ? "&" : "?");
-    }
-    return url;
+return url;
   }
 
   if (post.media_path)   out.media_path   = await sign("media_path");
