@@ -38,6 +38,7 @@ const allowed = new Set([
   "image/jpeg",
   "image/webp",
   "image/svg",
+  "image/svg+xml",
   "video/mp4",
   "video/quicktime",
   "video/x-msvideo",
@@ -469,50 +470,56 @@ router.patch(
  * - checks order is paid
  * - sets custom_requests.status='delivered' and stores attachment_path
  */
-router.post(
-  "/:id/deliver",
-  requireAuth,
-  requireCreator,
-  standardLimiter,
-  uploadCreator.single("file"),
-  validate(requestDeliver),
-  async (req, res) => {
-    const creatorId = req.user.id;
-    const requestId = parseInt(req.params.id, 10);
-    // Fast path: presigned delivery from client (no server relay)
-const creatorKey = (req.body.creator_attachment_key || "").trim();
-if (creatorKey) {
-  try {
-    if (!String(req.body.content_type || "").toLowerCase().startsWith("audio/")) {
-      try { await makeAndStorePoster(creatorKey, { private: true }); }
-      catch (e) { console.warn("request deliver: poster (presigned) failed:", e?.message || e); }
+router.post("/:id/deliver", requireAuth, requireCreator, standardLimiter, uploadCreator.single("file"), validate(requestDeliver), async (req, res) => {
+  const creatorId = req.user.id;
+  const requestId = parseInt(req.params.id, 10);
+
+  // --- fetch request & order first (shared) ---
+  const { rows } = await db.query(
+    `SELECT cr.id, cr.creator_id, cr.status, cr.order_id, cr.buyer_id,
+            o.status AS order_status
+       FROM custom_requests cr
+       JOIN orders o ON o.id = cr.order_id
+      WHERE cr.id = $1 AND cr.creator_id = $2`,
+    [requestId, creatorId]
+  );
+  const r = rows[0];
+  if (!r) return res.status(404).json({ error: "Request not found" });
+  if (r.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
+
+  // ---- presigned shortcut ----
+  const creatorKey = (req.body.creator_attachment_key || "").trim();
+  if (creatorKey) {
+    try {
+      if (!String(req.body.content_type || "").toLowerCase().startsWith("audio/")) {
+        try { await makeAndStorePoster(creatorKey, { private: true }); } catch (e) { console.warn("poster (presigned) failed:", e?.message || e); }
+      }
+
+      await db.query("BEGIN");
+      const { rows: updated } = await db.query(
+        `UPDATE custom_requests
+            SET creator_attachment_path = $1,
+                status = 'complete'
+          WHERE id = $2
+          RETURNING *`,
+        [creatorKey, requestId]
+      );
+      await db.query(`UPDATE orders SET status = 'complete' WHERE id = $1`, [r.order_id]);
+      await db.query("COMMIT");
+
+      res.json({ success: true, request: normalizeStatus(updated[0]) });
+
+      if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
+        notify(Number(r.buyer_id), "request_ready", "Your request is ready! 🎉", "Check it out on your My Purchases page!", { request_id: requestId }).catch(console.error);
+        notifyRequestDelivered({ requestId }).catch(console.error);
+      }
+      return;
+    } catch (err) {
+      try { await db.query("ROLLBACK"); } catch {}
+      console.error("Deliver (presigned) error:", err);
+      return res.status(500).json({ error: "Failed to deliver file" });
     }
-
-    await db.query("BEGIN");
-    const { rows: updated } = await db.query(
-      `UPDATE custom_requests
-          SET creator_attachment_path = $1,
-              status = 'complete'
-        WHERE id = $2
-        RETURNING *`,
-      [creatorKey, requestId]
-    );
-    await db.query(`UPDATE orders SET status = 'complete' WHERE id = $1`, [r.order_id]);
-    await db.query("COMMIT");
-
-    res.json({ success: true, request: normalizeStatus(updated[0]) });
-
-    if (!(await alreadyNotified(Number(r.buyer_id), "request_ready", requestId))) {
-      notify(Number(r.buyer_id), "request_ready", "Your request is ready! 🎉", "Check it out on your My Purchases page!", { request_id: requestId }).catch(console.error);
-      notifyRequestDelivered({ requestId }).catch(console.error);
-    }
-    return; // done
-  } catch (err) {
-    try { await db.query("ROLLBACK"); } catch {}
-    console.error("Deliver (presigned) error:", err);
-    return res.status(500).json({ error: "Failed to deliver file" });
   }
-}
 
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -823,70 +830,33 @@ router.get("/:id/attachment", requireAuth, requireCreator, async (req, res) => {
     const key = (r.attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No buyer attachment" });
 
-    const range = req.headers.range;
-    const meta = await storage.getReadStreamAndMeta(key, range);
-
-    const filename = key.split("/").pop() || "attachment";
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (meta.contentRange) {
-      res.status(206);
-      res.setHeader("Content-Range", meta.contentRange);
-    } else if (typeof meta.contentLength === "number") {
-      res.setHeader("Content-Length", String(meta.contentLength));
-    }
-
-    meta.stream.on("error", (e) => {
-      console.error("creator attachment stream error:", e);
-      if (!res.headersSent) res.status(500);
-      res.end();
-    });
-    meta.stream.pipe(res);
+      const url = await storage.getPrivateUrl(key, { expiresIn: 300 });
+      return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Attachment view failed" });
   }
 });
 
-/**
- * CREATOR download of the BUYER's attachment (optional helper)
- */
+// creator downloads buyer's attachment
 router.get("/:id/attachment/file", requireAuth, requireCreator, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const creatorId = req.user.id;
 
   try {
     const { rows } = await db.query(
-      `SELECT creator_id, attachment_path
-         FROM custom_requests
-        WHERE id = $1`,
+      `SELECT creator_id, attachment_path FROM custom_requests WHERE id=$1`,
       [requestId]
     );
     const r = rows[0];
     if (!r) return res.status(404).json({ error: "Request not found" });
-    if (Number(r.creator_id) !== Number(creatorId)) {
-      return res.status(403).json({ error: "Not your request" });
-    }
+    if (Number(r.creator_id) !== Number(creatorId)) return res.status(403).json({ error: "Not your request" });
     const key = (r.attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No buyer attachment" });
 
-    const meta = await storage.getReadStreamAndMeta(key, undefined);
     const filename = key.split("/").pop() || "attachment";
-
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (typeof meta.contentLength === "number") {
-      res.setHeader("Content-Length", String(meta.contentLength));
-    }
-
-    meta.stream.on("error", (e) => {
-      console.error("creator attachment download error:", e);
-      if (!res.headersSent) res.status(500);
-      res.end();
-    });
-    meta.stream.pipe(res);
+    const url = await storage.getSignedDownloadUrl(key, { filename, expiresSeconds: 60 });
+    return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Attachment download failed" });
@@ -901,33 +871,20 @@ router.get("/:id/download", requireAuth, async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `SELECT creator_attachment_path, status, buyer_id
-         FROM custom_requests
-        WHERE id = $1`,
+      `SELECT creator_attachment_path, status, buyer_id FROM custom_requests WHERE id=$1`,
       [requestId]
     );
     const r = rows[0];
     if (!r) return res.status(404).json({ error: "Request not found" });
-    if (Number(r.buyer_id) !== Number(userId))
-      return res.status(403).json({ error: "Not your request" });
-
-    if (String(r.status || "").toLowerCase() !== "complete")
-      return res.status(403).json({ error: "Not ready for download" });
+    if (Number(r.buyer_id) !== Number(userId)) return res.status(403).json({ error: "Not your request" });
+    if (String(r.status || "").toLowerCase() !== "complete") return res.status(403).json({ error: "Not ready for download" });
 
     const key = (r.creator_attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
     const filename = key.split("/").pop() || "delivery";
-    const meta = await storage.getReadStreamAndMeta(key, undefined);
-
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (typeof meta.contentLength === "number")
-      res.setHeader("Content-Length", String(meta.contentLength));
-
-    meta.stream.on("error", (e) => { console.error("request stream error:", e); if (!res.headersSent) res.status(500); res.end(); });
-    meta.stream.pipe(res);
+    const url = await storage.getSignedDownloadUrl(key, { filename, expiresSeconds: 60, disposition: "attachment" });
+    return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Download failed" });
@@ -942,30 +899,19 @@ router.get("/:id/my-attachment/file", requireAuth, async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `SELECT buyer_id, attachment_path
-         FROM custom_requests
-        WHERE id = $1`,
+      `SELECT buyer_id, attachment_path FROM custom_requests WHERE id=$1`,
       [requestId]
     );
     const r = rows[0];
     if (!r) return res.status(404).json({ error: "Request not found" });
-    if (Number(r.buyer_id) !== Number(buyerId))
-      return res.status(403).json({ error: "Not your request" });
+    if (Number(r.buyer_id) !== Number(buyerId)) return res.status(403).json({ error: "Not your request" });
 
     const key = (r.attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No attachment uploaded" });
 
-    const meta = await storage.getReadStreamAndMeta(key, undefined);
     const filename = key.split("/").pop() || "attachment";
-
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (typeof meta.contentLength === "number")
-      res.setHeader("Content-Length", String(meta.contentLength));
-
-    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
-    meta.stream.pipe(res);
+    const url = await storage.getSignedDownloadUrl(key, { filename, expiresSeconds: 60, disposition: "attachment" });
+    return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Attachment download failed" });
@@ -987,27 +933,14 @@ router.get("/:id/attachment/poster", requireAuth, requireCreator, async (req, re
     if (Number(r.creator_id) !== Number(creatorId)) {
       return res.status(403).json({ error: "Not your request" });
     }
+
     const key = (r.attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No buyer attachment" });
 
     const posterKey = posterKeyFor(key);
-
-    let meta;
-    try {
-      meta = await storage.getReadStreamAndMeta(posterKey, undefined);
-    } catch {
-      return res.status(404).json({ error: "No poster available" });
-    }
-
-    const filename = posterKey.split("/").pop() || "poster.jpg";
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "image/jpeg");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (typeof meta.contentLength === "number")
-      res.setHeader("Content-Length", String(meta.contentLength));
-
-    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
-    meta.stream.pipe(res);
+    // Redirect to signed (CF) URL for the poster
+    const url = await storage.getPrivateUrl(posterKey, { expiresIn: 300 });
+    return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Attachment poster failed" });
@@ -1015,51 +948,6 @@ router.get("/:id/attachment/poster", requireAuth, requireCreator, async (req, re
 });
 
 // BUYER: inline stream of creator’s delivery (status must be delivered|complete)
-router.get("/:id/delivery", requireAuth, async (req, res) => {
-  const requestId = parseInt(req.params.id, 10);
-  const buyerId = req.user.id;
-
-  try {
-    const { rows } = await db.query(
-      `SELECT buyer_id, status, creator_attachment_path
-         FROM custom_requests
-        WHERE id = $1`,
-      [requestId]
-    );
-    const r = rows[0];
-    if (!r) return res.status(404).json({ error: "Request not found" });
-    if (Number(r.buyer_id) !== Number(buyerId))
-      return res.status(403).json({ error: "Not your request" });
-
-      const s = String(r.status || "").toLowerCase();
-      if (s !== "complete")
-        return res.status(403).json({ error: "Not ready yet" });
-
-    const key = (r.creator_attachment_path || "").trim();
-    if (!key) return res.status(404).json({ error: "No delivery file" });
-
-    const meta = await storage.getReadStreamAndMeta(key, req.headers.range);
-    const filename = key.split("/").pop() || "delivery";
-
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "application/octet-stream");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (meta.contentRange) {
-      res.status(206);
-      res.setHeader("Content-Range", meta.contentRange);
-    } else if (typeof meta.contentLength === "number") {
-      res.setHeader("Content-Length", String(meta.contentLength));
-    }
-
-    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
-    meta.stream.pipe(res);
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Delivery view failed" });
-  }
-});
-
-// BUYER: inline fetch of a poster/thumbnail for the creator’s delivery (if available)
 router.get("/:id/delivery/poster", requireAuth, async (req, res) => {
   const requestId = parseInt(req.params.id, 10);
   const buyerId = req.user.id;
@@ -1084,23 +972,9 @@ router.get("/:id/delivery/poster", requireAuth, async (req, res) => {
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
     const posterKey = posterKeyFor(key);
-    // Try to stream the poster image
-    let meta;
-    try {
-      meta = await storage.getReadStreamAndMeta(posterKey, undefined);
-    } catch {
-      return res.status(404).json({ error: "No poster available" });
-    }
-
-    const filename = posterKey.split("/").pop() || "poster.jpg";
-    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-    res.setHeader("Content-Type", meta.contentType || "image/jpeg");
-    if (meta.acceptRanges) res.setHeader("Accept-Ranges", meta.acceptRanges);
-    if (typeof meta.contentLength === "number")
-      res.setHeader("Content-Length", String(meta.contentLength));
-
-    meta.stream.on("error", () => { if (!res.headersSent) res.status(500); res.end(); });
-    meta.stream.pipe(res);
+    // Redirect to signed (CF) URL for the poster
+    const url = await storage.getPrivateUrl(posterKey, { expiresIn: 300 });
+    return res.redirect(302, url);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Poster view failed" });

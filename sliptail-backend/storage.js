@@ -294,6 +294,15 @@ async function uploadPublic({
   return { key: webPath, url: webPath };
 }
 
+function isCdnEligibleKey(raw) {
+  const k = String(raw || "").replace(/^\/+/, "");
+  return (
+    k.startsWith("posts/") ||
+    k.startsWith("products/") ||
+    k.startsWith("requests/")
+  );
+}
+
 /**
  * getPrivateUrl(key, { expiresIn })
  * LOCAL: returns "/uploads/..." path.
@@ -304,22 +313,22 @@ async function getPrivateUrl(key, { expiresIn = 900 } = {}) {
   if (DRIVER === "s3") {
     const k = String(key).replace(/^\/+/, "");
 
-    // CloudFront path for posts only
-    if (isPostKey(k) && CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
-      // CloudFront wants an absolute URL; we use the same relative key
-      const url = `${CF_DOMAIN.replace(/\/+$/, "")}/${k.split("/").map(encodeURIComponent).join("/")}`;
+    // CloudFront for posts/products/requests when CF is configured
+    if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY && isCdnEligibleKey(k)) {
+      const url = `${CF_DOMAIN.replace(/\/+$/, "")}/${k
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`;
 
-      // CloudFront "expires" is a timestamp (ms) — use now + expiresIn seconds
-      const signed = getCFSignedUrl({
+      return getCFSignedUrl({
         url,
         keyPairId: CF_KEY_PAIR_ID,
         privateKey: CF_PRIVKEY,
         dateLessThan: new Date(Date.now() + expiresIn * 1000).toISOString(),
       });
-      return signed;
     }
 
-    // Default: S3 presigned GET
+    // Fallback: S3 presigned GET
     const cmd = new GetObjectCommand({ Bucket: PRIVATE_BUCKET, Key: k });
     return await s3Presign(s3, cmd, { expiresIn });
   }
@@ -578,6 +587,53 @@ async function getPresignedPutUrl(key, { contentType = "application/octet-stream
   return await s3Presign(s3, cmd, { expiresIn });
 }
 
+/**
+ * getSignedDownloadUrl(key, { filename, expiresSeconds })
+ * - If CF_* set: returns CloudFront signed URL for *any* key (not just posts),
+ *   with query params to force native "Save as" download.
+ * - Else: S3 pre-signed GET with Response* overrides.
+ */
+async function getSignedDownloadUrl(
+  key,
+  { filename = null, expiresSeconds = 60 } = {}
+) {
+  const k = String(key).replace(/^\/+/, "");
+  const safeName = (filename || k.split("/").pop() || "download").replace(/"/g, "");
+
+  // Prefer CloudFront if configured — REQUIRES query-string forwarding on the CF behavior
+  if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
+    const u = new URL(
+      `${CF_DOMAIN.replace(/\/+$/, "")}/${k
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`
+    );
+
+    // Forward these so S3 sets the headers on response
+    u.searchParams.set(
+      "response-content-disposition",
+      `attachment; filename="${encodeURIComponent(safeName)}"`
+    );
+    u.searchParams.set("response-content-type", "application/octet-stream");
+
+    return getCFSignedUrl({
+      url: u.toString(),
+      keyPairId: CF_KEY_PAIR_ID,
+      privateKey: CF_PRIVKEY,
+      dateLessThan: new Date(Date.now() + expiresSeconds * 1000).toISOString(),
+    });
+  }
+
+  // Fallback: S3 pre-signed GET with response overrides
+  const cmd = new GetObjectCommand({
+    Bucket: PRIVATE_BUCKET,
+    Key: k,
+    ResponseContentDisposition: `attachment; filename="${safeName}"`,
+    ResponseContentType: "application/octet-stream",
+  });
+  return await s3Presign(s3, cmd, { expiresIn: expiresSeconds });
+}
+
 module.exports = {
   DRIVER,
   isS3,
@@ -592,4 +648,5 @@ module.exports = {
   deletePublic,
   keyFromPublicUrl,
   getPresignedPutUrl,
+  getSignedDownloadUrl,
 };

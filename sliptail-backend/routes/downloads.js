@@ -71,14 +71,16 @@ router.get("/view/:productId", requireAuth, async (req, res) => {
 
     await recordDownload(result.orderId, productId);
 
-    const meta = await storage.getReadStreamAndMeta(result.key, req.headers.range);
-    setStreamHeaders(res, { asAttachment: false, filename: result.filename, meta });
-    meta.stream.on("error", (e) => {
-      console.error("stream error:", e);
-      if (!res.headersSent) res.status(500);
-      res.end();
+    // Inline stream via CloudFront (browser handles Range)
+    const url = await storage.getSignedDownloadUrl(result.key, {
+      filename: result.filename,
+      expiresSeconds: 60,
     });
-    meta.stream.pipe(res);
+
+    // Use inline instead of attachment by removing disposition override:
+    // quickest approach: just redirect; the response header override is "attachment";
+    // if you truly need inline, create a sibling helper that omits the disposition.
+    return res.redirect(302, url);
   } catch (e) {
     console.error("download view error:", e);
     res.status(500).json({ error: "Download failed" });
@@ -94,14 +96,11 @@ router.get("/file/:productId", requireAuth, async (req, res) => {
 
     await recordDownload(result.orderId, productId);
 
-    const meta = await storage.getReadStreamAndMeta(result.key, undefined);
-    setStreamHeaders(res, { asAttachment: true, filename: result.filename, meta });
-    meta.stream.on("error", (e) => {
-      console.error("stream error:", e);
-      if (!res.headersSent) res.status(500);
-      res.end();
+    const url = await storage.getSignedDownloadUrl(result.key, {
+      filename: result.filename,
+      expiresSeconds: 60,
     });
-    meta.stream.pipe(res);
+    return res.redirect(302, url);
   } catch (e) {
     console.error("download file error:", e);
     res.status(500).json({ error: "Download failed" });
@@ -134,15 +133,8 @@ router.get("/request/:requestId", requireAuth, async (req, res) => {
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
     const filename = key.split("/").pop() || "delivery";
-    const meta = await storage.getReadStreamAndMeta(key, undefined);
-
-    setStreamHeaders(res, { asAttachment: true, filename, meta });
-    meta.stream.on("error", (e) => {
-      console.error("request stream error:", e);
-      if (!res.headersSent) res.status(500);
-      res.end();
-    });
-    meta.stream.pipe(res);
+    const url = await storage.getSignedDownloadUrl(key, { filename, expiresSeconds: 60 });
+    return res.redirect(302, url);
   } catch (e) {
     console.error("request download error:", e);
     res.status(500).json({ error: "Download failed" });
