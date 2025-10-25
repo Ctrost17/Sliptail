@@ -1481,10 +1481,35 @@ export default function PurchasesPage() {
     if (lastErr) throw lastErr;
   }
 
-    const downloadRequestDelivery = (requestId: number) => {
-      const apiBase = toApiBase();
-      window.location.href = `${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`;
-    };
+  async function downloadViaApiPath(path: string, fallbackName?: string) {
+  const apiBase = toApiBase();
+  const res = await fetch(`${apiBase}${path}`, { credentials: "include" });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+
+  // try to get a nice filename from the server, else fallback
+  const cd = res.headers.get("content-disposition") || "";
+  const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
+  const filename = m ? decodeURIComponent(m[1]) : (fallbackName || "download");
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// AFTER
+const downloadRequestDelivery = async (requestId: number) => {
+  await downloadViaApiPath(
+    `/api/requests/${encodeURIComponent(requestId)}/download`,
+    `request-${requestId}`
+  );
+};
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
   const handleSubmitReview = async () => {
@@ -1538,12 +1563,13 @@ export default function PurchasesPage() {
       showError(message);
     }
   };
-    const handleDownload = (item: Order) => {
-      if (!item.product_id) return;
-      const apiBase = toApiBase();
-      const url = `${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`;
-      window.location.href = url; // or window.open(url, '_blank', 'noopener');
-    };
+const handleDownload = async (item: Order) => {
+  if (!item.product_id) return;
+  await downloadViaApiPath(
+    `/api/downloads/file/${encodeURIComponent(item.product_id)}`,
+    item.product?.filename || `product-${item.product_id}`
+  );
+};
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
   try {
@@ -1955,10 +1981,12 @@ export default function PurchasesPage() {
                         <div className="space-y-3">
                           <button
                             type="button"
-                            onClick={() => {
-                              const url = `${apiBase}/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`;
-                              window.location.href = url; // or window.open(url, '_blank', 'noopener');
-                            }}
+                            onClick={() =>
+                              downloadViaApiPath(
+                                `/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`,
+                                `my-request-${selectedItem.request_id}`
+                              )
+                            }
                             className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
                           >
                             <Download className="w-5 h-5 mr-2" />
