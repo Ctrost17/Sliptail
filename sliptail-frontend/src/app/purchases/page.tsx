@@ -11,6 +11,7 @@ import {
   Download, Eye, X, AlertCircle, Star, ChevronRight, Loader2,
   Calendar, CreditCard, Shield, ArrowRight
 } from "lucide-react";
+import { directDownload } from "@/lib/directDownload";
 
 const isPdfCT   = (ct?: string | null) => ct?.toLowerCase() === "application/pdf";
 const isCsvCT   = (ct?: string | null) =>
@@ -1521,7 +1522,7 @@ const handleDownload = async (item: Order) => {
   if (!item.product_id) return;
   // optional nicer filename if you have it:
   const fname = item.product?.filename || `${item.product?.title || "download"}`.replace(/[^\w.\- ]+/g, "_");
-  await downloadByUrl(`${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`, fname);
+  directDownload(`${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`, fname);
 };
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---

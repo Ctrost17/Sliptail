@@ -21,7 +21,7 @@ async function ensureDir(p) {
 
 // Map keys to local filesystem
 function normalizeLocalKey(key) {
-  // Accept "/uploads/...", "uploads/...", or bare "requests/..."/"products/.../creators/..."
+  // Accept "/uploads/...", "uploads/...", or bare "requests/..."/"products/..."/"creators/..."
   let k = String(key || "").trim();
   if (!k) return null;
   k = k.replace(/^\/+/, ""); // strip leading "/"
@@ -29,7 +29,8 @@ function normalizeLocalKey(key) {
   if (
     k.startsWith("requests/") ||
     k.startsWith("products/") ||
-    k.startsWith("creators/")
+    k.startsWith("creators/") ||
+    k.startsWith("posts/")
   ) {
     return `uploads/${k}`;
   }
@@ -47,7 +48,7 @@ let s3 = null;
 let GetObjectCommand = null;
 let PutObjectCommand = null;
 let DeleteObjectCommand = null;
-let ListObjectsV2Command = null; // ← ADD
+let ListObjectsV2Command = null;
 let s3Presign = null;
 let Upload = null;
 
@@ -65,7 +66,7 @@ const S3_SSE_KMS_KEY_ID = process.env.S3_SSE_KMS_KEY_ID || null; // if using KMS
 
 if (DRIVER === "s3") {
   const { S3Client } = require("@aws-sdk/client-s3");
-  ({ GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command} =
+  ({ GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } =
     require("@aws-sdk/client-s3"));
   ({ getSignedUrl: s3Presign } = require("@aws-sdk/s3-request-presigner"));
   // Multipart uploader (great for streams/large files)
@@ -98,7 +99,6 @@ if (DRIVER === "s3") {
 
 /* -------------------- helpers -------------------- */
 function joinUrl(base, key) {
-  // encode each segment but keep slashes
   const safeKey = String(key)
     .split("/")
     .map(encodeURIComponent)
@@ -106,26 +106,20 @@ function joinUrl(base, key) {
   return `${String(base).replace(/\/+$/, "")}/${safeKey}`;
 }
 
-// Decide whether to use multipart uploader
 function shouldUseMultipart(body) {
-  // Use multipart when we have a stream or a file path (string),
-  // or when Upload is available and body is NOT a Buffer.
   if (!Upload) return false;
   if (typeof body === "string") return true; // treat as file path
   if (body && typeof body.pipe === "function") return true; // Node readable
   return !(body instanceof Buffer);
 }
 
-// Convert "body" which may be Buffer | string(file path) | Readable into a suitable stream
 function toBodyStream(body) {
   if (typeof body === "string") {
-    // file path
     return fs.createReadStream(body);
   }
   return body;
 }
 
-// Common S3 put params with optional SSE
 function withSse(params) {
   if (S3_SSE) {
     params.ServerSideEncryption = S3_SSE;
@@ -136,22 +130,17 @@ function withSse(params) {
   return params;
 }
 
-function isPostKey(raw) {
+function isCdnEligibleKey(raw) {
   const k = String(raw || "").replace(/^\/+/, "");
-  // You store post media keys like "posts/<id>.<ext>" in DB.
-  // Treat anything under "posts/" as feed content (including posters saved next to it).
-  return k.startsWith("posts/");
+  return (
+    k.startsWith("posts/") ||
+    k.startsWith("products/") ||
+    k.startsWith("requests/")
+  );
 }
 
 /* ==================== PUBLIC API ==================== */
 
-/**
- * uploadPrivate({ key, contentType, body })
- * LOCAL: writes to <LOCAL_UPLOADS_ROOT>/<key>; returns { key: "/uploads/<key>", url: "/uploads/<key>" }
- * S3:   PutObject/Multipart to PRIVATE_BUCKET; returns { key } (no public URL – use getPrivateUrl for presign)
- *
- * Accepts: body as Buffer | string (file path) | Readable stream
- */
 async function uploadPrivate({ key, contentType, body }) {
   if (!key) throw new Error("uploadPrivate: key is required");
 
@@ -159,7 +148,6 @@ async function uploadPrivate({ key, contentType, body }) {
     const ContentType = contentType || "application/octet-stream";
 
     if (shouldUseMultipart(body)) {
-      // Multipart upload (streams or large files)
       const uploader = new Upload({
         client: s3,
         params: withSse({
@@ -168,18 +156,17 @@ async function uploadPrivate({ key, contentType, body }) {
           Body: toBodyStream(body),
           ContentType,
         }),
-        queueSize: 4, // parallel parts
-        partSize: 8 * 1024 * 1024, // 8MB
+        queueSize: 4,
+        partSize: 8 * 1024 * 1024,
         leavePartsOnError: false,
       });
       await uploader.done();
     } else {
-      // Single PUT (buffers/small files)
       const put = new PutObjectCommand(
         withSse({
           Bucket: PRIVATE_BUCKET,
           Key: key,
-           Body: toBodyStream(body),
+          Body: toBodyStream(body),
           ContentType,
         })
       );
@@ -195,7 +182,6 @@ async function uploadPrivate({ key, contentType, body }) {
   await ensureDir(absDir);
 
   if (typeof body === "string") {
-    // file path -> copy
     await fsp.copyFile(body, absPath);
   } else {
     await fsp.writeFile(absPath, body);
@@ -205,23 +191,7 @@ async function uploadPrivate({ key, contentType, body }) {
   return { key: webPath, url: webPath };
 }
 
-/**
- * uploadPublic({ key, contentType, body, expiresIn })
- * LOCAL: same as private; returns direct web path.
- * S3:
- *   - If S3_PUBLIC_BUCKET is set: upload there and return URL using S3_PUBLIC_BASE_URL if provided,
- *     otherwise return the raw "https://<bucket>.s3.<region>.amazonaws.com/<key>".
- *   - Else if ALLOW_PUBLIC_ACL=true: upload to PRIVATE_BUCKET with ACL: public-read and return URL.
- *   - Else: upload to PRIVATE_BUCKET and return a *presigned* URL (expiresIn default 1 day).
- *
- * Accepts: body as Buffer | string (file path) | Readable stream
- */
-async function uploadPublic({
-  key,
-  contentType,
-  body,
-  expiresIn = 24 * 60 * 60,
-}) {
+async function uploadPublic({ key, contentType, body, expiresIn = 24 * 60 * 60 }) {
   if (!key) throw new Error("uploadPublic: key is required");
 
   if (DRIVER === "s3") {
@@ -247,32 +217,23 @@ async function uploadPublic({
       const params = withSse({
         Bucket: bucket,
         Key: key,
-         Body: toBodyStream(body),
+        Body: toBodyStream(body),
         ContentType,
         ...(PUBLIC_BUCKET ? {} : ALLOW_PUBLIC_ACL ? { ACL: "public-read" } : {}),
       });
       await s3.send(new PutObjectCommand(params));
     }
 
-    // Build a URL
     if (PUBLIC_BUCKET && S3_PUBLIC_BASE_URL) {
       return { key, url: joinUrl(S3_PUBLIC_BASE_URL, key) };
     }
     if (PUBLIC_BUCKET && !S3_PUBLIC_BASE_URL) {
-      // Default S3 URL
-      return {
-        key,
-        url: `https://${PUBLIC_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`,
-      };
+      return { key, url: `https://${PUBLIC_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}` };
     }
     if (!PUBLIC_BUCKET && ALLOW_PUBLIC_ACL) {
-      return {
-        key,
-        url: `https://${PRIVATE_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}`,
-      };
+      return { key, url: `https://${PRIVATE_BUCKET}.s3.${S3_REGION}.amazonaws.com/${key}` };
     }
 
-    // Fallback: no public bucket and public ACL blocked -> presigned URL
     const cmd = new GetObjectCommand({ Bucket: PRIVATE_BUCKET, Key: key });
     const url = await s3Presign(s3, cmd, { expiresIn });
     return { key, url };
@@ -294,26 +255,10 @@ async function uploadPublic({
   return { key: webPath, url: webPath };
 }
 
-function isCdnEligibleKey(raw) {
-  const k = String(raw || "").replace(/^\/+/, "");
-  return (
-    k.startsWith("posts/") ||
-    k.startsWith("products/") ||
-    k.startsWith("requests/")
-  );
-}
-
-/**
- * getPrivateUrl(key, { expiresIn })
- * LOCAL: returns "/uploads/..." path.
- * S3:    For posts/* -> sign CloudFront URL if CF_* env is set; otherwise S3 presign.
- *        For everything else -> S3 presign.
- */
 async function getPrivateUrl(key, { expiresIn = 900 } = {}) {
   if (DRIVER === "s3") {
     const k = String(key).replace(/^\/+/, "");
 
-    // CloudFront for posts/products/requests when CF is configured
     if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY && isCdnEligibleKey(k)) {
       const url = `${CF_DOMAIN.replace(/\/+$/, "")}/${k
         .split("/")
@@ -328,21 +273,14 @@ async function getPrivateUrl(key, { expiresIn = 900 } = {}) {
       });
     }
 
-    // Fallback: S3 presigned GET
     const cmd = new GetObjectCommand({ Bucket: PRIVATE_BUCKET, Key: k });
     return await s3Presign(s3, cmd, { expiresIn });
   }
 
-  // LOCAL
   const k = normalizeLocalKey(key);
   return `/${k}`;
 }
 
-/**
- * getPublicUrl(key)
- * LOCAL: returns "/uploads/..." path.
- * S3:    if PUBLIC bucket or public ACL is allowed, return direct URL; else presign.
- */
 async function getPublicUrl(key, { expiresIn = 24 * 60 * 60 } = {}) {
   if (DRIVER === "s3") {
     const k = String(key).replace(/^\/+/, "");
@@ -355,7 +293,6 @@ async function getPublicUrl(key, { expiresIn = 24 * 60 * 60 } = {}) {
     if (ALLOW_PUBLIC_ACL) {
       return `https://${PRIVATE_BUCKET}.s3.${S3_REGION}.amazonaws.com/${k}`;
     }
-    // presign fallback
     const cmd = new GetObjectCommand({ Bucket: PRIVATE_BUCKET, Key: k });
     return await s3Presign(s3, cmd, { expiresIn });
   }
@@ -363,10 +300,6 @@ async function getPublicUrl(key, { expiresIn = 24 * 60 * 60 } = {}) {
   return `/${k}`;
 }
 
-/**
- * getReadStreamAndMeta(key, rangeHeader)
- * Returns: { stream, contentType, contentLength, contentRange, acceptRanges }
- */
 async function getReadStreamAndMeta(key, rangeHeader) {
   if (DRIVER === "s3") {
     const k = String(key).replace(/^\/+/, "");
@@ -387,7 +320,6 @@ async function getReadStreamAndMeta(key, rangeHeader) {
 
   // LOCAL
   const rel = normalizeLocalKey(key); // "uploads/..."
-  // IMPORTANT: read from the same root where we write
   const abs = path.join(LOCAL_UPLOADS_ROOT, rel.replace(/^uploads\//, ""));
   let stat;
   try {
@@ -417,7 +349,6 @@ async function getReadStreamAndMeta(key, rangeHeader) {
 
   const stream = fs.createReadStream(abs, streamOpts);
 
-  // naive content type; add mime lookup if needed
   const contentType = "application/octet-stream";
   const contentLength = end - start + 1;
   const acceptRanges = "bytes";
@@ -425,9 +356,6 @@ async function getReadStreamAndMeta(key, rangeHeader) {
   return { stream, contentType, contentLength, contentRange, acceptRanges };
 }
 
-/**
- * deletePrivate(key) — best-effort delete by key from the private store
- */
 async function deletePrivate(key) {
   if (!key) return;
   if (DRIVER === "s3") {
@@ -443,27 +371,19 @@ async function deletePrivate(key) {
     }
     return;
   }
-  // LOCAL
   try {
     const rel = normalizeLocalKey(key).replace(/^uploads\//, "");
     const abs = path.join(LOCAL_UPLOADS_ROOT, rel);
     await fsp.unlink(abs);
-  } catch (_) {
-    // ignore
-  }
+  } catch (_) {}
 }
 
-/**
- * listPublicPrefix(prefix) → Array<string> keys
- * S3: lists objects under PUBLIC_BUCKET (or PRIVATE if no public bucket).
- * LOCAL: lists files under uploads/ when the prefix matches; returns paths relative to /uploads.
- */
 async function listPublicPrefix(prefix) {
   const pfx = String(prefix || "").replace(/^\/+/, "");
   if (!pfx) return [];
 
   if (DRIVER === "s3") {
-    const bucket = PUBLIC_BUCKET  || PRIVATE_BUCKET;
+    const bucket = PUBLIC_BUCKET || PRIVATE_BUCKET;
     const keys = [];
     let ContinuationToken = undefined;
 
@@ -484,7 +404,7 @@ async function listPublicPrefix(prefix) {
     return keys;
   }
 
-  // LOCAL: list from the same root we write to
+  // LOCAL
   const localPrefix = pfx.startsWith("uploads/") ? pfx.replace(/^uploads\//, "") : pfx;
   const baseDir = LOCAL_UPLOADS_ROOT;
   const out = [];
@@ -492,7 +412,11 @@ async function listPublicPrefix(prefix) {
   async function walk(dir, rel) {
     const full = path.join(dir, rel);
     let entries = [];
-    try { entries = await fsp.readdir(full, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = await fsp.readdir(full, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const e of entries) {
       const nextRel = path.join(rel, e.name);
       if (e.isDirectory()) await walk(dir, nextRel);
@@ -500,7 +424,6 @@ async function listPublicPrefix(prefix) {
     }
   }
 
-  // If prefix is a directory, walk it; else try to stat the file.
   const startDir = path.join(baseDir, localPrefix);
   try {
     const st = await fsp.stat(startDir);
@@ -508,18 +431,12 @@ async function listPublicPrefix(prefix) {
       await walk(baseDir, localPrefix);
       return out;
     }
-    // single file
     return [`uploads/${localPrefix}`];
   } catch {
     return [];
   }
 }
 
-/**
- * deletePublic(key)
- * S3: deletes from PUBLIC_BUCKET if set, else PRIVATE_BUCKET.
- * LOCAL: deletes from uploads/.
- */
 async function deletePublic(key) {
   const k = String(key || "").replace(/^\/+/, "");
   if (!k) return;
@@ -534,32 +451,22 @@ async function deletePublic(key) {
     return;
   }
 
-  // LOCAL
   try {
     const rel = k.replace(/^uploads\//, "");
     const abs = path.join(LOCAL_UPLOADS_ROOT, rel);
     await fsp.unlink(abs);
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
-/**
- * keyFromPublicUrl(url) → "<key>"
- * Extract the S3 key (or local "/uploads/..." path) from a full URL or path.
- */
 function keyFromPublicUrl(url) {
   if (!url) return "";
   const u = String(url);
 
-  // If it's already a "/uploads/..." web path, strip leading slash and return
   if (/^\/?uploads\//.test(u)) return u.replace(/^\/+/, "");
 
-  // S3 public bucket base
   if (S3_PUBLIC_BASE_URL && u.startsWith(S3_PUBLIC_BASE_URL)) {
     return u.slice(S3_PUBLIC_BASE_URL.length).replace(/^\/+/, "");
   }
-  // Raw S3 bucket URL (public or private)
   const s3Host = PUBLIC_BUCKET
     ? `https://${PUBLIC_BUCKET}.s3.${S3_REGION}.amazonaws.com/`
     : `https://${PRIVATE_BUCKET}.s3.${S3_REGION}.amazonaws.com/`;
@@ -567,7 +474,6 @@ function keyFromPublicUrl(url) {
     return u.slice(s3Host.length);
   }
 
-  // Fallback: treat it as a path and remove the leading slash
   try {
     const parsed = new URL(u);
     return parsed.pathname.replace(/^\/+/, "");
@@ -576,7 +482,6 @@ function keyFromPublicUrl(url) {
   }
 }
 
-// --- ADD at bottom with module.exports:
 async function getPresignedPutUrl(key, { contentType = "application/octet-stream", expiresIn = 3600 } = {}) {
   if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3");
   const cmd = new PutObjectCommand({
@@ -588,17 +493,18 @@ async function getPresignedPutUrl(key, { contentType = "application/octet-stream
 }
 
 /**
- * getSignedDownloadUrl(key, { filename, expiresSeconds })
- * - If CF_* set: returns CloudFront signed URL for *any* key (not just posts),
- *   with query params to force native "Save as" download.
+ * getSignedDownloadUrl(key, { filename, expiresSeconds, disposition, contentType })
+ * - If CF_* set: returns CloudFront signed URL for any key with query overrides so S3 sets headers.
  * - Else: S3 pre-signed GET with Response* overrides.
  */
 async function getSignedDownloadUrl(
   key,
-  { filename = null, expiresSeconds = 60 } = {}
+  { filename = null, expiresSeconds = 120, disposition = "attachment", contentType = null } = {}
 ) {
   const k = String(key).replace(/^\/+/, "");
   const safeName = (filename || k.split("/").pop() || "download").replace(/"/g, "");
+  const encodedName = encodeURIComponent(safeName);
+  const disp = `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`;
 
   // Prefer CloudFront if configured — REQUIRES query-string forwarding on the CF behavior
   if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
@@ -610,11 +516,8 @@ async function getSignedDownloadUrl(
     );
 
     // Forward these so S3 sets the headers on response
-    //u.searchParams.set(
-     // "response-content-disposition",
-     // `attachment; filename="${encodeURIComponent(safeName)}"`
-   // );
-    //u.searchParams.set("response-content-type", "application/octet-stream");
+    u.searchParams.set("response-content-disposition", disp);
+    if (contentType) u.searchParams.set("response-content-type", contentType);
 
     return getCFSignedUrl({
       url: u.toString(),
@@ -625,16 +528,18 @@ async function getSignedDownloadUrl(
   }
 
   // Fallback: S3 pre-signed GET with response overrides
-  const cmd = new GetObjectCommand({
+  const cmdParams = {
     Bucket: PRIVATE_BUCKET,
     Key: k,
-    //ResponseContentDisposition: `attachment; filename="${safeName}"`,
-    //ResponseContentType: "application/octet-stream",
-  });
+    ResponseContentDisposition: disp,
+  };
+  if (contentType) cmdParams.ResponseContentType = contentType;
+
+  const cmd = new GetObjectCommand(cmdParams);
   return await s3Presign(s3, cmd, { expiresIn: expiresSeconds });
 }
 
-// --- HEAD helper to fetch true content type from storage
+// HEAD helper to fetch true content type from storage
 async function headPrivate(key) {
   const k = String(key || "").replace(/^\/+/, "");
   if (!k) return { contentType: null };
@@ -648,12 +553,10 @@ async function headPrivate(key) {
       }));
       return { contentType: out.ContentType || null };
     } catch (e) {
-      // best-effort; fall through
       return { contentType: null };
     }
   }
 
-  // LOCAL fallback: guess from filename
   try {
     const mime = require("mime-types");
     return { contentType: mime.lookup(k) || null };
@@ -670,12 +573,11 @@ module.exports = {
   getPrivateUrl,
   getPublicUrl,
   getReadStreamAndMeta,
-  deletePrivate, // new
-  // normalizeLocalKey is not exported publicly, but add it if you want
+  deletePrivate,
   listPublicPrefix,
   deletePublic,
   keyFromPublicUrl,
   getPresignedPutUrl,
   getSignedDownloadUrl,
-   headPrivate,
+  headPrivate,
 };
