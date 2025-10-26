@@ -48,7 +48,7 @@ router.post("/presign-product", requireAuth, requireCreator, async (req, res) =>
     const ext = path.extname(filename || "") || ".bin";
     const key = `products/${req.user.id}/${crypto.randomUUID?.() || crypto.randomBytes(16).toString("hex")}${ext}`;
     const contentDisposition = buildDisposition("attachment", downloadName || filename);
-    const url = await storage.getPresignedPutUrl(key, { contentType, contentDisposition, expiresIn: 3600 });
+    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
     res.json({ key, url, contentType });
   } catch (e) {
     console.error("presign-product error:", e);
@@ -69,7 +69,7 @@ router.post("/presign-request", requireAuth, async (req, res) => {
   try {
     const key = newRequestKey(filename);
     const contentDisposition = buildDisposition("attachment", downloadName || filename);
-    const url = await storage.getPresignedPutUrl(key, { contentType, contentDisposition, expiresIn: 3600 });
+    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
     res.json({ key, url, contentType });
   } catch (e) {
     console.error("presign-request error:", e);
