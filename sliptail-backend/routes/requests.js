@@ -494,24 +494,34 @@ router.post("/:id/deliver", requireAuth, requireCreator, standardLimiter, upload
   if (!r) return res.status(404).json({ error: "Request not found" });
   if (r.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
 
-  // ---- presigned shortcut ----
-  const creatorKey = (req.body.creator_attachment_key || "").trim();
-  if (creatorKey) {
-    try {
+      // ---- presigned shortcut ----
+    let creatorKey = (req.body.creator_attachment_key || "").trim();
+    if (creatorKey) {
+      try {
         const ct = String(req.body.content_type || "").toLowerCase();
-        if (looksVideoContentType(ct) || (!ct && looksVideoKey(creatorKey))) {
-          try { await makeAndStorePoster(creatorKey, { private: true }); }
-          catch (e) { console.warn("poster (presigned) skipped:", e?.message || e); }
+
+        // If missing extension, append one from content-type (video focus)
+        if (!/\.[a-z0-9]+$/i.test(creatorKey)) {
+          if (ct === "video/quicktime") creatorKey += ".mov";
+          else if (ct === "video/webm") creatorKey += ".webm";
+          else if (ct.startsWith("video/")) creatorKey += ".mp4";
+          // you can add audio/image mappings here if needed
         }
-      await db.query("BEGIN");
-      const { rows: updated } = await db.query(
-        `UPDATE custom_requests
-            SET creator_attachment_path = $1,
-                status = 'complete'
-          WHERE id = $2
-          RETURNING *`,
-        [creatorKey, requestId]
-      );
+
+    if (looksVideoContentType(ct) || (!ct && looksVideoKey(creatorKey))) {
+      try { await makeAndStorePoster(creatorKey, { private: true }); }
+      catch (e) { console.warn("poster (presigned) skipped:", e?.message || e); }
+    }
+
+    await db.query("BEGIN");
+    const { rows: updated } = await db.query(
+      `UPDATE custom_requests
+          SET creator_attachment_path = $1,
+              status = 'complete'
+        WHERE id = $2
+        RETURNING *`,
+      [creatorKey, requestId]
+    );
       await db.query(`UPDATE orders SET status = 'complete' WHERE id = $1`, [r.order_id]);
       await db.query("COMMIT");
 
@@ -672,12 +682,21 @@ router.post(
           let newAttachment = null;
 
           if (presignedKey) {
-            newAttachment = presignedKey;
+            let k = presignedKey;
             const ct = String(req.body.content_type || "").toLowerCase();
+
+            if (!/\.[a-z0-9]+$/i.test(k)) {
+              if (ct === "video/quicktime") k += ".mov";
+              else if (ct === "video/webm") k += ".webm";
+              else if (ct.startsWith("video/")) k += ".mp4";
+            }
+
+            newAttachment = k;
+
             if (looksVideoContentType(ct) || (!ct && looksVideoKey(newAttachment))) {
               try { await makeAndStorePoster(newAttachment, { private: true }); }
               catch (e) { console.warn("request complete: poster (presigned) skipped:", e?.message || e); }
-            }   
+            }
           }
           // --- end presigned block ---
 
@@ -1005,9 +1024,12 @@ router.get("/:id/delivery/meta", requireAuth, async (req, res) => {
     const key = (r.creator_attachment_path || "").trim();
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
-    // Infer from filename (good enough since you keep the original extension)
-    const contentType = mime.lookup(key) || "application/octet-stream";
-    res.json({ contentType });
+    // 1) ask storage for real content type (S3 HEAD)
+    const head = await storage.headPrivate(key);
+    // 2) fallback to filename if HEAD missing
+    const fallback = mime.lookup(key) || "application/octet-stream";
+
+    res.json({ contentType: (head && head.contentType) || fallback });
   } catch (e) {
     console.error("delivery/meta error:", e);
     res.status(500).json({ error: "Failed to load meta" });

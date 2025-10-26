@@ -634,6 +634,34 @@ async function getSignedDownloadUrl(
   return await s3Presign(s3, cmd, { expiresIn: expiresSeconds });
 }
 
+// --- HEAD helper to fetch true content type from storage
+async function headPrivate(key) {
+  const k = String(key || "").replace(/^\/+/, "");
+  if (!k) return { contentType: null };
+
+  if (DRIVER === "s3") {
+    const { HeadObjectCommand } = require("@aws-sdk/client-s3");
+    try {
+      const out = await s3.send(new HeadObjectCommand({
+        Bucket: PRIVATE_BUCKET,
+        Key: k,
+      }));
+      return { contentType: out.ContentType || null };
+    } catch (e) {
+      // best-effort; fall through
+      return { contentType: null };
+    }
+  }
+
+  // LOCAL fallback: guess from filename
+  try {
+    const mime = require("mime-types");
+    return { contentType: mime.lookup(k) || null };
+  } catch {
+    return { contentType: null };
+  }
+}
+
 module.exports = {
   DRIVER,
   isS3,
@@ -649,4 +677,5 @@ module.exports = {
   keyFromPublicUrl,
   getPresignedPutUrl,
   getSignedDownloadUrl,
+   headPrivate,
 };

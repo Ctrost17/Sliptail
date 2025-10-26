@@ -1514,7 +1514,7 @@ export default function PurchasesPage() {
   }
 
 const downloadRequestDelivery = async (requestId: number) => {
-  await downloadByUrl(`${apiBase}/api/downloads/request/${encodeURIComponent(requestId)}`);
+  await downloadByUrl(`${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`);
 };
 
 const handleDownload = async (item: Order) => {
