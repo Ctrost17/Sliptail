@@ -46,10 +46,10 @@ function AttachmentPreview({
   };
 
   return (
-      <div
-        className="relative mt-3 mx-auto w-full max-w-[22rem] sm:max-w-[36rem] md:max-w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 max-h-[70vh]"
-        style={ratio ? { aspectRatio: String(ratio) } : undefined}
-      >
+    <div
+      className="relative mt-3 mx-auto w-full max-w-[22rem] sm:max-w-[36rem] md:max-w-full rounded-xl overflow-hidden ring-1 ring-neutral-200 max-h-[70vh]"
+      style={ratio ? { aspectRatio: String(ratio) } : undefined}
+    >
       {isAudio ? (
         <audio
           src={url}
@@ -112,11 +112,16 @@ export default function NewRequestPage() {
   const [details, setDetails] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const submittingRef = useRef(false);
+
+  // presigned-upload state
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [uploadPhase, setUploadPhase] = useState<"uploading" | "finalizing" | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadedKey, setUploadedKey] = useState<string | null>(null);
+  const [uploadedCT, setUploadedCT] = useState<string | null>(null);
+
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   // cleanup object URL when file changes/unmounts
   useEffect(() => {
@@ -140,7 +145,7 @@ export default function NewRequestPage() {
   function redirectToPurchases(toastMsg: string) {
     try {
       import("@/lib/flash")
-        .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() }))
+        .then((m) => m.setFlash({ kind: "success", title: toastMsg, ts: Date.now() } as any))
         .catch(() => {});
     } catch {}
     const url = `/purchases?toast=${encodeURIComponent(toastMsg)}`;
@@ -152,43 +157,59 @@ export default function NewRequestPage() {
     }, 150);
   }
 
-  function postFormWithProgress(opts: {
-    url: string;
-    formData: FormData;
-    headers?: Record<string, string>;
-    withCredentials?: boolean;
-    onProgress?: (pct: number) => void;
-  }): Promise<{ ok: boolean; status: number; statusText: string; body: string }> {
-    return new Promise((resolve) => {
+  // ---- Direct-to-S3 helpers ----
+  async function presignForRequest(theFile: File): Promise<{ key: string; url: string; contentType: string }> {
+    const res = await fetch(`${API_BASE}/api/uploads/presign-request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        filename: theFile.name,
+        contentType: theFile.type || "application/octet-stream",
+      }),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Failed to presign upload (${res.status}) ${t}`);
+    }
+    return res.json();
+  }
+
+  function xhrPutWithProgress(url: string, theFile: File, contentType: string): Promise<void> {
+    return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", opts.url, true);
-
-      if (opts.withCredentials) xhr.withCredentials = true;
-      if (opts.headers) {
-        for (const [k, v] of Object.entries(opts.headers)) xhr.setRequestHeader(k, v);
-      }
-
+      xhr.open("PUT", url, true);
+      xhr.setRequestHeader("Content-Type", contentType || "application/octet-stream");
       xhr.upload.onprogress = (ev) => {
         if (!ev.lengthComputable) return;
         const pct = Math.max(0, Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
-        opts.onProgress?.(pct);
+        setUploadPct(pct);
       };
-
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 4) {
-          resolve({
-            ok: xhr.status >= 200 && xhr.status < 300,
-            status: xhr.status,
-            statusText: xhr.statusText,
-            body: xhr.responseText || "",
-          });
-        }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve();
+        reject(new Error(`S3 upload failed (${xhr.status})`));
       };
-
-      xhr.send(opts.formData);
+      xhr.onerror = () => reject(new Error("Network error during upload"));
+      xhr.send(theFile);
     });
   }
 
+  async function ensureUploadedIfAny(): Promise<void> {
+    if (!file) return;                 // no file – nothing to upload
+    if (uploadedKey) return;           // already uploaded in this session
+
+    setUploadError(null);
+    setUploadPhase("uploading");
+    setUploadPct(0);
+
+    const { key, url, contentType } = await presignForRequest(file);
+    await xhrPutWithProgress(url, file, contentType);
+    setUploadedKey(key);
+    setUploadedCT(contentType);
+    setUploadPct(100);
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -197,41 +218,49 @@ export default function NewRequestPage() {
     setSubmitting(true);
     submittingRef.current = true;
     setUploadError(null);
-    setUploadPct(0);
-    setUploadPhase("uploading");
-
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 20000);
+    setUploadPct(null);
+    setUploadPhase(null);
 
     try {
-      const formData = new FormData();
-      const useSessionFlow = Boolean(sessionId);
-      let url = `${API_BASE}/api/requests`;
-
-      if (useSessionFlow) {
-        url = `${API_BASE}/api/requests/create-from-session`;
-        formData.append("session_id", sessionId);
-        formData.append("message", details || "");
-      } else {
-        formData.append("orderId", String(orderId));
-        formData.append("details", details || "");
+      // 1) Upload directly to S3 if a file is selected
+      if (file) {
+        await ensureUploadedIfAny();
       }
-      if (file) formData.append("attachment", file);
 
-      const headers: Record<string, string> = { Accept: "application/json" };
-      if (token) headers.Authorization = `Bearer ${token}`;
+      // 2) Create the request via JSON (no multipart)
+      setUploadPhase("finalizing");
 
-      // First try main request
-      let res = await postFormWithProgress({
-        url,
-        formData,
-        headers,
-        withCredentials: true,
-        onProgress: (pct) => setUploadPct(pct),
+      const payload: Record<string, any> = {
+        // Send both keys the backend might expect:
+        message: details || "",
+        details: details || "",
+      };
+
+      if (sessionId) payload.session_id = sessionId;
+      if (orderId) payload.orderId = orderId;
+
+      if (uploadedKey) {
+        payload.attachment_key = uploadedKey;
+        if (uploadedCT) payload.attachment_content_type = uploadedCT;
+      }
+
+      // Choose the correct create endpoint (JSON)
+      const url = sessionId
+        ? `${API_BASE}/api/requests/create-from-session`
+        : `${API_BASE}/api/requests/create`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+        credentials: "include",
       });
 
-      // Auth redirect if needed
-      if ((res.status === 401 || res.status === 403)) {
+      if (res.status === 401 || res.status === 403) {
+        // route to login preserving query
         const params = new URLSearchParams();
         if (orderId) params.set("orderId", String(orderId));
         if (sessionId) params.set("session_id", sessionId);
@@ -240,52 +269,26 @@ export default function NewRequestPage() {
         return;
       }
 
-      // Fallback to orderId flow if session flow failed with 5xx
-      if (!res.ok && useSessionFlow && res.status >= 500 && orderId) {
-        const fd2 = new FormData();
-        fd2.append("orderId", String(orderId));
-        fd2.append("details", details || "");
-        if (file) fd2.append("attachment", file);
-
-        setUploadPct(0);
-        setUploadPhase("uploading");
-        res = await postFormWithProgress({
-          url: `${API_BASE}/api/requests`,
-          formData: fd2,
-          headers,
-          withCredentials: true,
-          onProgress: (pct) => setUploadPct(pct),
-        });
-      }
-
       if (!res.ok) {
-        let msg = `${res.status} ${res.statusText}`;
+        const t = await res.text().catch(() => "");
+        let msg = `Failed to create request (${res.status})`;
         try {
-          const j = JSON.parse(res.body || "{}");
+          const j = JSON.parse(t || "{}");
           msg = j?.error || j?.message || msg;
-        } catch {
-          if (res.body) msg = res.body;
-        }
+        } catch {}
         throw new Error(msg);
       }
 
-      setUploadPhase("finalizing");
+      // 3) Success → toast on purchases page
       redirectToPurchases("Your request has been submitted!");
-
     } catch (e: any) {
-      if (e?.name === "AbortError") {
-        error("Request timed out. Please try again.");
-        setUploadError("Timed out");
-      } else {
-        const msg = e instanceof Error ? e.message : "Could not submit your request.";
-        error(msg);
-        setUploadError(msg);
-      }
+      const msg = e?.message || "Could not submit your request.";
+      error(msg);
+      setUploadError(msg);
     } finally {
-      clearTimeout(t);
       setSubmitting(false);
       submittingRef.current = false;
-      // leave the bar visible if there's an error; otherwise reset after a short delay
+      // keep the bar if there was an error; otherwise reset shortly
       if (!uploadError) {
         setTimeout(() => {
           setUploadPct(null);
@@ -301,9 +304,16 @@ export default function NewRequestPage() {
     if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     setFile(f);
     setPreviewUrl(f ? URL.createObjectURL(f) : null);
+    // reset any previous upload state if they pick a new file
+    setUploadedKey(null);
+    setUploadedCT(null);
+    setUploadPct(null);
+    setUploadPhase(null);
+    setUploadError(null);
   }
 
   function doLater() {
+    // NO toast here (per your preference)
     router.replace("/purchases");
     setTimeout(() => {
       if (window.location.pathname.includes("/requests/new")) {
@@ -373,6 +383,7 @@ export default function NewRequestPage() {
           {/* Inline media preview (image / video / audio) */}
           <AttachmentPreview file={file} url={previewUrl} />
         </label>
+
         {(uploadPhase || uploadPct !== null || uploadError) && (
           <div className="mt-2 space-y-2">
             {uploadPhase && (
@@ -396,6 +407,7 @@ export default function NewRequestPage() {
             )}
           </div>
         )}
+
         <div className="mt-4 flex gap-3">
           <button
             type="submit"

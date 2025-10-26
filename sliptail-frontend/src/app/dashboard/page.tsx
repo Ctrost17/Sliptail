@@ -136,17 +136,15 @@ function buildAuthHeaders(extra?: Record<string, string>): HeadersInit {
 
 async function presignAndUploadToPrivateBucket(apiBase: string, file: File) {
   // 1) Ask backend for a presigned target
-  const presignRes = await fetch(`${apiBase}/api/uploads/presign`, {
-    method: "POST",
-    credentials: "include",
-    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({
-      filename: file.name,
-      contentType: file.type || "application/octet-stream",
-      private: true,
-      prefix: "requests",
-    }),
-  });
+    const presignRes = await fetch(`${apiBase}/api/uploads/presign-request`, {
+      method: "POST",
+      credentials: "include",
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || "application/octet-stream",
+      }),
+    });
 
   if (!presignRes.ok) {
     const text = await presignRes.text().catch(() => "");
@@ -257,17 +255,15 @@ async function presignAndUploadToPrivateBucketWithProgress(
   onProgress?: (sent:number,total:number)=>void
 ) {
   // 1) Presign
-  const presignRes = await fetch(`${apiBase}/api/uploads/presign`, {
-    method: "POST",
-    credentials: "include",
-    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({
-      filename: file.name,
-      contentType: file.type || "application/octet-stream",
-      private: true,
-      prefix: "requests",
-    }),
-  });
+    const presignRes = await fetch(`${apiBase}/api/uploads/presign-request`, {
+      method: "POST",
+      credentials: "include",
+      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || "application/octet-stream",
+      }),
+    });
   if (!presignRes.ok) throw new Error(await presignRes.text().catch(() => `Presign failed (${presignRes.status})`));
   const presign: any = await presignRes.json();
 
