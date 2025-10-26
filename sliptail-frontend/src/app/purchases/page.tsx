@@ -1513,24 +1513,15 @@ export default function PurchasesPage() {
     if (lastErr) throw lastErr;
   }
 
-// app/purchases/page.tsx
-async function downloadViaApiPath(path: string) {
-  const apiBase = toApiBase();
-  const url = `${apiBase}${path}${path.includes("?") ? "&" : "?"}ts=${Date.now()}`;
-
-  let iframe = document.getElementById("dl-iframe") as HTMLIFrameElement | null;
-  if (!iframe) {
-    iframe = document.createElement("iframe");
-    iframe.id = "dl-iframe";
-    iframe.style.display = "none";
-    document.body.appendChild(iframe);
-  }
-  iframe.src = url;
-}
-
-// AFTER
 const downloadRequestDelivery = async (requestId: number) => {
-  await downloadViaApiPath(`/api/downloads/request/${encodeURIComponent(requestId)}`);
+  await downloadByUrl(`${apiBase}/api/downloads/request/${encodeURIComponent(requestId)}`);
+};
+
+const handleDownload = async (item: Order) => {
+  if (!item.product_id) return;
+  // optional nicer filename if you have it:
+  const fname = item.product?.filename || `${item.product?.title || "download"}`.replace(/[^\w.\- ]+/g, "_");
+  await downloadByUrl(`${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`, fname);
 };
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
@@ -1585,10 +1576,6 @@ const downloadRequestDelivery = async (requestId: number) => {
       showError(message);
     }
   };
-const handleDownload = async (item: Order) => {
-  if (!item.product_id) return;
-await downloadViaApiPath(`/api/downloads/file/${encodeURIComponent(item.product_id)}`);
-};
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
   try {
@@ -2000,8 +1987,12 @@ await downloadViaApiPath(`/api/downloads/file/${encodeURIComponent(item.product_
                         <div className="space-y-3">
                           <button
                             type="button"
-                              onClick={() =>
-                                downloadViaApiPath(`/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`)
+                            onClick={() =>
+                                downloadByUrl(
+                                  `${apiBase}/api/requests/${encodeURIComponent(
+                                    selectedItem.request_id!
+                                  )}/my-attachment/file`
+                                )
                               }
                             className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
                           >
