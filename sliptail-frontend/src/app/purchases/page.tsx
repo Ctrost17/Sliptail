@@ -1513,34 +1513,24 @@ export default function PurchasesPage() {
     if (lastErr) throw lastErr;
   }
 
-  async function downloadViaApiPath(path: string, fallbackName?: string) {
+// app/purchases/page.tsx
+async function downloadViaApiPath(path: string) {
   const apiBase = toApiBase();
-  const res = await fetch(`${apiBase}${path}`, { credentials: "include" });
-  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  const url = `${apiBase}${path}${path.includes("?") ? "&" : "?"}ts=${Date.now()}`;
 
-  // try to get a nice filename from the server, else fallback
-  const cd = res.headers.get("content-disposition") || "";
-  const m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(cd);
-  const filename = m ? decodeURIComponent(m[1]) : (fallbackName || "download");
-
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  let iframe = document.getElementById("dl-iframe") as HTMLIFrameElement | null;
+  if (!iframe) {
+    iframe = document.createElement("iframe");
+    iframe.id = "dl-iframe";
+    iframe.style.display = "none";
+    document.body.appendChild(iframe);
+  }
+  iframe.src = url;
 }
 
 // AFTER
 const downloadRequestDelivery = async (requestId: number) => {
-  await downloadViaApiPath(
-    `/api/requests/${encodeURIComponent(requestId)}/download`,
-    `request-${requestId}`
-  );
+  await downloadViaApiPath(`/api/downloads/request/${encodeURIComponent(requestId)}`);
 };
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
@@ -1597,10 +1587,7 @@ const downloadRequestDelivery = async (requestId: number) => {
   };
 const handleDownload = async (item: Order) => {
   if (!item.product_id) return;
-  await downloadViaApiPath(
-    `/api/downloads/file/${encodeURIComponent(item.product_id)}`,
-    item.product?.filename || `product-${item.product_id}`
-  );
+await downloadViaApiPath(`/api/downloads/file/${encodeURIComponent(item.product_id)}`);
 };
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
@@ -2013,12 +2000,9 @@ const handleDownload = async (item: Order) => {
                         <div className="space-y-3">
                           <button
                             type="button"
-                            onClick={() =>
-                              downloadViaApiPath(
-                                `/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`,
-                                `my-request-${selectedItem.request_id}`
-                              )
-                            }
+                              onClick={() =>
+                                downloadViaApiPath(`/api/requests/${encodeURIComponent(selectedItem.request_id!)}/my-attachment/file`)
+                              }
                             className="inline-flex items-center bg-blue-100 text-blue-700 px-4 py-2.5 rounded-lg hover:bg-blue-200 transition-colors"
                           >
                             <Download className="w-5 h-5 mr-2" />
