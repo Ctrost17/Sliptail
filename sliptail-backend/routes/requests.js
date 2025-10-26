@@ -11,6 +11,7 @@ const { strictLimiter, standardLimiter } = require("../middleware/rateLimit");
 const { notifyRequestDelivered, notifyCreatorNewRequest } = require("../utils/notify");
 const { needsTranscode, transcodeToMp4 } = require("../utils/video");
 const storage = require("../storage");
+const { buildDisposition } = require("../utils/disposition");
 const { makeAndStorePoster } = require("../utils/videoPoster");
 const os = require("os");
 const mime = require("mime-types");
@@ -192,6 +193,7 @@ router.post(
       const uploaded = await storage.uploadPrivate({
         key,
         contentType: req.file.mimetype || "application/octet-stream",
+        contentDisposition: buildDisposition("attachment", req.file.originalname),
         body: req.file.path || req.file.buffer,
       });
       if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
@@ -301,6 +303,7 @@ router.post("/", requireAuth, strictLimiter, upload.single("attachment"), async 
         const uploaded = await storage.uploadPrivate({
           key,
           contentType: req.file.mimetype || "application/octet-stream",
+          contentDisposition: buildDisposition("attachment", req.file.originalname),
           body: req.file.path || req.file.buffer,
         });
         if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }
@@ -1126,6 +1129,7 @@ router.post(
           const uploaded = await storage.uploadPrivate({
             key,
             contentType: req.file.mimetype || "application/octet-stream",
+            contentDisposition: buildDisposition("attachment", req.file.originalname),
             body: req.file.path || req.file.buffer,
           });
           if (req.file.path) { try { await fs.promises.unlink(req.file.path); } catch {} }

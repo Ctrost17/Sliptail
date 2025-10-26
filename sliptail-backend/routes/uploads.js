@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const path = require("path");
 const { requireAuth, requireCreator } = require("../middleware/auth");
 const storage = require("../storage");
+const { buildDisposition } = require("../utils/disposition");
 
 const router = express.Router();
 
@@ -39,14 +40,15 @@ router.post("/presign-post", requireAuth, requireCreator, async (req, res) => {
 });
 
 router.post("/presign-product", requireAuth, requireCreator, async (req, res) => {
-  const { filename, contentType } = req.body || {};
+  const { filename, contentType, downloadName } = req.body || {};
   if (!filename || !contentType) return res.status(400).json({ error: "filename and contentType required" });
 
   try {
     // keep files grouped by user
     const ext = path.extname(filename || "") || ".bin";
     const key = `products/${req.user.id}/${crypto.randomUUID?.() || crypto.randomBytes(16).toString("hex")}${ext}`;
-    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
+    const contentDisposition = buildDisposition("attachment", downloadName || filename);
+    const url = await storage.getPresignedPutUrl(key, { contentType, contentDisposition, expiresIn: 3600 });
     res.json({ key, url, contentType });
   } catch (e) {
     console.error("presign-product error:", e);
@@ -60,13 +62,14 @@ router.post("/presign-product", requireAuth, requireCreator, async (req, res) =>
  * Returns: { key, url, contentType }
  */
 router.post("/presign-request", requireAuth, async (req, res) => {
-  const { filename, contentType } = req.body || {};
+  const { filename, contentType, downloadName } = req.body || {};
   if (!filename || !contentType) {
     return res.status(400).json({ error: "filename and contentType required" });
   }
   try {
     const key = newRequestKey(filename);
-    const url = await storage.getPresignedPutUrl(key, { contentType, expiresIn: 3600 });
+    const contentDisposition = buildDisposition("attachment", downloadName || filename);
+    const url = await storage.getPresignedPutUrl(key, { contentType, contentDisposition, expiresIn: 3600 });
     res.json({ key, url, contentType });
   } catch (e) {
     console.error("presign-request error:", e);

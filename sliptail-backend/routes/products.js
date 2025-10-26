@@ -7,6 +7,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const storage = require("../storage"); // S3 or local
+const { buildDisposition } = require("../utils/disposition");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth"); // no requireCreator
 const { validate } = require("../middleware/validate");
@@ -524,9 +525,11 @@ router.post(
             if (storage.isS3) {
               const key = s3KeyForProduct(user_id, ".mp4");
               try {
+                const contentDisposition = buildDisposition("attachment", title || req.file.originalname);
                 await storage.uploadPrivate({
                   key,
                   contentType: "video/mp4",
+                  contentDisposition,
                   body: outputPath,        // <<< pass the file path so storage.js streams/multipart-uploads
                 });
                 await fs.promises.unlink(outputPath).catch(() => {});
@@ -552,9 +555,11 @@ router.post(
       if (storage.isS3) {
         const key = s3KeyForProduct(user_id, ext || ".bin");
         try {
+          const contentDisposition = buildDisposition("attachment", title || req.file.originalname);
           await storage.uploadPrivate({
             key,
             contentType: mimeType || "application/octet-stream",
+            contentDisposition,
             body: req.file.buffer,
           });
           return finalizeCreate(key); // ✅ store S3 key in products.filename

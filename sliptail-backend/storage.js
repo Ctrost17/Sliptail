@@ -141,7 +141,7 @@ function isCdnEligibleKey(raw) {
 
 /* ==================== PUBLIC API ==================== */
 
-async function uploadPrivate({ key, contentType, body }) {
+async function uploadPrivate({ key, contentType, contentDisposition, body }) {
   if (!key) throw new Error("uploadPrivate: key is required");
 
   if (DRIVER === "s3") {
@@ -155,6 +155,7 @@ async function uploadPrivate({ key, contentType, body }) {
           Key: key,
           Body: toBodyStream(body),
           ContentType,
+           ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
         }),
         queueSize: 4,
         partSize: 8 * 1024 * 1024,
@@ -168,6 +169,7 @@ async function uploadPrivate({ key, contentType, body }) {
           Key: key,
           Body: toBodyStream(body),
           ContentType,
+          ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
         })
       );
       await s3.send(put);
@@ -191,7 +193,7 @@ async function uploadPrivate({ key, contentType, body }) {
   return { key: webPath, url: webPath };
 }
 
-async function uploadPublic({ key, contentType, body, expiresIn = 24 * 60 * 60 }) {
+async function uploadPublic({ key, contentType, contentDisposition, body, expiresIn = 24 * 60 * 60 }) {
   if (!key) throw new Error("uploadPublic: key is required");
 
   if (DRIVER === "s3") {
@@ -206,6 +208,7 @@ async function uploadPublic({ key, contentType, body, expiresIn = 24 * 60 * 60 }
           Key: key,
           Body: toBodyStream(body),
           ContentType,
+           ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
           ...(PUBLIC_BUCKET ? {} : ALLOW_PUBLIC_ACL ? { ACL: "public-read" } : {}),
         }),
         queueSize: 4,
@@ -219,6 +222,7 @@ async function uploadPublic({ key, contentType, body, expiresIn = 24 * 60 * 60 }
         Key: key,
         Body: toBodyStream(body),
         ContentType,
+         ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
         ...(PUBLIC_BUCKET ? {} : ALLOW_PUBLIC_ACL ? { ACL: "public-read" } : {}),
       });
       await s3.send(new PutObjectCommand(params));
@@ -482,12 +486,13 @@ function keyFromPublicUrl(url) {
   }
 }
 
-async function getPresignedPutUrl(key, { contentType = "application/octet-stream", expiresIn = 3600 } = {}) {
+async function getPresignedPutUrl(key, { contentType = "application/octet-stream", contentDisposition = null, expiresIn = 3600 } = {}) {
   if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3");
   const cmd = new PutObjectCommand({
     Bucket: PRIVATE_BUCKET,
     Key: String(key).replace(/^\/+/, ""),
     ContentType: contentType,
+    ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
   });
   return await s3Presign(s3, cmd, { expiresIn });
 }
@@ -499,40 +504,39 @@ async function getPresignedPutUrl(key, { contentType = "application/octet-stream
  */
 async function getSignedDownloadUrl(
   key,
-  { filename = null, expiresSeconds = 120, disposition = "attachment", contentType = null } = {}
+  { filename = null, expiresSeconds = 60, disposition = null, contentType = null } = {}
 ) {
   const k = String(key).replace(/^\/+/, "");
   const safeName = (filename || k.split("/").pop() || "download").replace(/"/g, "");
   const encodedName = encodeURIComponent(safeName);
-  const disp = `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`;
+
+  // Only build disp if disposition is truthy (e.g., "attachment" or "inline")
+  const hasDisp = typeof disposition === "string" && disposition.trim().length > 0;
+  const disp = hasDisp
+    ? `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
+    : null;
 
   // Prefer CloudFront if configured — REQUIRES query-string forwarding on the CF behavior
   if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
     const u = new URL(
-      `${CF_DOMAIN.replace(/\/+$/, "")}/${k
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/")}`
+      `${CF_DOMAIN.replace(/\/+$/, "")}/${k.split("/").map(encodeURIComponent).join("/")}`
     );
 
-    // Forward these so S3 sets the headers on response
-    u.searchParams.set("response-content-disposition", disp);
+    // Only append response overrides if explicitly requested
+    if (disp) u.searchParams.set("response-content-disposition", disp);
     if (contentType) u.searchParams.set("response-content-type", contentType);
 
     return getCFSignedUrl({
       url: u.toString(),
-      keyPairId: CF_KEY_PAIR_ID,
+      keyPairId: CF_KEY_PAIR_ID,   // For Key Groups, this MUST be the Public Key ID
       privateKey: CF_PRIVKEY,
       dateLessThan: new Date(Date.now() + expiresSeconds * 1000).toISOString(),
     });
   }
 
-  // Fallback: S3 pre-signed GET with response overrides
-  const cmdParams = {
-    Bucket: PRIVATE_BUCKET,
-    Key: k,
-    ResponseContentDisposition: disp,
-  };
+  // S3 presign fallback (only set response headers if asked)
+  const cmdParams = { Bucket: PRIVATE_BUCKET, Key: k };
+  if (disp) cmdParams.ResponseContentDisposition = disp;
   if (contentType) cmdParams.ResponseContentType = contentType;
 
   const cmd = new GetObjectCommand(cmdParams);
