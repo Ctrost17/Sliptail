@@ -610,11 +610,11 @@ async function getSignedDownloadUrl(
     );
 
     // Forward these so S3 sets the headers on response
-    u.searchParams.set(
-      "response-content-disposition",
-      `attachment; filename="${encodeURIComponent(safeName)}"`
-    );
-    u.searchParams.set("response-content-type", "application/octet-stream");
+    //u.searchParams.set(
+     // "response-content-disposition",
+     // `attachment; filename="${encodeURIComponent(safeName)}"`
+   // );
+    //u.searchParams.set("response-content-type", "application/octet-stream");
 
     return getCFSignedUrl({
       url: u.toString(),
@@ -628,8 +628,8 @@ async function getSignedDownloadUrl(
   const cmd = new GetObjectCommand({
     Bucket: PRIVATE_BUCKET,
     Key: k,
-    ResponseContentDisposition: `attachment; filename="${safeName}"`,
-    ResponseContentType: "application/octet-stream",
+    //ResponseContentDisposition: `attachment; filename="${safeName}"`,
+    //ResponseContentType: "application/octet-stream",
   });
   return await s3Presign(s3, cmd, { expiresIn: expiresSeconds });
 }
