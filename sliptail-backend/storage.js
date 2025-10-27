@@ -508,14 +508,13 @@ async function getSignedDownloadUrl(
 ) {
   const k = String(key).replace(/^\/+/, "");
   const safeName = (filename || k.split("/").pop() || "download").replace(/"/g, "");
-  const plainName = safeName;                      // keep quoted filename plain
-  const encodedName = encodeURIComponent(safeName); // encode only for filename*
+  const encodedName = encodeURIComponent(safeName);
 
   // Only build disp if disposition is truthy (e.g., "attachment" or "inline")
-    const hasDisp = typeof disposition === "string" && disposition.trim().length > 0;
-    const disp = hasDisp
-      ? `${disposition}; filename="${plainName}"; filename*=UTF-8''${encodedName}`
-      : null;
+  const hasDisp = typeof disposition === "string" && disposition.trim().length > 0;
+  const disp = hasDisp
+    ? `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
+    : null;
 
   // Prefer CloudFront if configured — REQUIRES query-string forwarding on the CF behavior
   if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
