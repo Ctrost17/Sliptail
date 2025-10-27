@@ -333,63 +333,26 @@ function VideoWithPoster({ src, poster, className = "" }: { src: string; poster?
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hasPosterProp = Boolean(poster?.trim());
 
-  // Resolve video source (check if it needs credentials)
+  // Resolve video source (let <video> follow redirects itself)
   React.useEffect(() => {
-    let revoke: string | null = null;
     setResolvedVideoSrc(null);
     setVideoError(null);
-    
+
     if (!src) {
       console.log('[Dashboard VideoWithPoster] No video src provided');
       return;
     }
-    
-    console.log('[Dashboard VideoWithPoster] Resolving video src:', src);
-    
-    // If it looks like a blob URL or data URL, use directly
+
+    // If blob/data URL, use directly; otherwise hand the URL straight to <video>
     if (src.startsWith('blob:') || src.startsWith('data:')) {
       setResolvedVideoSrc(src);
       return;
     }
-    
-    // For protected endpoints (like /api/... paths), resolve with credentials
-    if (src.includes('/api/') || src.includes('attachment') || src.includes('delivery')) {
-      (async () => {
-        try {
-          console.log('[Dashboard VideoWithPoster] Fetching protected video:', src);
-          const res = await fetch(src, { 
-            credentials: "include", 
-            method: "GET",
-            headers: { 'Accept': 'video/*,*/*' }
-          });
-          
-          if (!res.ok) {
-            const errorMsg = `HTTP ${res.status}: ${res.statusText}`;
-            console.error('[Dashboard VideoWithPoster] Video fetch failed:', errorMsg);
-            setVideoError(errorMsg);
-            return;
-          }
-          
-          const contentType = res.headers.get("content-type") || "";
-          console.log('[Dashboard VideoWithPoster] Video content-type:', contentType);
-          
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          revoke = objectUrl;
-          setResolvedVideoSrc(objectUrl);
-          console.log('[Dashboard VideoWithPoster] ✓ Video resolved as blob');
-        } catch (err) {
-          console.error('[Dashboard VideoWithPoster] Error resolving video:', err);
-          setVideoError(err instanceof Error ? err.message : 'Network error');
-        }
-      })();
-      
-      return () => { if (revoke) URL.revokeObjectURL(revoke); };
-    } else {
-      // Direct URL, use as-is
-      setResolvedVideoSrc(src);
-    }
+
+    // IMPORTANT: do NOT prefetch protected endpoints; let <video> follow 302
+    setResolvedVideoSrc(src);
   }, [src]);
+
 
   // Fetch poster if provided
   React.useEffect(() => {
