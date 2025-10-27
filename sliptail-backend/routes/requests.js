@@ -902,7 +902,7 @@ router.get("/:id/download", requireAuth, async (req, res) => {
     if (Number(r.buyer_id) !== Number(userId)) return res.status(403).json({ error: "Not your request" });
     if (String(r.status || "").toLowerCase() !== "complete") return res.status(403).json({ error: "Not ready for download" });
 
-    const key = (r.creator_attachment_path || "").trim();
+    const key = storage.keyFromPublicUrl((r.creator_attachment_path || "").trim());
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
     const filename = key.split("/").pop() || "delivery";
@@ -929,7 +929,7 @@ router.get("/:id/my-attachment/file", requireAuth, async (req, res) => {
     if (!r) return res.status(404).json({ error: "Request not found" });
     if (Number(r.buyer_id) !== Number(buyerId)) return res.status(403).json({ error: "Not your request" });
 
-    const key = (r.attachment_path || "").trim();
+    const key = storage.keyFromPublicUrl((r.attachment_path || "").trim());
     if (!key) return res.status(404).json({ error: "No attachment uploaded" });
 
     const filename = key.split("/").pop() || "attachment";
