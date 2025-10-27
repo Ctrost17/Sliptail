@@ -1515,14 +1515,12 @@ export default function PurchasesPage() {
   }
 
 const downloadRequestDelivery = async (requestId: number) => {
-  directDownload(`${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`);
+  await directDownload(`${apiBase}/api/requests/${encodeURIComponent(requestId)}/download`);
 };
 
 const handleDownload = async (item: Order) => {
   if (!item.product_id) return;
-  // optional nicer filename if you have it:
-  const fname = item.product?.filename || `${item.product?.title || "download"}`.replace(/[^\w.\- ]+/g, "_");
-  directDownload(`${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`, fname);
+  await directDownload(`${apiBase}/api/downloads/file/${encodeURIComponent(item.product_id)}`);
 };
 
   // --- Robust review submit: try product route first, then creators, then generic fallbacks ---
@@ -1580,7 +1578,13 @@ const handleDownload = async (item: Order) => {
 
   const downloadByUrl = useCallback(async (href: string, filename?: string) => {
   try {
-    const res = await fetch(href, { credentials: "include" });
+    const { token } = loadAuth();
+    const res = await fetch(href, { 
+      credentials: "include",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     const blobUrl = window.URL.createObjectURL(blob);
@@ -1592,9 +1596,9 @@ const handleDownload = async (item: Order) => {
     a.click();
     a.remove();
     window.URL.revokeObjectURL(blobUrl);
-  } catch {
-    // fallback if fetch fails
-    window.open(href, "_blank", "noopener");
+  } catch (err) {
+    console.error("Download failed:", err);
+    showError("Download failed. Please try again.");
   }
 }, []);
 

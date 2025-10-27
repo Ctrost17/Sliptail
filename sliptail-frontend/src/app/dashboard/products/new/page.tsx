@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { loadAuth } from "@/lib/auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
 
@@ -106,6 +107,14 @@ async function xhrPutWithProgress(opts: {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     xhr.setRequestHeader("Content-Type", contentType);
+    
+    // Add authentication for local storage uploads
+    const { token } = loadAuth();
+    if (token && url.includes(API_BASE)) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+    
+    xhr.withCredentials = true; // Include cookies for CORS
 
     xhr.upload.onprogress = (evt) => {
       if (!evt.lengthComputable) return;

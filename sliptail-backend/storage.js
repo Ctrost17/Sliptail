@@ -6,8 +6,16 @@ const fsp = fs.promises;
 const DRIVER = String(process.env.STORAGE_DRIVER || "local").toLowerCase();
 const isS3 = DRIVER === "s3";
 
-// CloudFront signer (rename to avoid clash with S3 presigner)
-const { getSignedUrl: getCFSignedUrl } = require("@aws-sdk/cloudfront-signer");
+// CloudFront signer (lazy-load only if needed)
+let getCFSignedUrl = null;
+if (DRIVER === "s3") {
+  try {
+    ({ getSignedUrl: getCFSignedUrl } = require("@aws-sdk/cloudfront-signer"));
+  } catch (e) {
+    console.warn("CloudFront signer not available:", e.message);
+  }
+}
+
 // CF env
 const CF_DOMAIN = process.env.CF_PRIVATE_DOMAIN || null; // e.g. "https://dxxx.cloudfront.net"
 const CF_KEY_PAIR_ID = process.env.CF_KEY_PAIR_ID || null;
@@ -487,7 +495,15 @@ function keyFromPublicUrl(url) {
 }
 
 async function getPresignedPutUrl(key, { contentType = "application/octet-stream", contentDisposition = null, expiresIn = 3600 } = {}) {
-  if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3");
+  // For local storage, return a direct upload URL to our backend
+  if (DRIVER === "local") {
+    const baseUrl = process.env.APP_URL || process.env.BACKEND_URL || 'http://localhost:5000';
+    // Return a URL that points to our backend upload endpoint
+    return `${baseUrl.replace(/\/$/, '')}/api/uploads/direct?key=${encodeURIComponent(key)}`;
+  }
+  
+  // For S3, use presigned PUT
+  if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3 or local");
   const cmd = new PutObjectCommand({
     Bucket: PRIVATE_BUCKET,
     Key: String(key).replace(/^\/+/, ""),
@@ -501,6 +517,7 @@ async function getPresignedPutUrl(key, { contentType = "application/octet-stream
  * getSignedDownloadUrl(key, { filename, expiresSeconds, disposition, contentType })
  * - If CF_* set: returns CloudFront signed URL for any key with query overrides so S3 sets headers.
  * - Else: S3 pre-signed GET with Response* overrides.
+ * - For local storage: returns the local path (absolute URL if BASE_URL is set)
  */
 async function getSignedDownloadUrl(
   key,
@@ -516,8 +533,22 @@ async function getSignedDownloadUrl(
     ? `${disposition}; filename="${encodedName}"; filename*=UTF-8''${encodedName}`
     : null;
 
+  // LOCAL storage: return local path (no signing needed)
+  if (DRIVER === "local") {
+    const localKey = normalizeLocalKey(k);
+    const relativePath = `/${localKey}`;
+    
+    // Make it absolute URL using APP_URL or BACKEND_URL
+    const baseUrl = process.env.APP_URL || process.env.BACKEND_URL || process.env.API_BASE_URL || '';
+    if (baseUrl) {
+      return `${baseUrl.replace(/\/$/, '')}${relativePath}`;
+    }
+    
+    return relativePath;
+  }
+
   // Prefer CloudFront if configured — REQUIRES query-string forwarding on the CF behavior
-  if (CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
+  if (getCFSignedUrl && CF_DOMAIN && CF_KEY_PAIR_ID && CF_PRIVKEY) {
     const u = new URL(
       `${CF_DOMAIN.replace(/\/+$/, "")}/${k.split("/").map(encodeURIComponent).join("/")}`
     );

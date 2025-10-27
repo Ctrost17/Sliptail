@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { API_BASE } from "@/lib/api";
+import { loadAuth } from "@/lib/auth";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 function useToast() {
@@ -182,6 +183,15 @@ export default function NewRequestPage() {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", url, true);
       xhr.setRequestHeader("Content-Type", contentType || "application/octet-stream");
+      
+      // Add authentication for local storage uploads
+      const { token } = loadAuth();
+      if (token && url.includes(API_BASE)) {
+        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+      
+      xhr.withCredentials = true; // Include cookies for CORS
+      
       xhr.upload.onprogress = (ev) => {
         if (!ev.lengthComputable) return;
         const pct = Math.max(0, Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
@@ -196,19 +206,32 @@ export default function NewRequestPage() {
     });
   }
 
-  async function ensureUploadedIfAny(): Promise<void> {
-    if (!file) return;                 // no file – nothing to upload
-    if (uploadedKey) return;           // already uploaded in this session
+  async function ensureUploadedIfAny(): Promise<{ key: string; contentType: string } | null> {
+    if (!file) return null;                 // no file – nothing to upload
+    if (uploadedKey) return { key: uploadedKey, contentType: uploadedCT || "application/octet-stream" };           // already uploaded in this session
 
     setUploadError(null);
     setUploadPhase("uploading");
     setUploadPct(0);
 
-    const { key, url, contentType } = await presignForRequest(file);
-    await xhrPutWithProgress(url, file, contentType);
-    setUploadedKey(key);
-    setUploadedCT(contentType);
-    setUploadPct(100);
+    console.log("[Upload] Starting file upload...", { fileName: file.name, fileSize: file.size });
+    
+    try {
+      const { key, url, contentType } = await presignForRequest(file);
+      console.log("[Upload] Got presigned URL", { key, url: url.substring(0, 50) + '...' });
+      
+      await xhrPutWithProgress(url, file, contentType);
+      console.log("[Upload] Upload completed successfully", { key });
+      
+      setUploadedKey(key);
+      setUploadedCT(contentType);
+      setUploadPct(100);
+      
+      return { key, contentType };
+    } catch (err) {
+      console.error("[Upload] Upload failed:", err);
+      throw err; // Re-throw to be caught by handleSubmit
+    }
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -223,8 +246,10 @@ export default function NewRequestPage() {
 
     try {
       // 1) Upload directly to S3 if a file is selected
+      let uploadResult: { key: string; contentType: string } | null = null;
       if (file) {
-        await ensureUploadedIfAny();
+        uploadResult = await ensureUploadedIfAny();
+        console.log("[Submit] Upload result:", uploadResult);
       }
 
         // 2) Create the request via JSON (no multipart)
@@ -254,10 +279,16 @@ export default function NewRequestPage() {
           throw new Error("Missing session_id or orderId for request creation");
         }
 
-        if (uploadedKey) {
-          payload.attachment_key = uploadedKey;
-          if (uploadedCT) payload.attachment_content_type = uploadedCT;
+        // Use the upload result directly instead of state (avoids race condition)
+        if (uploadResult) {
+          payload.attachment_key = uploadResult.key;
+          payload.attachment_content_type = uploadResult.contentType;
+          console.log("[Submit] Including attachment in request", { attachment_key: uploadResult.key, attachment_content_type: uploadResult.contentType });
+        } else if (file) {
+          console.warn("[Submit] File was selected but uploadResult is null!", { file: file.name });
         }
+
+        console.log("[Submit] Sending request", { url, payload });
 
         const res = await fetch(url, {
           method: "POST",

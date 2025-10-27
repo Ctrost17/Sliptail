@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { loadAuth } from "@/lib/auth";
 
 
 /** Types */
@@ -177,6 +178,14 @@ export default function ProductEditPage() {
         const xhr = new XMLHttpRequest();
         xhr.open("PUT", url);
         xhr.setRequestHeader("Content-Type", contentType);
+        
+        // Add authentication for local storage uploads
+        const { token } = loadAuth();
+        if (token && url.includes(API_BASE)) {
+          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        }
+        
+        xhr.withCredentials = true; // Include cookies for CORS
 
         xhr.upload.onprogress = (evt) => {
           if (!evt.lengthComputable) return;

@@ -42,10 +42,7 @@ const app = express();
 // If deploying behind a proxy/load balancer (Railway/Render/Heroku/Nginx/Cloudflare)
 app.set("trust proxy", 1); // so secure cookies work
 
-// Webhook MUST come before json parser (raw body)
-app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
-
-// CORS: allow your frontend origin + credentials for cookies
+// CORS: must come FIRST to handle all requests
 app.use(cors({
   origin: FRONTEND,
   credentials: true,
@@ -55,6 +52,34 @@ app.use(cors({
 
 // Ensure Express responds to preflight on all routes (fixes 404 on OPTIONS)
 app.options(/.*/, cors());
+
+// Webhook MUST come before json parser (raw body)
+app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
+
+// Direct upload endpoint for local storage (must come before JSON parser)
+app.put("/api/uploads/direct", express.raw({ type: '*/*', limit: '500mb' }), require("./middleware/auth").requireAuth, async (req, res, next) => {
+  const storage = require("./storage");
+  try {
+    const key = req.query.key;
+    if (!key) {
+      return res.status(400).json({ error: "Missing key parameter" });
+    }
+
+    if (storage.DRIVER === "local") {
+      await storage.uploadPrivate({
+        key,
+        body: req.body,
+        contentType: req.get('content-type') || 'application/octet-stream',
+      });
+      return res.status(200).json({ success: true, key });
+    }
+    
+    return res.status(400).json({ error: "Direct upload not supported for this storage driver" });
+  } catch (e) {
+    console.error("direct upload error:", e);
+    res.status(500).json({ error: "Upload failed" });
+  }
+});
 
 app.use(cookieParser());                                    // <-- add
 app.use(express.json({ limit: "25mb" }));

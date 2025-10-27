@@ -24,6 +24,15 @@ function putFileWithProgress(
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    
+    // Add authentication for local storage uploads
+    const { token } = loadAuth();
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:5000";
+    if (token && url.includes(apiBase)) {
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
+    
+    xhr.withCredentials = true; // Include cookies for CORS
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
