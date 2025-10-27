@@ -24,7 +24,7 @@ async function getPurchasedFile(userId, productId) {
   if (!row) return { error: "No access or not a purchase product", code: 403 };
   if (!row.filename) return { error: "File not found", code: 404 };
 
-  const key = String(row.filename);
+  const key = storage.keyFromPublicUrl(row.filename);
   const fallback = key.split("/").pop() || "download";
   const filename = (row.title ? String(row.title).trim() : fallback) || fallback;
   return { orderId: row.order_id, key, filename };
@@ -120,7 +120,8 @@ router.get("/request/:requestId", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Not ready for download" });
     }
 
-    const key = (r.creator_attachment_path || r.attachment_path || "").trim();
+    const raw = (r.creator_attachment_path || r.attachment_path || "").trim();
+    const key = storage.keyFromPublicUrl(raw);
     if (!key) return res.status(404).json({ error: "No delivery file" });
 
     const fallback = key.split("/").pop() || "delivery";
