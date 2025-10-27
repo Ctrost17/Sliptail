@@ -196,9 +196,13 @@ export default function NewRequestPage() {
     });
   }
 
-  async function ensureUploadedIfAny(): Promise<void> {
-    if (!file) return;                 // no file – nothing to upload
-    if (uploadedKey) return;           // already uploaded in this session
+  // AFTER:
+  async function ensureUploadedIfAny(): Promise<{ key: string; contentType: string } | null> {
+    if (!file) return null;                 // no file – nothing to upload
+    if (uploadedKey && uploadedCT) {
+      // already uploaded in this session
+      return { key: uploadedKey, contentType: uploadedCT };
+    }
 
     setUploadError(null);
     setUploadPhase("uploading");
@@ -206,9 +210,12 @@ export default function NewRequestPage() {
 
     const { key, url, contentType } = await presignForRequest(file);
     await xhrPutWithProgress(url, file, contentType);
+
     setUploadedKey(key);
     setUploadedCT(contentType);
     setUploadPct(100);
+
+    return { key, contentType };
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -221,43 +228,43 @@ export default function NewRequestPage() {
     setUploadPct(null);
     setUploadPhase(null);
 
+    // AFTER (use the return from ensureUploadedIfAny)
     try {
       // 1) Upload directly to S3 if a file is selected
+      let uploaded: { key: string; contentType: string } | null = null;
       if (file) {
-        await ensureUploadedIfAny();
+        uploaded = await ensureUploadedIfAny();
       }
 
-        // 2) Create the request via JSON (no multipart)
-        setUploadPhase("finalizing");
+      // 2) Create the request via JSON (no multipart)
+      setUploadPhase("finalizing");
 
-        const hasSession = !!sessionId;
-        const hasOrder = !!orderId;
+      const hasSession = !!sessionId;
+      const hasOrder = !!orderId;
 
-        let url: string;
-        let payload: Record<string, any>;
+      let url: string;
+      let payload: Record<string, any>;
 
-        if (hasSession) {
-          url = `${API_BASE}/api/requests/create-from-session`;
-          payload = {
-            session_id: sessionId,
-            message: details || "",
-          };
-        } else if (hasOrder) {
-          url = `${API_BASE}/api/requests`; // <-- legacy route that takes orderId
-          payload = {
-            orderId,                       // REQUIRED by this route
-            details: details || "",        // or message
-          };
-        } else {
-          // If you ever support the pure create route here, you MUST also provide:
-          // { creator_id, product_id, message }
-          throw new Error("Missing session_id or orderId for request creation");
-        }
+      if (hasSession) {
+        url = `${API_BASE}/api/requests/create-from-session`;
+        payload = {
+          session_id: sessionId,
+          message: details || "",
+        };
+      } else if (hasOrder) {
+        url = `${API_BASE}/api/requests`;
+        payload = {
+          orderId,
+          details: details || "",
+        };
+      } else {
+        throw new Error("Missing session_id or orderId for request creation");
+      }
 
-        if (uploadedKey) {
-          payload.attachment_key = uploadedKey;
-          if (uploadedCT) payload.attachment_content_type = uploadedCT;
-        }
+      if (uploaded) {
+        payload.attachment_key = uploaded.key;
+        payload.attachment_content_type = uploaded.contentType;
+      }
 
         const res = await fetch(url, {
           method: "POST",
