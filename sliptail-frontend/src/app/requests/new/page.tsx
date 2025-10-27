@@ -227,37 +227,47 @@ export default function NewRequestPage() {
         await ensureUploadedIfAny();
       }
 
-      // 2) Create the request via JSON (no multipart)
-      setUploadPhase("finalizing");
+        // 2) Create the request via JSON (no multipart)
+        setUploadPhase("finalizing");
 
-      const payload: Record<string, any> = {
-        // Send both keys the backend might expect:
-        message: details || "",
-        details: details || "",
-      };
+        const hasSession = !!sessionId;
+        const hasOrder = !!orderId;
 
-      if (sessionId) payload.session_id = sessionId;
-      if (orderId) payload.orderId = orderId;
+        let url: string;
+        let payload: Record<string, any>;
 
-      if (uploadedKey) {
-        payload.attachment_key = uploadedKey;
-        if (uploadedCT) payload.attachment_content_type = uploadedCT;
-      }
+        if (hasSession) {
+          url = `${API_BASE}/api/requests/create-from-session`;
+          payload = {
+            session_id: sessionId,
+            message: details || "",
+          };
+        } else if (hasOrder) {
+          url = `${API_BASE}/api/requests`; // <-- legacy route that takes orderId
+          payload = {
+            orderId,                       // REQUIRED by this route
+            details: details || "",        // or message
+          };
+        } else {
+          // If you ever support the pure create route here, you MUST also provide:
+          // { creator_id, product_id, message }
+          throw new Error("Missing session_id or orderId for request creation");
+        }
 
-      // Choose the correct create endpoint (JSON)
-      const url = sessionId
-        ? `${API_BASE}/api/requests/create-from-session`
-        : `${API_BASE}/api/requests/create`;
+        if (uploadedKey) {
+          payload.attachment_key = uploadedKey;
+          if (uploadedCT) payload.attachment_content_type = uploadedCT;
+        }
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify(payload),
-        credentials: "include",
-      });
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify(payload),
+          credentials: "include",
+        });
 
       if (res.status === 401 || res.status === 403) {
         // route to login preserving query
