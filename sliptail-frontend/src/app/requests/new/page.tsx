@@ -244,6 +244,7 @@ export default function NewRequestPage() {
     setUploadPct(null);
     setUploadPhase(null);
 
+    // AFTER (use the return from ensureUploadedIfAny)
     try {
       // 1) Upload directly to S3 if a file is selected
       let uploadResult: { key: string; contentType: string } | null = null;
@@ -252,32 +253,30 @@ export default function NewRequestPage() {
         console.log("[Submit] Upload result:", uploadResult);
       }
 
-        // 2) Create the request via JSON (no multipart)
-        setUploadPhase("finalizing");
+      // 2) Create the request via JSON (no multipart)
+      setUploadPhase("finalizing");
 
-        const hasSession = !!sessionId;
-        const hasOrder = !!orderId;
+      const hasSession = !!sessionId;
+      const hasOrder = !!orderId;
 
-        let url: string;
-        let payload: Record<string, any>;
+      let url: string;
+      let payload: Record<string, any>;
 
-        if (hasSession) {
-          url = `${API_BASE}/api/requests/create-from-session`;
-          payload = {
-            session_id: sessionId,
-            message: details || "",
-          };
-        } else if (hasOrder) {
-          url = `${API_BASE}/api/requests`; // <-- legacy route that takes orderId
-          payload = {
-            orderId,                       // REQUIRED by this route
-            details: details || "",        // or message
-          };
-        } else {
-          // If you ever support the pure create route here, you MUST also provide:
-          // { creator_id, product_id, message }
-          throw new Error("Missing session_id or orderId for request creation");
-        }
+      if (hasSession) {
+        url = `${API_BASE}/api/requests/create-from-session`;
+        payload = {
+          session_id: sessionId,
+          message: details || "",
+        };
+      } else if (hasOrder) {
+        url = `${API_BASE}/api/requests`;
+        payload = {
+          orderId,
+          details: details || "",
+        };
+      } else {
+        throw new Error("Missing session_id or orderId for request creation");
+      }
 
         // Use the upload result directly instead of state (avoids race condition)
         if (uploadResult) {
