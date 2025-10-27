@@ -1053,6 +1053,13 @@ export default function MembershipFeedPage() {
    []
  );
 
+  // A post is "ready" if it's not a video OR if the server has attached a poster.
+  function isServerPostReady(p: Post): boolean {
+    const path = (p.media_path || "").toLowerCase().split("?")[0];
+    const isVid = /\.(mp4|webm|ogg|m4v|mov)$/i.test(path);
+    return !isVid || !!p.media_poster;
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1095,7 +1102,21 @@ export default function MembershipFeedPage() {
         ));
         const merged = arrays.flat();
         merged.sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-        setPosts(merged);
+        setPosts(prev => {
+          const byId = new Map<number, Post>();
+          for (const p of prev) byId.set(p.id, p);
+
+          const final = merged.map(serverPost => {
+            const local = byId.get(serverPost.id);
+            // If local is an optimistic blob and serverPost is not ready yet, keep local.
+            if (local && typeof local.media_path === "string" && local.media_path.startsWith("blob:") && !isServerPostReady(serverPost)) {
+              return local;
+            }
+            return serverPost;
+          });
+
+          return final;
+        });
       } else {
         setPosts([]);
       }
@@ -1227,14 +1248,41 @@ export default function MembershipFeedPage() {
       }
 
       const updated = await updateRes.json(); // { post }
-      setPosts((prev) => prev.map((p) => (p.id === editingPost.id ? updated.post : p)));
 
-        const next = draftFile && draftMediaPreview
-          ? { ...updated.post, media_path: draftMediaPreview, media_poster: null }
-          : updated.post;
+      // Keep optimistic blob if we just uploaded a new file
+      const optimistic = (draftFile && draftMediaPreview)
+        ? { ...updated.post, media_path: draftMediaPreview, media_poster: null }
+        : updated.post;
 
-        setPosts(prev => prev.map(p => (p.id === editingPost.id ? next : p)));
-        if (draftFile) setTimeout(() => { load(); }, 2000)
+      setPosts(prev => prev.map(p => (p.id === editingPost.id ? optimistic : p)));
+
+      if (draftFile) {
+        // Poll until the edited post is ready (poster + fast-start)
+        (function waitUntilReady(postId: number, tries = 0) {
+          fetchApi<{ posts: Post[] }>(`/api/posts/product/${editingPost!.product_id}`, {
+            method: "GET",
+            token,
+            cache: "no-store",
+          })
+          .then(r => {
+            const found = (r.posts || []).find(p => p.id === postId);
+            if (found && isServerPostReady(found)) {
+              setPosts(prev => prev.map(p => (p.id === postId ? found : p)));
+            } else if (tries < 5) {
+              setTimeout(() => waitUntilReady(postId, tries + 1), 1000 * Math.pow(2, tries));
+            } else {
+              load();
+            }
+          })
+          .catch(() => {
+            if (tries < 5) {
+              setTimeout(() => waitUntilReady(postId, tries + 1), 1000 * Math.pow(2, tries));
+            } else {
+              load();
+            }
+          });
+        })(updated.post.id);
+      }
                 
       setUploading(false);
       setUploadPct(0);
@@ -1292,15 +1340,35 @@ export default function MembershipFeedPage() {
       }
 
       const { post } = await createRes.json();
-      if (post) setPosts((prev) => [post, ...prev]);
 
       const optimistic = draftMediaPreview
         ? { ...post, media_path: draftMediaPreview, media_poster: null }
         : post;
 
       setPosts(prev => [optimistic, ...prev]);
-      // silent refresh to pick up CloudFront URL + poster
-      setTimeout(() => { load(); }, 2000);
+          // Poll just this product until the new post is "ready" (poster exists / fast-start done).
+      (async function waitUntilReady(postId: number, tries = 0) {
+        try {
+          const r = await fetchApi<{ posts: Post[] }>(`/api/posts/product/${addingProduct!.id}`, {
+            method: "GET",
+            token,
+            cache: "no-store",
+          });
+          const found = (r.posts || []).find(p => p.id === postId);
+          if (found && isServerPostReady(found)) {
+            setPosts(prev => prev.map(p => (p.id === postId ? found : p)));
+            return;
+          }
+        } catch { /* ignore and retry */ }
+
+        if (tries < 5) {
+          const backoff = 1000 * Math.pow(2, tries); // 1s,2s,4s,8s,16s
+          setTimeout(() => waitUntilReady(post.id, tries + 1), backoff);
+        } else {
+          // Fallback: do a full reload of feed if we never saw it "ready"
+          load();
+        }
+      })(post.id);
 
       // reset UI
       setUploading(false);

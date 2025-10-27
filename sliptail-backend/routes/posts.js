@@ -126,6 +126,9 @@ return url;
 
   if (post.media_path)   out.media_path   = await sign("media_path");
   if (post.media_poster) out.media_poster = await sign("media_poster");
+    // convenience hint for clients
+  const pathOnly = (post.media_path || "").toLowerCase().split("?")[0];
+  out.processing = /\.(mp4|webm|ogg|m4v|mov)$/i.test(pathOnly) && !post.media_poster;
   return out;
 }
 
