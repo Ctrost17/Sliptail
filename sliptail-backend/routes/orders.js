@@ -79,17 +79,24 @@ router.post("/create", requireAuth, async (req, res) => {
 router.get("/", requireAuth, async (req, res) => {
   const userId = req.user.id;
   try {
-    const { rows } = await db.query(
-      `SELECT o.id,
-              COALESCE(o.amount_cents, (o.amount*100)::bigint, 0) AS amount_cents,
-              o.status,
-              o.created_at,
-              o.product_id
-         FROM orders o
-        WHERE o.buyer_id = $1
-        ORDER BY o.created_at DESC`,
-      [userId]
-    );
+        const { rows } = await db.query(
+          `SELECT o.id,
+                  COALESCE(o.amount_cents, (o.amount*100)::bigint, 0) AS amount_cents,
+                  o.status,
+                  o.created_at,
+                  o.product_id,
+                  EXISTS (
+                    SELECT 1
+                      FROM reviews r
+                    WHERE r.buyer_id  = $1
+                      AND r.product_id = o.product_id
+                    LIMIT 1
+                  ) AS user_has_review
+            FROM orders o
+            WHERE o.buyer_id = $1
+            ORDER BY o.created_at DESC`,
+          [userId]
+        );
     res.json(rows);
   } catch (e) {
     console.error("Orders root list error:", e);
@@ -171,31 +178,39 @@ router.get("/mine", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    const { rows } = await db.query(
-      `SELECT o.*, 
-              json_build_object(
-                'id', p.id,
-                'user_id', p.user_id,
-                'title', p.title,
-                'description', p.description,
-                'filename', p.filename,
-                'product_type', p.product_type,
-                'price', p.price,
-                'created_at', p.created_at
-              ) AS product,
-              json_build_object(
-                'user_id', c.user_id,
-                'display_name', c.display_name,
-                'bio', c.bio,
-                'profile_image', c.profile_image
-              ) AS creator_profile
-         FROM orders o
-         JOIN products p ON p.id = o.product_id
-         JOIN creator_profiles c ON c.user_id = p.user_id
-        WHERE o.buyer_id = $1
-        ORDER BY o.created_at DESC`,
-      [userId]
-    );
+        const { rows } = await db.query(
+          `SELECT o.*,
+                  COALESCE(rv.user_has_review, FALSE) AS user_has_review,
+                  json_build_object(
+                    'id', p.id,
+                    'user_id', p.user_id,
+                    'title', p.title,
+                    'description', p.description,
+                    'filename', p.filename,
+                    'product_type', p.product_type,
+                    'price', p.price,
+                    'created_at', p.created_at
+                  ) AS product,
+                  json_build_object(
+                    'user_id', c.user_id,
+                    'display_name', c.display_name,
+                    'bio', c.bio,
+                    'profile_image', c.profile_image
+                  ) AS creator_profile
+            FROM orders o
+            JOIN products p ON p.id = o.product_id
+            JOIN creator_profiles c ON c.user_id = p.user_id
+            LEFT JOIN LATERAL (
+              SELECT TRUE AS user_has_review
+                FROM reviews r
+                WHERE r.buyer_id  = $1
+                  AND r.product_id = p.id
+                LIMIT 1
+            ) rv ON TRUE
+            WHERE o.buyer_id = $1
+            ORDER BY o.created_at DESC`,
+          [userId]
+        );
 
     const withLinks = rows.map((r) => ({
       ...r,

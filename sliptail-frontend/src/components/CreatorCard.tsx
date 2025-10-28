@@ -207,16 +207,24 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
 
         {/* ------------------ Back ------------------ */}
         <div className="absolute inset-0 grid grid-rows-[1fr_auto] gap-2 rounded-2xl p-2 [transform:rotateY(180deg)] [backface-visibility:hidden] bg-gradient-to-r from-emerald-100 via-cyan-100 to-sky-100 border-2 border-black backdrop-blur-xl">
-          <div className="grid grid-cols-2 gap-2 h-full min-h-0">
-            {photoSrcs.map((src, i) => (
-              <div
-                key={i}
-                className="relative w-full h-full overflow-hidden rounded-lg border border-black/10"
-              >
-                <Image src={src} alt="" fill className="object-cover" />
-              </div>
-            ))}
-          </div>
+            <div className="grid grid-cols-2 grid-rows-2 auto-rows-fr gap-2 h-full min-h-0 overflow-hidden">
+              {photoSrcs.map((src, i) => (
+                <div
+                  key={i}
+                  className="relative w-full h-full overflow-hidden rounded-lg border border-black/10"
+                >
+                  <Image
+                    src={src}
+                    alt=""
+                    fill
+                    className="object-cover"
+                    quality={94}
+                    sizes="(min-width: 1024px) 128px, (min-width: 768px) 120px, 45vw"
+                    priority={i < 1}
+                  />
+                </div>
+              ))}
+            </div>
 
           <Link
             href={`/creators/${creator.id}`}

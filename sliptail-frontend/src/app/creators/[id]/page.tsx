@@ -723,18 +723,34 @@ export default function CreatorProfilePage() {
         </section>
 
         {/* Gallery (4) */}
-        {galleryUrls.length > 0 ? (
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
-            <h2 className="text-lg font-semibold">Gallery</h2>
-            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {galleryUrls.slice(0, 4).map((src, i) => (
-                <div key={`${src}-${i}`} className="overflow-hidden rounded-xl ring-1 ring-black/5 bg-gray-100">
-                  <Image src={src} alt={`Gallery ${i + 1}`} width={600} height={450} className="h-full w-full object-cover" />
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
+      {galleryUrls.length > 0 ? (
+        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+          <h2 className="text-lg font-semibold">Gallery</h2>
+
+          {/* Masonry columns: keeps each image’s natural height, responsive, no horizontal scroll */}
+          <div className="mt-5 columns-2 sm:columns-3 lg:columns-4 [column-gap:0.75rem] [column-fill:_balance]">
+            {galleryUrls.slice(0, 12).map((src, i) => (
+              <div
+                key={`${src}-${i}`}
+                className="mb-3 break-inside-avoid rounded-xl ring-1 ring-black/5 overflow-hidden bg-gray-100"
+              >
+                <Image
+                  src={src}
+                  alt={`Gallery ${i + 1}`}
+                  width={1200}
+                  height={1600}
+                  // Fixed column width at each breakpoint; height grows to match the photo
+                  sizes="(min-width:1280px) 272px, (min-width:1024px) 320px, (min-width:640px) 320px, 90vw"
+                  style={{ width: "100%", height: "auto", display: "block" }}
+                  quality={90}
+                  loading={i === 0 ? "eager" : "lazy"}
+                  priority={i === 0}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
         {/* Reviews */}
         <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
