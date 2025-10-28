@@ -419,13 +419,32 @@ router.get("/mine", requireAuth, async (req, res) => {
   const buyerId = req.user.id;
   try {
     const { rows } = await db.query(
-      `SELECT cr.*, o.status AS order_status, o.amount_cents
-         FROM custom_requests cr
-         JOIN orders o ON o.id = cr.order_id
-        WHERE cr.buyer_id = $1
-        ORDER BY cr.created_at DESC`,
+      `SELECT
+         cr.*,
+         o.status       AS order_status,
+         o.amount_cents,
+         /* ✅ Has this buyer already left a review? (product-level OR creator-level) */
+         EXISTS (
+           SELECT 1
+             FROM reviews r
+            WHERE r.buyer_id = $1
+              AND (
+                    r.product_id = o.product_id
+                 OR (
+                      r.product_id IS NULL
+                  AND r.creator_id = p.user_id
+                    )
+                  )
+            LIMIT 1
+         ) AS user_has_review
+       FROM custom_requests cr
+       JOIN orders   o ON o.id = cr.order_id
+       JOIN products p ON p.id = o.product_id
+      WHERE cr.buyer_id = $1
+      ORDER BY cr.created_at DESC`,
       [buyerId]
     );
+
     res.json({ requests: rows.map(normalizeStatus) });
   } catch (err) {
     console.error("My requests error:", err);

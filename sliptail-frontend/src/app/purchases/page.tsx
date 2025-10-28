@@ -1328,6 +1328,7 @@ export default function PurchasesPage() {
           attachment_path?: string | null;
           creator?: string | null;
           creator_attachment_path?: string | null;
+          user_has_review?: boolean;   // ✅ add this
         };
         let reqs: ReqRow[] = [];
         try {
@@ -1376,7 +1377,7 @@ export default function PurchasesPage() {
               filename: String(o.product?.filename ?? ""),
             },
 
-             user_has_review: Boolean(o.user_has_review),
+             user_has_review: Boolean(o.user_has_review ?? byOrder[orderId]?.user_has_review),
 
             // Creator delivery (prefer joined request fields if present)
             request_response: firstText(o.request_response, r?.creator) ?? null,

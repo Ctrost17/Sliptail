@@ -185,6 +185,21 @@ router.get("/mine", requireAuth, async (req, res) => {
               )
               AND (m.current_period_end IS NULL OR m.current_period_end >= NOW())
               AS has_access,
+                  EXISTS (
+                    SELECT 1
+                      FROM reviews r
+                      WHERE r.buyer_id = $1
+                        AND (
+                              /* count a review tied to this membership product */
+                              r.product_id = p.id
+                          OR (
+                              /* also count a creator-level review (no product) */
+                              r.product_id IS NULL
+                          AND r.creator_id = p.user_id
+                            )
+                            )
+                      LIMIT 1
+                  ) AS user_has_review,
               json_build_object(
                 'id', p.id,
                 'user_id', p.user_id,

@@ -218,7 +218,7 @@ async function ensureCreationReadinessSafe(dbConn, userId, recomputeFn) {
       async function ensureCreatorProfileRow(userId) {
         const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
         const cols = ["user_id", "is_active"];
-        const vals = ["$1", "FALSE"];
+        const vals = ["(SELECT id FROM users WHERE id::text = $1)", "FALSE"];
         if (hasUpdatedAt) {
           cols.push("updated_at");
           vals.push("NOW()");
