@@ -1376,6 +1376,8 @@ export default function PurchasesPage() {
               filename: String(o.product?.filename ?? ""),
             },
 
+             user_has_review: Boolean(o.user_has_review),
+
             // Creator delivery (prefer joined request fields if present)
             request_response: firstText(o.request_response, r?.creator) ?? null,
             request_media_url:
@@ -1418,6 +1420,10 @@ export default function PurchasesPage() {
               title: String(m.product?.title ?? ""),
               filename: "",
             },
+
+             // ✅ keep server flag if provided
+            user_has_review: Boolean(m.user_has_review),
+
             membership_cancel_at_period_end: Boolean(m.cancel_at_period_end),
             membership_period_end: m.current_period_end ? String(m.current_period_end) : null,
           };
