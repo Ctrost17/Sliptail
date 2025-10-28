@@ -303,6 +303,34 @@ async function activateCreatorNow(userId) {
   );
 }
 
+// --- FORCE-ACTIVATE creator as soon as they have ≥1 product (schema-aware)
+async function forceActivateCreator(userId) {
+  const uid = String(userId);
+  // ensure row exists
+  await ensureCreatorProfileRow(uid);
+
+  const hasActiveCol = await hasColumn("products", "active");
+  const hasUpdatedAt = await hasColumn("creator_profiles", "updated_at");
+  const sets = ["is_active = TRUE"];
+  if (hasUpdatedAt) sets.push("updated_at = NOW()");
+
+  await db.query(
+    `
+    UPDATE creator_profiles cp
+       SET ${sets.join(", ")}
+     WHERE cp.user_id::text = $1
+       AND COALESCE(cp.is_active, FALSE) = FALSE
+       AND EXISTS (
+         SELECT 1
+           FROM products p
+          WHERE p.user_id::text = $1
+            ${hasActiveCol ? "AND p.active = TRUE" : ""}
+       )
+    `,
+    [uid]
+  );
+}
+
 // ⬇️ Promote role to creator, refresh JWT cookie, and sync creator_profiles.is_active.
 //    Errors are swallowed (don’t break the create flow).
 async function promoteAndRefreshAuth(userId, res) {
@@ -469,6 +497,10 @@ router.post(
               filename,
             });
 
+            await forceActivateCreator(user_id);        // NEW
+            await activateCreatorNow(user_id).catch(()=>{}); // keep existing safety
+            await promoteAndRefreshAuth(req.user.id, res);
+
             // 1) make sure a profile row exists
             await ensureCreatorProfileRow(user_id).catch(() => {});
 
@@ -625,6 +657,7 @@ router.post(
 
       // ensure profile + activate + refresh cookie (same flow you already use)
       await ensureCreatorProfileRow(user_id).catch(() => {});
+      await forceActivateCreator(user_id);   
       try { await activateCreatorNow(user_id); } catch (e) { console.warn("activateCreatorNow failed:", e?.message || e); }
       await promoteAndRefreshAuth(req.user.id, res);
 
@@ -672,6 +705,8 @@ router.post(
           price_cents: priceNum,
           filename: null,
         });
+
+        await forceActivateCreator(user_id); 
 
         // 1) ensure profile row
         await ensureCreatorProfileRow(user_id).catch(() => {});
