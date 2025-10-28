@@ -1,3 +1,4 @@
+//app/creator/setup/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -640,13 +641,13 @@ export default function CreatorSetupPage() {
         </section>
 
         {/* Status footer */}
-        <footer className="text-sm text-black">
+        <footer className="text-sm text-black bg-transparent selection:bg-transparent selection:text-inherit">
           {status ? (
             <div>
               Status:{" "}
-              <strong>
-                {status.isActive ? "Active" : loadingStatus ? "Checking…" : "Pending (complete steps above)"}
-              </strong>
+            <span className="font-semibold bg-transparent">
+              {status.isActive ? "Active" : loadingStatus ? "Checking…" : "Pending (complete steps above)"}
+            </span>
             </div>
           ) : (
             <div>Loading status…</div>

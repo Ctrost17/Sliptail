@@ -39,7 +39,7 @@ router.post("/presign-post", requireAuth, requireCreator, async (req, res) => {
   }
 });
 
-router.post("/presign-product", requireAuth, requireCreator, async (req, res) => {
+router.post("/presign-product", requireAuth, async (req, res) => {
   const { filename, contentType, downloadName } = req.body || {};
   if (!filename || !contentType) return res.status(400).json({ error: "filename and contentType required" });
 

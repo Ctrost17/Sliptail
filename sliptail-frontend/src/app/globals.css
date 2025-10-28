@@ -61,13 +61,4 @@ body > div:first-child {
   background: #ffffff;
 }
 
-/* Nice-to-have: keep footer comfy above the iOS home indicator */
-@supports (padding: max(0px)) {
-  footer {
-    padding-bottom: max(env(safe-area-inset-bottom), 0px);
-    /* your bg is already set by Tailwind, this is just a guard */
-    background-color: #262626;
-  }
-}
-
 /* (your animations below can stay unchanged) */
