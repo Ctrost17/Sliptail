@@ -87,7 +87,9 @@ router.post(
     const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // bps of price
 
     // Respect client URLs and append session id only if needed
-    const successUrl = ensureSuccessUrl(success_url);
+    const baseSuccess = ensureSuccessUrl(success_url);
+     const sep = baseSuccess.includes("?") ? "&" : "?";
+     const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
     const cancelUrl = ensureCancelUrl(cancel_url);
 
     // Derive an action label used by webhook/finalizer routing
@@ -220,35 +222,35 @@ router.get("/finalize", requireAuth, async (req, res) => {
   try {
     // Retrieve checkout session + expand to reduce round-trips
   const stripe = getStripe();
-  // First, peek once without opts to read metadata (works even on platform).
-   let session = await stripe.checkout.sessions.retrieve(sessionId);
-  const meta0 = session?.metadata || {};
-  const productIdForLookup = meta0.product_id ? parseInt(meta0.product_id, 10) : null;
-
-  // Look up the creator's stripe account by product
-  let acct = null;
-  if (productIdForLookup) {
-    const { rows: acctRow } = await db.query(
-      `SELECT u.stripe_account_id
-         FROM products p JOIN users u ON u.id = p.user_id
-         WHERE p.id = $1 LIMIT 1`,
-      [productIdForLookup]
+  // Prefer the connected acct passed via success URL (added at session creation).
+ const acct = String(req.query.acct || "").trim() || null;
+  const productIdForLookup = req.query.pid ? parseInt(String(req.query.pid), 10) : null;
+  let session;
+  if (!acct) {
+    // Fallback: derive acct from product if acct not present in URL
+    let derivedAcct = null;
+    if (productIdForLookup) {
+      const { rows: acctRow } = await db.query(
+        `SELECT u.stripe_account_id
+           FROM products p JOIN users u ON u.id = p.user_id
+          WHERE p.id = $1 LIMIT 1`,
+        [productIdForLookup]
+      );
+      derivedAcct = acctRow[0]?.stripe_account_id || null;
+    }
+    if (!derivedAcct) {
+      return res.status(400).json({ ok: false, error: "Missing connected account context" });
+    }
+    session = await stripe.checkout.sessions.retrieve(
+      sessionId,
+      { expand: ["payment_intent", "subscription"] },
+      { stripeAccount: derivedAcct }
     );
-    acct = acctRow[0]?.stripe_account_id || null;
-  }
-
-  // Re-retrieve from the CONNECTED account so expand works reliably
-  if (acct) {
+  } else {
     session = await stripe.checkout.sessions.retrieve(
       sessionId,
       { expand: ["payment_intent", "subscription"] },
       { stripeAccount: acct }
-    );
-  } else {
-    // fall back (shouldn't happen if product_id is present)
-    session = await stripe.checkout.sessions.retrieve(
-      sessionId,
-      { expand: ["payment_intent", "subscription"] }
     );
   }
 
@@ -288,7 +290,15 @@ router.get("/finalize", requireAuth, async (req, res) => {
             `INSERT INTO public.orders (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
              VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
              RETURNING id`,
-            [req.user.id, productId, amount, session.payment_intent || null, session.id]
+            [
+              req.user.id,
+              productId,
+              amount,
+              (session.payment_intent && typeof session.payment_intent === "object"
+                ? session.payment_intent.id
+                : session.payment_intent) || null,
+              session.id
+            ]
           );
           finalOrderId = rows[0].id;
         }
