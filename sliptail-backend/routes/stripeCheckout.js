@@ -90,7 +90,9 @@ router.post(
     const baseSuccess = ensureSuccessUrl(success_url);
      const sep = baseSuccess.includes("?") ? "&" : "?";
      const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
-    const cancelUrl = ensureCancelUrl(cancel_url);
+    const baseCancel = ensureCancelUrl(cancel_url);
+    const csep = baseCancel.includes("?") ? "&" : "?";
+    const cancelUrl = `${baseCancel}${csep}pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(action)}`;
 
     // Derive an action label used by webhook/finalizer routing
     // - payment + product_type 'request' -> 'request'

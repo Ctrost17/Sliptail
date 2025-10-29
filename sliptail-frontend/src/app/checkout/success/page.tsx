@@ -25,6 +25,8 @@ export default function CheckoutSuccessPage() {
     () => search.get("sid") || search.get("session_id") || search.get("sessionId"),
     [search]
   );
+  const acct = useMemo(() => search.get("acct"), [search]);
+  const pid  = useMemo(() => search.get("pid"), [search]);
 
   useEffect(() => {
     async function finalize() {
@@ -40,8 +42,13 @@ export default function CheckoutSuccessPage() {
         const headers: Record<string, string> = { Accept: "application/json" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
         const ac = new AbortController();
+        const q = new URLSearchParams();
+        q.set("session_id", sessionId);
+        if (acct) q.set("acct", acct);
+        if (pid)  q.set("pid",  pid);
+
         const res = await fetch(
-          `${API_BASE}/api/stripe-checkout/finalize?session_id=${encodeURIComponent(sessionId)}`,
+          `${API_BASE}/api/stripe-checkout/finalize?${q.toString()}`,
           { credentials: "include", headers, signal: ac.signal }
         );
 
@@ -91,7 +98,7 @@ export default function CheckoutSuccessPage() {
     if (!loading && !finalizingRef.current) {
       void finalize();
     }
-  }, [sessionId, router, token, loading]);
+  }, [sessionId, acct, pid, router, token, loading]);
 
   return (
     <div className="mx-auto max-w-xl p-8 text-center">
