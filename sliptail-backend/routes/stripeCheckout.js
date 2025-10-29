@@ -86,14 +86,6 @@ router.post(
 
     const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // bps of price
 
-    // Respect client URLs and append session id only if needed
-    const baseSuccess = ensureSuccessUrl(success_url);
-     const sep = baseSuccess.includes("?") ? "&" : "?";
-     const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
-    const baseCancel = ensureCancelUrl(cancel_url);
-    const csep = baseCancel.includes("?") ? "&" : "?";
-    const cancelUrl = `${baseCancel}${csep}pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(action)}`;
-
     // Derive an action label used by webhook/finalizer routing
     // - payment + product_type 'request' -> 'request'
     // - payment otherwise -> 'purchase'
@@ -105,6 +97,14 @@ router.post(
         : productType === "request"
           ? "request"
           : "purchase";
+
+    // Respect client URLs and append session id only if needed
+    const baseSuccess = ensureSuccessUrl(success_url);
+     const sep = baseSuccess.includes("?") ? "&" : "?";
+     const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
+    const baseCancel = ensureCancelUrl(cancel_url);
+    const csep = baseCancel.includes("?") ? "&" : "?";
+    const cancelUrl = `${baseCancel}${csep}pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(action)}`;
 
     // Defensive: prevent obvious mode/type mismatch
     if (mode === "subscription" && productType === "download") {
