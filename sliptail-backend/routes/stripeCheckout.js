@@ -85,128 +85,109 @@ router.post(
     }
 
     const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // bps of price
+// Canonicalize from the DB row ONLY (ignore client-provided mode for safety)
+const productType = String(p.product_type || "").toLowerCase(); // 'purchase' | 'request' | 'membership'
+const action =
+  productType === "membership" ? "membership" :
+  productType === "request"    ? "request"    :
+  "purchase";
 
-    // Derive an action label used by webhook/finalizer routing
-    // - payment + product_type 'request' -> 'request'
-    // - payment otherwise -> 'purchase'
-    // - subscription -> 'membership'
-    const productType = String(p.product_type || "").toLowerCase();
-    const action =
-      mode === "subscription"
-        ? "membership"
-        : productType === "request"
-          ? "request"
-          : "purchase";
+const finalMode = productType === "membership" ? "subscription" : "payment";
+console.log("[checkout] product_type:", productType, "finalMode:", finalMode, "reqMode:", mode);
 
-    // Respect client URLs and append session id only if needed
-    const baseSuccess = ensureSuccessUrl(success_url);
-     const sep = baseSuccess.includes("?") ? "&" : "?";
-     const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
-    const baseCancel = ensureCancelUrl(cancel_url);
-    const csep = baseCancel.includes("?") ? "&" : "?";
-    const cancelUrl = `${baseCancel}${csep}pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(action)}`;
+// Build success/cancel with acct & pid AFTER we know action
+const baseSuccess = ensureSuccessUrl(success_url);
+const sep = baseSuccess.includes("?") ? "&" : "?";
+const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(p.stripe_account_id)}&pid=${encodeURIComponent(p.id)}`;
 
-    // Defensive: prevent obvious mode/type mismatch
-    if (mode === "subscription" && productType === "download") {
-      return res.status(400).json({ error: "This product is not a subscription" });
-    }
+const baseCancel = ensureCancelUrl(cancel_url);
+const csep = baseCancel.includes("?") ? "&" : "?";
+const cancelUrl = `${baseCancel}${csep}pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(action)}`;
 
-    // Common metadata we want to see again in webhooks/finalizer
-    const baseMetadata = {
-      action,                         // "purchase" | "request" | "membership"
-      product_id: String(p.id),
-      product_type: String(p.product_type || ""),
-      creator_id: String(p.creator_id),
-      buyer_id: String(buyerId),
+// Common metadata we want to see again in webhooks/finalizer
+const baseMetadata = {
+  action,                         // "purchase" | "request" | "membership"
+  product_id: String(p.id),
+  product_type: String(p.product_type || ""),
+  creator_id: String(p.creator_id),
+  buyer_id: String(buyerId),
+};
+
+// Optional client-provided idempotency key
+const clientKey = req.get("x-idempotency-key");
+
+const stripe = getStripe();
+let session;
+
+try {
+  if (finalMode === "payment") {
+    // ONE-TIME: Do NOT create DB order yet. We'll create it in finalize after success.
+    const payload = {
+      mode: "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: { name: p.title || p.product_type || "Item" },
+            unit_amount: Number(p.price), // already cents in DB
+          },
+          quantity: 1,
+        },
+      ],
+      payment_intent_data: {
+        application_fee_amount: Math.floor((Number(p.price) * PLATFORM_FEE_BPS) / 10000),
+        metadata: { ...baseMetadata },
+      },
+      metadata: { ...baseMetadata },
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     };
 
-    // Optional client-provided idempotency key
-    const clientKey = req.get("x-idempotency-key");
-
-    let session;
-
-  const stripe = getStripe();
-  if (mode === "payment") {
-      // ONE-TIME: Do NOT create DB order yet. We'll create it in finalize after success.
-      const payload = {
-        mode: "payment",
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: { name: p.title || p.product_type || "Item" },
-              unit_amount: amountCents, // cents
-            },
-            quantity: 1,
+    session = await stripe.checkout.sessions.create(
+      payload,
+      clientKey
+        ? { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
+        : { stripeAccount: p.stripe_account_id }
+    );
+  } else {
+    // SUBSCRIPTION (memberships only)
+    const payload = {
+      mode: "subscription",
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: { name: p.title || "Membership" },
+            recurring: { interval: "month" },
+            unit_amount: Number(p.price), // cents
           },
-        ],
-        payment_intent_data: {
-          application_fee_amount: feeAmount,
-          metadata: { ...baseMetadata },
+          quantity: 1,
         },
+      ],
+      subscription_data: {
+        application_fee_percent: PLATFORM_FEE_BPS / 100.0, // e.g. 4.0
         metadata: { ...baseMetadata },
-        success_url: successUrl, // -> /checkout/success?...session_id={CHECKOUT_SESSION_ID}
-        cancel_url: cancelUrl,
-      };
+      },
+      metadata: { ...baseMetadata },
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    };
 
-      // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
-      if (clientKey) {
-        session = await stripe.checkout.sessions.create(
-          payload,
-          { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
-        );
-      } else {
-        session = await stripe.checkout.sessions.create(
-          payload,
-          { stripeAccount: p.stripe_account_id }
-        );
-      }
-    } else if (mode === "subscription") {
-      // ────────────────────────────────────────────────────────────────────────────
-      // SUBSCRIPTION: No orders row now; webhook/finalizer will upsert membership
-      // ────────────────────────────────────────────────────────────────────────────
+    session = await stripe.checkout.sessions.create(
+      payload,
+      clientKey
+        ? { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
+        : { stripeAccount: p.stripe_account_id }
+    );
+  }
 
-      const feePercent = PLATFORM_FEE_BPS / 100.0; // 400 -> 4.0%
+  return res.json({ url: session.url, id: session.id });
+} catch (err) {
+  console.error("[checkout.create-session] error:", err?.raw || err);
+  const msg = err?.raw?.message || err?.message || "Stripe error";
+  return res.status(400).json({ error: msg });
+}
 
-      const payload = {
-        mode: "subscription",
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              product_data: { name: p.title || "Membership" },
-              recurring: { interval: "month" },
-              unit_amount: amountCents, // cents
-            },
-            quantity: 1,
-          },
-        ],
-        subscription_data: {
-          application_fee_percent: feePercent,
-          metadata: baseMetadata,
-        },
-        metadata: baseMetadata,
-        success_url: successUrl, // -> /checkout/success?...session_id={CHECKOUT_SESSION_ID}
-        cancel_url: cancelUrl,
-      };
-
-      // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
-      if (clientKey) {
-        session = await stripe.checkout.sessions.create(
-          payload,
-          { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
-        );
-      } else {
-        session = await stripe.checkout.sessions.create(
-          payload,
-          { stripeAccount: p.stripe_account_id }
-        );
-      }
-    } else {
-      return res.status(400).json({ error: "mode must be 'payment' or 'subscription'" });
-    }
-
-    return res.json({ url: session.url, id: session.id });
   }
 );
 
