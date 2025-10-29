@@ -246,6 +246,12 @@ router.get("/finalize", requireAuth, async (req, res) => {
       return res.status(403).json({ ok: false, error: "Not your session" });
     }
 
+    // Guard against a bad session path: requests/purchases must NOT be subscriptions
+    if (session.mode === "subscription" && action !== "membership") {
+      console.error("[finalize] Mode/action mismatch", { sessionMode: session.mode, action, meta });
+      return res.status(400).json({ ok: false, error: "Checkout mode mismatch for this product" });
+    }
+
     // Helper: fetch creator display name by product id
     async function getCreatorInfo(productId) {
       if (!productId) return { display_name: "Creator", product_type: null };
@@ -265,27 +271,41 @@ router.get("/finalize", requireAuth, async (req, res) => {
       const paid = session.payment_status === "paid" || session.status === "complete";
       let finalOrderId = null;
 
-      if (paid) {
-        const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
-        if (productId) {
-          const amount = Number.isFinite(session.amount_total) ? Number(session.amount_total) : 0;
-          const { rows } = await db.query(
-            `INSERT INTO public.orders (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
-             VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
-             RETURNING id`,
-            [
-              req.user.id,
-              productId,
-              amount,
-              (session.payment_intent && typeof session.payment_intent === "object"
-                ? session.payment_intent.id
-                : session.payment_intent) || null,
-              session.id
-            ]
+    if (paid) {
+      const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
+      if (productId) {
+        const amount = Number.isFinite(session.amount_total) ? Number(session.amount_total) : 0;
+        const piId =
+          (session.payment_intent && typeof session.payment_intent === "object"
+            ? session.payment_intent.id
+            : session.payment_intent) || null;
+
+        // Idempotent write: one row per Stripe Checkout Session
+        const upsertSql = `
+          INSERT INTO public.orders
+            (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
+          VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
+          ON CONFLICT (stripe_checkout_session_id) DO UPDATE
+            SET amount_cents = EXCLUDED.amount_cents,
+                stripe_payment_intent_id = COALESCE(EXCLUDED.stripe_payment_intent_id, public.orders.stripe_payment_intent_id),
+                status = 'paid'
+          RETURNING id
+        `;
+
+        try {
+          const { rows } = await db.query(upsertSql, [req.user.id, productId, amount, piId, session.id]);
+          finalOrderId = rows[0]?.id ?? null;
+        } catch (err) {
+          // Fallback read if the index wasn’t created yet or in a rare race
+          console.error("[orders upsert] error → fallback lookup:", err);
+          const { rows: existing } = await db.query(
+            `SELECT id FROM public.orders WHERE stripe_checkout_session_id = $1 LIMIT 1`,
+            [session.id]
           );
-          finalOrderId = rows[0].id;
+          finalOrderId = existing[0]?.id ?? null;
         }
       }
+    }
 
       const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
       const { display_name, product_type } = await getCreatorInfo(productId);
@@ -358,21 +378,26 @@ router.get("/finalize", requireAuth, async (req, res) => {
     }
 
     return res.status(400).json({ ok: false, error: "Unsupported session mode" });
-  } catch (e) {
-    console.error("Finalize error:", e);
-    
-    // Provide more specific error messages based on error type
-    let errorMessage = "Failed to finalize session";
-    if (e.message && e.message.includes("duplicate key")) {
-      errorMessage = "Subscription already exists";
-    } else if (e.message && e.message.includes("not found")) {
-      errorMessage = "Session or subscription not found";
-    } else if (e.code === "23505") {
-      errorMessage = "Duplicate subscription detected";
+    } catch (e) {
+      console.error("Finalize error:", e);
+
+      const msg = (() => {
+        const m = (e && e.message) ? String(e.message) : "";
+        const code = (e && e.code) ? String(e.code) : "";
+        const looksDuplicate = /duplicate key/i.test(m) || code === "23505";
+
+        // Only call it a subscription duplicate if we were actually finalizing a subscription
+        if (looksDuplicate) {
+          return "Duplicate record detected";
+        }
+        if (/not found/i.test(m)) {
+          return "Session or related Stripe object not found";
+        }
+        return "Failed to finalize session";
+      })();
+
+      return res.status(500).json({ ok: false, error: msg });
     }
-    
-    return res.status(500).json({ ok: false, error: errorMessage });
-  }
 });
 
 module.exports = router;
