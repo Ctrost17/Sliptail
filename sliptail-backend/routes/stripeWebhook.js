@@ -425,8 +425,22 @@ module.exports = async function stripeWebhook(req, res) {
 
       case "payment_intent.succeeded": {
         const pi = event.data.object;
+
+        // 🛑 If this PI came from Stripe Checkout (Apple Pay, cards, etc.), we do NOT fulfill here.
+        // We only fulfill Checkout purchases in `checkout.session.completed`.
+        if (pi?.metadata?.stripe_checkout_session_id) {
+          return res.status(200).end();
+        }
+
+        // 🛑 If this PI is tied to a subscription invoice, don't fulfill a one-time order here either.
+        // Subscriptions are handled by invoice/subscription events below.
+        if (pi?.invoice) {
+          return res.status(200).end();
+        }
+
+        // ✅ Only reach here for non-Checkout, non-subscription flows (e.g., Payment Element you might add later).
         const orderId = pi.metadata?.order_id && parseInt(pi.metadata.order_id, 10);
-        const sessionId = pi.metadata?.stripe_checkout_session_id || null; // may or may not exist
+        const sessionId = pi.metadata?.stripe_checkout_session_id || null;
 
         if (orderId) {
           await db.query(
@@ -437,13 +451,9 @@ module.exports = async function stripeWebhook(req, res) {
               WHERE id=$3 AND status <> 'paid'`,
             [pi.id, sessionId, orderId]
           );
-          try {
-            await notifyPurchase({ orderId });
-          } catch (e) {
-            console.warn("notifyPurchase failed (non-fatal):", e);
-          }
 
-          // NEW: notify creator ONLY if we didn't already send for this order
+          try { await notifyPurchase({ orderId }); } catch (e) { console.warn("notifyPurchase failed (non-fatal):", e); }
+
           try {
             if (!(await alreadyNotifiedCreatorSaleByOrder(orderId))) {
               const { rows: info } = await db.query(
@@ -451,8 +461,8 @@ module.exports = async function stripeWebhook(req, res) {
                         p.id AS product_id,
                         p.title AS product_title,
                         p.user_id AS creator_id
-                   FROM orders o
-                   JOIN products p ON p.id = o.product_id
+                  FROM orders o
+                  JOIN products p ON p.id = o.product_id
                   WHERE o.id = $1
                   LIMIT 1`,
                 [orderId]
@@ -472,6 +482,7 @@ module.exports = async function stripeWebhook(req, res) {
             console.error("creator_sale notify (pi.succeeded) error:", e);
           }
         }
+
         break;
       }
 

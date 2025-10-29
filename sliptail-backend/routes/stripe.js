@@ -14,7 +14,8 @@ function getStripe() {
 }
 
 // Create or reuse a creator’s Stripe Connect account
-router.post("/connect", async (req, res) => {
+ const { requireAuth } = require("../middleware/auth");
+ router.post("/connect", requireAuth, async (req, res) => {
   const { userId } = req.body;
 
   try {
@@ -29,9 +30,13 @@ router.post("/connect", async (req, res) => {
 
     // 3. Create new Stripe Connect account
   const stripe = getStripe();
-  const account = await stripe.accounts.create({
-      type: "standard",
-    });
+ const account = await stripe.accounts.create({
+   type: "express",
+   capabilities: {
+     card_payments: { requested: true },
+     transfers: { requested: true },
+   },
+ });
 
     // 4. Save account ID to the database
     await db.query("UPDATE users SET stripe_account_id = $1 WHERE id = $2", [
@@ -40,12 +45,13 @@ router.post("/connect", async (req, res) => {
     ]);
 
     // 5. Generate the onboarding link
-  const accountLink = await stripe.accountLinks.create({
-      account: account.id,
-      refresh_url: "http://localhost:5000/stripe-refresh",
-      return_url: "http://localhost:5000/stripe-success",
-      type: "account_onboarding",
-    });
+ const FRONTEND_BASE = (process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
+ const accountLink = await stripe.accountLinks.create({
+   account: account.id,
+   refresh_url: `${FRONTEND_BASE}/creator/setup?refresh=1`,
+   return_url: `${FRONTEND_BASE}/creator/setup?onboarded=1`,
+   type: "account_onboarding",
+ });
 
     res.json({ url: accountLink.url });
   } catch (err) {

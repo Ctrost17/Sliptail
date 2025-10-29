@@ -138,7 +138,6 @@ router.post(
         ],
         payment_intent_data: {
           application_fee_amount: feeAmount,
-          transfer_data: { destination: p.stripe_account_id },
           metadata: { ...baseMetadata },
         },
         metadata: { ...baseMetadata },
@@ -148,9 +147,15 @@ router.post(
 
       // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
       if (clientKey) {
-        session = await stripe.checkout.sessions.create(payload, { idempotencyKey: clientKey });
+        session = await stripe.checkout.sessions.create(
+          payload,
+          { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
+        );
       } else {
-        session = await stripe.checkout.sessions.create(payload);
+        session = await stripe.checkout.sessions.create(
+          payload,
+          { stripeAccount: p.stripe_account_id }
+        );
       }
     } else if (mode === "subscription") {
       // ────────────────────────────────────────────────────────────────────────────
@@ -174,7 +179,6 @@ router.post(
         ],
         subscription_data: {
           application_fee_percent: feePercent,
-          transfer_data: { destination: p.stripe_account_id },
           metadata: baseMetadata,
         },
         metadata: baseMetadata,
@@ -184,9 +188,15 @@ router.post(
 
       // If client provides X-Idempotency-Key, use it; otherwise let Stripe create a fresh session
       if (clientKey) {
-        session = await stripe.checkout.sessions.create(payload, { idempotencyKey: clientKey });
+        session = await stripe.checkout.sessions.create(
+          payload,
+          { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
+        );
       } else {
-        session = await stripe.checkout.sessions.create(payload);
+        session = await stripe.checkout.sessions.create(
+          payload,
+          { stripeAccount: p.stripe_account_id }
+        );
       }
     } else {
       return res.status(400).json({ error: "mode must be 'payment' or 'subscription'" });
@@ -210,9 +220,37 @@ router.get("/finalize", requireAuth, async (req, res) => {
   try {
     // Retrieve checkout session + expand to reduce round-trips
   const stripe = getStripe();
-  const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["payment_intent", "subscription"],
-    });
+  // First, peek once without opts to read metadata (works even on platform).
+   let session = await stripe.checkout.sessions.retrieve(sessionId);
+  const meta0 = session?.metadata || {};
+  const productIdForLookup = meta0.product_id ? parseInt(meta0.product_id, 10) : null;
+
+  // Look up the creator's stripe account by product
+  let acct = null;
+  if (productIdForLookup) {
+    const { rows: acctRow } = await db.query(
+      `SELECT u.stripe_account_id
+         FROM products p JOIN users u ON u.id = p.user_id
+         WHERE p.id = $1 LIMIT 1`,
+      [productIdForLookup]
+    );
+    acct = acctRow[0]?.stripe_account_id || null;
+  }
+
+  // Re-retrieve from the CONNECTED account so expand works reliably
+  if (acct) {
+    session = await stripe.checkout.sessions.retrieve(
+      sessionId,
+      { expand: ["payment_intent", "subscription"] },
+      { stripeAccount: acct }
+    );
+  } else {
+    // fall back (shouldn't happen if product_id is present)
+    session = await stripe.checkout.sessions.retrieve(
+      sessionId,
+      { expand: ["payment_intent", "subscription"] }
+    );
+  }
 
     if (!session) return res.status(404).json({ ok: false, error: "Session not found" });
 
@@ -274,9 +312,19 @@ router.get("/finalize", requireAuth, async (req, res) => {
       // Upsert membership (mirrors webhook) if subscription object + metadata present
       const subscription = session.subscription && typeof session.subscription === "object" ? session.subscription : null;
       let subObj = subscription;
-      if (!subObj && typeof session.subscription === "string") {
-  try { subObj = await stripe.subscriptions.retrieve(session.subscription); } catch (_) { }
+   if (!subObj && typeof session.subscription === "string") {
+    try {
+      if (acct) {
+        subObj = await stripe.subscriptions.retrieve(
+          session.subscription,
+          {},
+          { stripeAccount: acct }
+        );
+      } else {
+        subObj = await stripe.subscriptions.retrieve(session.subscription);
       }
+    } catch (_) { }
+  }
       if (subObj && subObj.metadata) {
         const m = subObj.metadata;
         const buyerId = m.buyer_id && parseInt(m.buyer_id, 10);
