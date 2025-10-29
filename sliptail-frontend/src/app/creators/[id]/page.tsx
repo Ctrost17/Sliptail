@@ -6,7 +6,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { fetchApi } from "@/lib/api";
-import { Package, Quote } from "lucide-react";
+import { Package, Quote, X, Minimize2 } from "lucide-react";
 
 /* -------------------------- Types -------------------------- */
 
@@ -284,6 +284,44 @@ export default function CreatorProfilePage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [checkingOutId, setCheckingOutId] = useState<string | null>(null);
+  // --- Lightbox (fullscreen gallery) ---
+const [lightboxOpen, setLightboxOpen] = useState(false);
+const [lightboxIndex, setLightboxIndex] = useState(0);
+
+// Open lightbox on a given image index
+function openLightbox(i: number) {
+  setLightboxIndex(i);
+  setLightboxOpen(true);
+}
+
+// Close lightbox
+function closeLightbox() {
+  setLightboxOpen(false);
+}
+
+// Optional: keyboard controls + scroll lock while open
+useEffect(() => {
+  if (!lightboxOpen) return;
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") closeLightbox();
+    if (e.key === "ArrowRight") setLightboxIndex((idx) => Math.min(idx + 1, Math.max(0, gallery.length - 1)));
+    if (e.key === "ArrowLeft") setLightboxIndex((idx) => Math.max(idx - 1, 0));
+  };
+
+  // lock scroll on body/html
+  const prevHtmlOverflow = document.documentElement.style.overflow;
+  const prevBodyOverflow = document.body.style.overflow;
+  document.documentElement.style.overflow = "hidden";
+  document.body.style.overflow = "hidden";
+
+  document.addEventListener("keydown", onKey);
+  return () => {
+    document.removeEventListener("keydown", onKey);
+    document.documentElement.style.overflow = prevHtmlOverflow;
+    document.body.style.overflow = prevBodyOverflow;
+  };
+}, [lightboxOpen, gallery.length]);
 
   // Subscriptions state
   const [subscribedIds, setSubscribedIds] = useState<Set<number>>(new Set());
@@ -723,34 +761,36 @@ export default function CreatorProfilePage() {
         </section>
 
         {/* Gallery (4) */}
-      {galleryUrls.length > 0 ? (
-        <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
-          <h2 className="text-lg font-semibold">Gallery</h2>
+{galleryUrls.length > 0 ? (
+  <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
+    <h2 className="text-lg font-semibold">Gallery</h2>
 
-          {/* Masonry columns: keeps each image’s natural height, responsive, no horizontal scroll */}
-          <div className="mt-5 columns-2 sm:columns-3 lg:columns-4 [column-gap:0.75rem] [column-fill:_balance]">
-            {galleryUrls.slice(0, 12).map((src, i) => (
-              <div
-                key={`${src}-${i}`}
-                className="mb-3 break-inside-avoid rounded-xl ring-1 ring-black/5 overflow-hidden bg-gray-100"
-              >
-                <Image
-                  src={src}
-                  alt={`Gallery ${i + 1}`}
-                  width={1200}
-                  height={1600}
-                  // Fixed column width at each breakpoint; height grows to match the photo
-                  sizes="(min-width:1280px) 272px, (min-width:1024px) 320px, (min-width:640px) 320px, 90vw"
-                  style={{ width: "100%", height: "auto", display: "block" }}
-                  quality={90}
-                  loading={i === 0 ? "eager" : "lazy"}
-                  priority={i === 0}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+    {/* Masonry columns: keeps each image’s natural height, responsive, no horizontal scroll */}
+    <div className="mt-5 columns-2 sm:columns-3 lg:columns-4 [column-gap:0.75rem] [column-fill:_balance]">
+      {galleryUrls.slice(0, 12).map((src, i) => (
+        <button
+          key={`${src}-${i}`}
+          type="button"
+          onClick={() => openLightbox(i)}
+          className="mb-3 block w-full text-left break-inside-avoid rounded-xl ring-1 ring-black/5 overflow-hidden bg-gray-100 cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-sky-400/60"
+          aria-label={`Open image ${i + 1} fullscreen`}
+        >
+          <Image
+            src={src}
+            alt={`Gallery ${i + 1}`}
+            width={1200}
+            height={1600}
+            sizes="(min-width:1280px) 272px, (min-width:1024px) 320px, (min-width:640px) 320px, 90vw"
+            style={{ width: "100%", height: "auto", display: "block" }}
+            quality={90}
+            loading={i === 0 ? "eager" : "lazy"}
+            priority={i === 0}
+          />
+        </button>
+      ))}
+    </div>
+  </section>
+) : null}
 
         {/* Reviews */}
         <section className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5 p-6 sm:p-8">
@@ -799,7 +839,62 @@ export default function CreatorProfilePage() {
           )}
         </section>
       </main>
+            {lightboxOpen && galleryUrls[lightboxIndex] ? (
+  <div
+    className="fixed inset-0 z-50 bg-black/90"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Image fullscreen viewer"
+    onClick={(e) => {
+      // clicking backdrop closes; ignore clicks on the image container or controls
+      if (e.target === e.currentTarget) closeLightbox();
+    }}
+  >
+    {/* Top bar with close/minimize (styled similar to video players) */}
+   <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-end p-3 sm:p-4">
+      <button
+        type="button"
+        onClick={closeLightbox}
+        className="inline-flex items-center gap-2 rounded-full bg-white/10 hover:bg-white/15 active:bg-white/20 text-white px-3 py-2 text-sm backdrop-blur"
+        aria-label="Close fullscreen"
+      >
+        <Minimize2 className="h-4 w-4" />
+        <span className="hidden sm:inline">Exit fullscreen</span>
+      </button>
+      <button
+        type="button"
+        onClick={closeLightbox}
+        className="ml-2 inline-flex items-center justify-center rounded-full bg-white/10 hover:bg-white/15 active:bg-white/20 p-2 text-white backdrop-blur"
+        aria-label="Close"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
 
+    {/* Image area */}
+    <div className="absolute inset-0 grid place-items-center p-4 sm:p-6">
+  <div className="relative z-10 w-full h-full">
+        <Image
+          src={galleryUrls[lightboxIndex]}
+          alt={`Fullscreen image ${lightboxIndex + 1}`}
+          fill
+          className="object-contain"
+          // largest viewport: tell Next/Image to fetch an appropriate size
+          sizes="100vw"
+          priority
+          quality={95}
+        />
+      </div>
+    </div>
+
+    {/* Optional: simple index indicator + hint */}
+    <div className="absolute bottom-0 left-0 right-0 z-20 flex items-center justify-center p-3 sm:p-4">
+      <div className="rounded-full bg-white/10 text-white text-xs sm:text-sm px-3 py-1.5 backdrop-blur">
+        {lightboxIndex + 1} / {galleryUrls.length} — Press Esc or click top right indicators to close
+      </div>
+    </div>
+  </div>
+) : null} 
       {/* Loading / Error toasts */}
       {loading && (
         <div className="fixed inset-x-0 bottom-4 z-10 mx-auto w-fit rounded-full bg-gray-900 text-white px-4 py-2 text-sm shadow">
