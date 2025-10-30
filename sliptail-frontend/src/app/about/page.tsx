@@ -122,7 +122,7 @@ function ProductIdeas() {
     { title: "Educators & Coaches", items: ["Mini-courses & lesson packs", "Workshop replays", "1:1 or group coaching via requests"] },
     { title: "Fitness & Wellness", items: ["Program PDFs & trackers", "Guided audio/video", "Weekly programming memberships"] },
     { title: "Photographers & Filmmakers", items: ["LUTs & presets", "Stock packs & project files", "Editing walkthroughs"] },
-    { title: "Streamers & Creators", items: ["Overlay packs & emotes", "Transition packs", "Sponsorship kits & calendars"] },
+    { title: "Streamers & Creators", items: ["Cameos" , "Overlay packs & emotes", "Transition packs"] },
   ];
 
   return (
