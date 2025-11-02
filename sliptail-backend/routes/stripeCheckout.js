@@ -80,9 +80,9 @@ router.post(
 
     // Compute cents from DB value (already cents)
     const amountCents = Number(p.price);
-    if (!Number.isFinite(amountCents) || amountCents <= 0) {
-      return res.status(400).json({ error: "Invalid price" });
-    }
+      if (!Number.isFinite(amountCents)) {
+        return res.status(400).json({ error: "Invalid price" });
+      }
 
     const feeAmount = Math.floor((amountCents * PLATFORM_FEE_BPS) / 10000); // bps of price
 // Canonicalize from the DB row ONLY (ignore client-provided mode for safety)
@@ -115,6 +115,101 @@ const baseMetadata = {
 
 // Optional client-provided idempotency key
 const clientKey = req.get("x-idempotency-key");
+
+// ---- FREE FLOW (bypass Stripe entirely) ----
+if (amountCents === 0) {
+  // Synthetic session id so success page can still pass ?session_id=...
+  const freeSessionId = `free_${p.id}_${Date.now()}`;
+
+  if (finalMode === "payment") {
+    // FREE one-time product (purchase or request): insert a PAID order with amount 0
+    let finalOrderId = null;
+    try {
+      const { rows: ins } = await db.query(
+        `
+        INSERT INTO public.orders
+          (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
+        VALUES ($1,$2,$3,NULL,'paid',NOW(),$4)
+        RETURNING id
+        `,
+        [buyerId, p.id, 0, freeSessionId]
+      );
+      finalOrderId = ins[0]?.id ?? null;
+    } catch (e) {
+      // If a race wrote it already, fetch it
+      const { rows: existing } = await db.query(
+        `SELECT id FROM public.orders WHERE stripe_checkout_session_id=$1 LIMIT 1`,
+        [freeSessionId]
+      );
+      finalOrderId = existing[0]?.id ?? null;
+    }
+
+    // Optional: notify creator for free *request* the same way you do for paid sales
+    // (uncomment if you want in-app notification)
+    /*
+    try {
+      const { rows: info } = await db.query(
+        `SELECT o.id AS order_id, p.id AS product_id, p.title AS product_title, p.user_id AS creator_id, p.product_type
+           FROM orders o
+           JOIN products p ON p.id = o.product_id
+          WHERE o.id = $1
+          LIMIT 1`,
+        [finalOrderId]
+      );
+      const row = info[0];
+      if (row && row.product_type === 'request') {
+        const { notify } = require("../services/notifications");
+        await notify(
+          Number(row.creator_id),
+          "creator_sale",
+          "New request!",
+          `Someone just submitted a free request for ${row.product_title}.`,
+          { product_id: row.product_id, order_id: row.order_id }
+        );
+      }
+    } catch (e) {
+      console.warn("free request notify warn:", e);
+    }
+    */
+
+    // Redirect to success with a synthetic session id
+    const successWithSid = successUrl.replace(
+      "{CHECKOUT_SESSION_ID}",
+      encodeURIComponent(freeSessionId)
+    );
+    return res.json({ url: successWithSid, id: freeSessionId });
+  } else {
+    // FREE membership: upsert an active membership row with a default 1-month period
+    const currentPeriodEnd = (() => {
+      const d = new Date();
+      d.setMonth(d.getMonth() + 1);
+      return d;
+    })();
+
+    try {
+      await db.query(
+        `
+        INSERT INTO memberships
+          (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
+        VALUES ($1,$2,$3,$4,$5,FALSE,$6,NOW())
+        ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
+          SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+              status                 = EXCLUDED.status,
+              cancel_at_period_end   = FALSE,
+              current_period_end     = EXCLUDED.current_period_end
+        `,
+        [buyerId, p.creator_id, p.id, freeSessionId, "active", currentPeriodEnd]
+      );
+    } catch (_) {}
+
+    const successWithSid = successUrl.replace(
+      "{CHECKOUT_SESSION_ID}",
+      encodeURIComponent(freeSessionId)
+    );
+    return res.json({ url: successWithSid, id: freeSessionId });
+  }
+}
+// ---- END FREE FLOW ----
 
 const stripe = getStripe();
 let session;
@@ -202,6 +297,51 @@ router.get("/finalize", requireAuth, async (req, res) => {
   const sessionId = String(req.query.session_id || req.query.sessionId || "").trim();
   if (!sessionId) return res.status(400).json({ ok: false, error: "session_id is required" });
 
+    // Handle synthetic free sessions (no Stripe lookup)
+    if (sessionId.startsWith("free_")) {
+      const productIdForLookup = req.query.pid ? parseInt(String(req.query.pid), 10) : null;
+
+      // Try to find an order created in the free purchase path
+      let orderId = null;
+      try {
+        const { rows } = await db.query(
+          `SELECT id, product_id FROM public.orders WHERE stripe_checkout_session_id=$1 LIMIT 1`,
+          [sessionId]
+        );
+        if (rows.length) {
+          orderId = rows[0].id;
+        }
+      } catch (_) {}
+
+      // Helper to fetch creator name and product type
+      async function getCreatorInfo(productId) {
+        if (!productId) return { display_name: "Creator", product_type: null };
+        const { rows } = await db.query(
+          `SELECT cp.display_name, p.product_type
+            FROM products p
+        LEFT JOIN creator_profiles cp ON cp.user_id = p.user_id
+            WHERE p.id = $1
+            LIMIT 1`,
+          [productId]
+        );
+        return rows[0] || { display_name: "Creator", product_type: null };
+      }
+
+      // Prefer pid from the query (present in success_url you built)
+      const productId = productIdForLookup || null;
+      const { display_name, product_type } = await getCreatorInfo(productId);
+      const respType =
+        (product_type === "membership") ? "membership" :
+        (product_type === "request")    ? "request"    :
+                                          "purchase";
+
+      return res.json({
+        ok: true,
+        type: respType,
+        creatorDisplayName: display_name || "Creator",
+        orderId: orderId || null
+      });
+    }
   try {
     // Retrieve checkout session + expand to reduce round-trips
   const stripe = getStripe();

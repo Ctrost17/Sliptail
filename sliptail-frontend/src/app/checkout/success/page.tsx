@@ -27,6 +27,7 @@ export default function CheckoutSuccessPage() {
   );
   const acct = useMemo(() => search.get("acct"), [search]);
   const pid  = useMemo(() => search.get("pid"), [search]);
+  const isFreeSession = useMemo(() => (sessionId || "").startsWith("free_"), [sessionId]);
 
   useEffect(() => {
     async function finalize() {
@@ -103,7 +104,9 @@ export default function CheckoutSuccessPage() {
   return (
     <div className="mx-auto max-w-xl p-8 text-center">
       <h1 className="text-2xl font-semibold">Finishing up…</h1>
-      <p className="mt-2 text-neutral-600">Confirming your purchase with Stripe.</p>
+      <p className="mt-2 text-neutral-600">
+        {isFreeSession ? "Unlocking your access…" : "Confirming your purchase with Stripe."}
+      </p>
       <div className="mt-6 h-2 w-40 mx-auto animate-pulse rounded bg-green-500/40" />
     </div>
   );
