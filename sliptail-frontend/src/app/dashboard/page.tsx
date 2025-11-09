@@ -1925,6 +1925,21 @@ useEffect(() => {
   setCompletePreviewFile(null);
 }
 
+  // --- Helpers for rendering the buyer's attachment inline in the Complete modal ---
+function buyerAttachmentSrc(id: number | string, apiBase: string) {
+  return `${apiBase}/api/requests/${encodeURIComponent(String(id))}/attachment`;
+}
+function buyerAttachmentPoster(id: number | string, apiBase: string) {
+  return `${apiBase}/api/requests/${encodeURIComponent(String(id))}/attachment/poster`;
+}
+function guessTypeFromKey(k: string) {
+  const name = (k || "").toLowerCase();
+  const isImg = /\.(png|jpe?g|webp|gif|svg)$/.test(name);
+  const isVid = /\.(mp4|mov|m4v|webm|ogg)$/.test(name);
+  const isAud = /\.(mp3|wav|m4a|aac|ogg|webm)$/.test(name);
+  return { isImg, isVid, isAud };
+}
+
     async function submitComplete() {
       if (!activeCompleteRequest) return;
       setCompleting(true);
@@ -3292,6 +3307,77 @@ useEffect(() => {
           : "Submit & Mark Complete"}
       </button>
     </div>
+    {/* --- Buyer details & inline preview under actions --- */}
+{activeCompleteRequest && (
+  <div className="mt-4 space-y-3 border-t pt-4">
+    {/* Description from buyer */}
+    <div>
+      <div className="text-sm font-bold">Buyer’s Description</div>
+      <div className="mt-1 whitespace-pre-wrap text-sm text-neutral-700">
+        {String(activeCompleteRequest.user || "").trim() || "—"}
+      </div>
+    </div>
+
+    {/* Inline preview of buyer's attachment (if any) */}
+    {activeCompleteRequest.attachment_path ? (
+      <div>
+        <div className="text-sm font-bold mb-2">Buyer’s Attachment</div>
+        {(() => {
+          const { isImg, isVid, isAud } = guessTypeFromKey(
+            activeCompleteRequest.attachment_path || ""
+          );
+          const src = buyerAttachmentSrc(activeCompleteRequest.id, apiBase);
+          const poster = buyerAttachmentPoster(activeCompleteRequest.id, apiBase);
+
+          if (isImg) {
+            return (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={src}
+                alt="Buyer attachment"
+                className="block w-full max-h-[60vh] object-contain rounded-lg bg-black"
+              />
+            );
+          }
+          if (isVid) {
+            return (
+              <video
+                src={src}
+                poster={poster}
+                controls
+                playsInline
+                preload="metadata"
+                className="block w-full max-h-[60vh] object-contain rounded-lg bg-black"
+                crossOrigin="use-credentials"
+              />
+            );
+          }
+          if (isAud) {
+            return (
+              <audio
+                src={src}
+                controls
+                preload="metadata"
+                className="block w-full"
+              />
+            );
+          }
+          // Fallback: show a download link if we can't preview
+          return (
+            <a
+              href={`${apiBase}/api/requests/${encodeURIComponent(
+                String(activeCompleteRequest.id)
+              )}/attachment/file`}
+              className="inline-flex items-center gap-2 text-sm underline"
+            >
+              Download attachment
+            </a>
+          );
+        })()}
+      </div>
+    ) : null}
+  </div>
+)}
             </div>
           </div>
           </div>
