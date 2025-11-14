@@ -1,4 +1,4 @@
-// routes/stripeconnect.js
+// routes/stripeConnect.js
 const express = require("express");
 const Stripe = require("stripe");
 const db = require("../db");
@@ -187,27 +187,42 @@ router.post("/create-link", requireAuth, async (req, res) => {
 
   try {
     // 1) Load user & existing account id (if any)
-    const { rows } = await db.query(
-      `SELECT id, email, stripe_account_id
-         FROM users
-        WHERE id=$1
-        LIMIT 1`,
-      [userId]
-    );
-    const me = rows[0];
-    if (!me) return res.status(404).json({ error: "User not found" });
+      const { rows } = await db.query(
+        `
+        SELECT u.id,
+              u.email,
+              u.stripe_account_id,
+              cp.display_name
+          FROM users u
+          LEFT JOIN creator_profiles cp ON cp.user_id = u.id
+        WHERE u.id = $1
+        LIMIT 1
+        `,
+        [userId]
+      );
 
-    let accountId = me.stripe_account_id || null;
+      const me = rows[0];
+      if (!me) return res.status(404).json({ error: "User not found" });
+
+      // Fallback if they don't have a display_name yet
+      const displayName = me.display_name || `Sliptail Creator #${me.id}`;
+
+      let accountId = me.stripe_account_id || null;
 
     // 2) Create Express account if missing
     if (!accountId) {
-  const stripe = getStripe();
-  const account = await stripe.accounts.create({
+      const stripe = getStripe();
+      const account = await stripe.accounts.create({
         type: "express",
         email: me.email || undefined,
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
+        },
+        business_profile: {
+          // This is what Stripe shows to the buyer instead of the creator's legal name
+          name: displayName, // e.g. "Quintin"
+          product_description: "Digital content and creator services from Sliptail",
         },
       });
 
@@ -410,4 +425,50 @@ router.post(
   }
 );
 
+// TEMP: backfill business_profile.name on existing Stripe accounts
+// Call this once (e.g. via Postman) then remove/disable.
+router.post("/backfill-business-names", async (req, res) => {
+  try {
+    const stripe = getStripe();
+
+    const { rows } = await db.query(`
+      SELECT u.id,
+             u.stripe_account_id,
+             cp.display_name
+        FROM users u
+        JOIN creator_profiles cp ON cp.user_id = u.id
+       WHERE u.stripe_account_id IS NOT NULL
+    `);
+
+    let updated = 0;
+
+    for (const row of rows) {
+      const displayName = row.display_name || `Sliptail Creator #${row.id}`;
+      if (!row.stripe_account_id) continue;
+
+      try {
+        await stripe.accounts.update(row.stripe_account_id, {
+          business_profile: {
+            name: displayName,
+            product_description: "Digital content and creator services from Sliptail",
+          },
+        });
+        updated++;
+      } catch (e) {
+        console.error(
+          "Failed to update Stripe account",
+          row.stripe_account_id,
+          e.message || e
+        );
+      }
+    }
+
+    res.json({ updated, total: rows.length });
+  } catch (e) {
+    console.error("backfill-business-names error:", e);
+    res.status(500).json({ error: "Failed to backfill business_profile names" });
+  }
+});
+
 module.exports = router;
+
