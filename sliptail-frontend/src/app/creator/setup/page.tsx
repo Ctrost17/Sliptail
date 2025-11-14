@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 
 /* ----------------------------- Types ----------------------------- */
@@ -404,7 +405,7 @@ export default function CreatorSetupPage() {
       <main className="mx-auto max-w-3xl px-4 py-8 space-y-8">
         <h1 className="text-2xl font-bold text-black">Creator Setup</h1>
 
-        {/* Step 1: Profile */}
+                {/* Step 1: Profile */}
         <section className="rounded-2xl border bg-white p-4 text-black space-y-4">
           <header className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">1) Your Profile</h2>
@@ -415,51 +416,56 @@ export default function CreatorSetupPage() {
             )}
           </header>
 
-          {/* Display name */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Display name</label>
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="How your name appears on your creator card"
-              className="w-full rounded-xl border px-3 py-2"
-            />
-          </div>
-
-          {/* Bio */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Short bio</label>
-            <textarea
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              rows={5}
-              placeholder="Short bio to explain who you are…"
-              className="w-full rounded-xl border px-3 py-2"
-            />
-            <div className="text-xs text-neutral-600">
-              Keep it concise but descriptive. You can update this anytime.
-            </div>
-          </div>
-
-          {/* Profile image */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Profile image (required)</label>
-            <div className="flex items-center gap-4">
-              <div className="h-20 w-20 overflow-hidden rounded-full border bg-neutral-50">
-                {profilePreview ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={profilePreview}
-                    alt="Profile preview"
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
-                    Preview
-                  </div>
-                )}
+          {/* Only show the form when profile is NOT complete */}
+          {!status?.profileComplete && (
+            <>
+              {/* Display name */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium">Display name</label>
+                <input
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="How your name appears on your creator card"
+                  className="w-full rounded-xl border px-3 py-2"
+                />
               </div>
-              <input
+
+              {/* Bio */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium">Short bio</label>
+                <textarea
+                  value={bio}
+                  onChange={(e) => setBio(e.target.value)}
+                  rows={5}
+                  placeholder="Short bio to explain who you are…"
+                  className="w-full rounded-xl border px-3 py-2"
+                />
+                <div className="text-xs text-neutral-600">
+                  Keep it concise but descriptive. You can update this anytime.
+                </div>
+              </div>
+
+              {/* Profile image */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium">
+                  Profile image (required)
+                </label>
+                <div className="flex items-center gap-4">
+                  <div className="relative h-20 w-20 overflow-hidden rounded-full border bg-neutral-50">
+                    {profilePreview ? (
+                      <Image
+                        src={profilePreview}
+                        alt="Profile preview"
+                        fill
+                        className="object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
+                        Preview
+                      </div>
+                    )}
+                  </div>
+                  <input
                     id="profileFile"
                     type="file"
                     accept="image/*"
@@ -472,109 +478,117 @@ export default function CreatorSetupPage() {
                   >
                     Choose File
                   </label>
-            </div>
-          </div>
+                </div>
+              </div>
 
-          {/* Gallery upload */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">
-              Back-of-card gallery (4 photos required)
-            </label>
-            <input
-                ref={galleryInputRef}
-                id="galleryFiles"
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={onPickGallery}
-                className="hidden"
-              />
-              <label
-                htmlFor="galleryFiles"
-                className="inline-block cursor-pointer rounded-xl border bg-black px-4 py-2 text-sm text-white"
-              >
-                Choose Files
-              </label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {Array.from({ length: Math.max(4, galleryPreviews.length) }).map((_, i) => {
-                const preview = galleryPreviews[i];
-                return (
-                  <div
-                    key={i}
-                    className="relative aspect-square overflow-hidden rounded-xl border bg-neutral-50"
-                  >
-                    {preview ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={preview}
-                        alt={`Gallery ${i + 1}`}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
-                        {i < 4 ? "Required" : "Extra"}
-                      </div>
-                    )}
-                    {preview && (
-                      <div className="absolute inset-x-1 bottom-1 flex items-center justify-between gap-1">
-                        <button
-                          onClick={() => moveGallery(i, i - 1)}
-                          className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
-                        >
-                          ←
-                        </button>
-                        <button
-                          onClick={() => removeGalleryAt(i)}
-                          className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
-                        >
-                          Remove
-                        </button>
-                        <button
-                          onClick={() => moveGallery(i, i + 1)}
-                          className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
-                        >
-                          →
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="text-xs text-neutral-600">
-              Tip: Pick four photos that represent your style. Reorder with arrows.
-            </div>
-          </div>
-
-          {/* Categories */}
-          <div className="space-y-2">
-            <div className="text-sm font-medium">Categories</div>
-            <div className="flex flex-wrap gap-2">
-              {allCats.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => toggleCategory(c.id)}
-                  className={`cursor-pointer rounded-full border px-3 py-1 text-sm ${
-                    categories.includes(c.id) ? "bg-black text-white" : "hover:bg-neutral-100"
-                  }`}
+              {/* Gallery upload */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium">
+                  Back-of-card gallery (4 photos required)
+                </label>
+                <input
+                  ref={galleryInputRef}
+                  id="galleryFiles"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={onPickGallery}
+                  className="hidden"
+                />
+                <label
+                  htmlFor="galleryFiles"
+                  className="inline-block cursor-pointer rounded-xl border bg-black px-4 py-2 text-sm text-white"
                 >
-                  {c.name}
+                  Choose Files
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {Array.from({ length: Math.max(4, galleryPreviews.length) }).map(
+                    (_, i) => {
+                      const preview = galleryPreviews[i];
+                      return (
+                        <div
+                          key={i}
+                          className="relative aspect-square overflow-hidden rounded-xl border bg-neutral-50"
+                        >
+                          {preview ? (
+                            <Image
+                              src={preview}
+                              alt={`Gallery ${i + 1}`}
+                              fill
+                              className="object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
+                              {i < 4 ? "Required" : "Extra"}
+                            </div>
+                          )}
+                          {preview && (
+                            <div className="absolute inset-x-1 bottom-1 flex items-center justify-between gap-1">
+                              <button
+                                onClick={() => moveGallery(i, i - 1)}
+                                className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
+                              >
+                                ←
+                              </button>
+                              <button
+                                onClick={() => removeGalleryAt(i)}
+                                className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
+                              >
+                                Remove
+                              </button>
+                              <button
+                                onClick={() => moveGallery(i, i + 1)}
+                                className="cursor-pointer rounded bg-white/80 px-2 py-1 text-[10px] shadow"
+                              >
+                                →
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                  )}
+                </div>
+                <div className="text-xs text-neutral-600">
+                  Tip: Pick four photos that represent your style. Reorder with arrows.
+                </div>
+              </div>
+
+              {/* Categories */}
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Categories</div>
+                <div className="flex flex-wrap gap-2">
+                  {allCats.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => toggleCategory(c.id)}
+                      className={`cursor-pointer rounded-full border px-3 py-1 text-sm ${
+                        categories.includes(c.id)
+                          ? "bg-black text-white"
+                          : "hover:bg-neutral-100"
+                      }`}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {saveError && (
+                <div className="text-sm text-red-600">{saveError}</div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  onClick={saveProfile}
+                  disabled={saving}
+                  className="cursor-pointer rounded-xl bg-black px-4 py-2 text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {saving ? "Saving…" : "Save Profile"}
                 </button>
-              ))}
-            </div>
-          </div>
-
-          {saveError && <div className="text-sm text-red-600">{saveError}</div>}
-
-          <div className="flex gap-2">
-            <button
-              onClick={saveProfile}
-              disabled={saving}
-              className="cursor-pointer rounded-xl bg-black px-4 py-2 text-white disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {saving ? "Saving…" : "Save Profile"}
-            </button>
-          </div>
+              </div>
+            </>
+          )}
         </section>
 
         {/* Step 2: Stripe */}
