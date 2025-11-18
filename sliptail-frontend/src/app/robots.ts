@@ -3,7 +3,23 @@ import type { MetadataRoute } from "next";
 
 export default function robots(): MetadataRoute.Robots {
   return {
-    rules: [{ userAgent: "*", allow: "/" , disallow: ["/creators/","/admin","/dashboard","/settings","/terms","/privacy","/notifications,/purchases"]}],
+    rules: [
+      {
+        userAgent: "*",
+        allow: "/",
+        disallow: [
+          "/creators/",
+          "/admin",
+          "/dashboard",
+          "/settings",
+          "/terms",
+          "/privacy",
+          "/notifications",
+          "/purchases",
+          "/uploads/", // block crawling uploaded creator images
+        ],
+      },
+    ],
     sitemap: "https://sliptail.com/sitemap.xml",
   };
 }
