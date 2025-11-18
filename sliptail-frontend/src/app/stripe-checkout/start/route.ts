@@ -111,12 +111,21 @@ export async function GET(req: NextRequest) {
         ? ((await res.json().catch(() => ({}))) as Json)
         : await res.text().catch(() => "");
 
-      const maybeUrl = isRecord(data) ? getString(data, "url") : null;
+            const maybeUrl = isRecord(data) ? getString(data, "url") : null;
+      const errorCode = isRecord(data) ? getString(data, "error") : undefined;
 
       const msg =
         (isRecord(data) && (getString(data, "message") || getString(data, "error"))) ||
         (typeof data === "string" ? data : "") ||
         res.statusText;
+
+      // 🔴 Special case: creator's payouts not ready
+      if (errorCode === "creator_not_ready") {
+        const unavailableUrl = `/checkout/unavailable?pid=${encodeURIComponent(
+          pid
+        )}&reason=creator_not_ready`;
+        return NextResponse.redirect(abs(req, unavailableUrl), { status: 302 });
+      }
 
       if (res.ok && maybeUrl) {
         // Support absolute or relative (rare) URLs
