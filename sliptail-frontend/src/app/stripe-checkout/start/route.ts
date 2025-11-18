@@ -26,12 +26,6 @@ function getString(obj: unknown, key: string): string | undefined {
 /**
  * Usage:
  *   /stripe-checkout/start?pid=<productId>&action=purchase|membership|request
- *
- * Behavior:
- * - POST directly to backend to create a Stripe session (forwarding cookies).
- *   - If backend returns 401/403 ⇒ redirect to login (with ?next back here).
- *   - If backend returns { url } ⇒ 303 redirect to Stripe Checkout.
- *   - Else ⇒ redirect back to product page with an error message.
  */
 export async function GET(req: NextRequest) {
   const { searchParams, pathname } = new URL(req.url);
@@ -57,17 +51,19 @@ export async function GET(req: NextRequest) {
           pid
         )}&action=${encodeURIComponent(action)}`;
 
-  const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(pid)}&action=${encodeURIComponent(action)}`;
+  const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
+    pid
+  )}&action=${encodeURIComponent(action)}`;
 
   // Build payload once
   const payload = JSON.stringify({
-    product_id: pid,                   // expected by your backend
-    productId: pid,                    // leniency for any older handlers
-    action: action || undefined,       // optional echo
+    product_id: pid, // expected by your backend
+    productId: pid, // leniency for any older handlers
+    action: action || undefined, // optional echo
     mode: action === "membership" ? "subscription" : "payment",
     quantity: 1,
-    success_url: successUrl,           // <— key change
-    cancel_url: cancelUrl,             // <— unchanged behavior
+    success_url: successUrl,
+    cancel_url: cancelUrl,
   });
 
   // Forward cookies so cookie-based auth works server-to-server
@@ -111,11 +107,12 @@ export async function GET(req: NextRequest) {
         ? ((await res.json().catch(() => ({}))) as Json)
         : await res.text().catch(() => "");
 
-            const maybeUrl = isRecord(data) ? getString(data, "url") : null;
+      const maybeUrl = isRecord(data) ? getString(data, "url") : null;
       const errorCode = isRecord(data) ? getString(data, "error") : undefined;
 
       const msg =
-        (isRecord(data) && (getString(data, "message") || getString(data, "error"))) ||
+        (isRecord(data) &&
+          (getString(data, "message") || getString(data, "error"))) ||
         (typeof data === "string" ? data : "") ||
         res.statusText;
 
@@ -124,15 +121,16 @@ export async function GET(req: NextRequest) {
         const unavailableUrl = `/checkout/unavailable?pid=${encodeURIComponent(
           pid
         )}&reason=creator_not_ready`;
-        return NextResponse.redirect(abs(req, unavailableUrl), { status: 302 });
+        return NextResponse.redirect(abs(req, unavailableUrl), {
+          status: 302,
+        });
       }
 
       if (res.ok && maybeUrl) {
         // Support absolute or relative (rare) URLs
-        const absolute =
-          /^https?:\/\//i.test(maybeUrl)
-            ? maybeUrl
-            : `${API_BASE}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
+        const absolute = /^https?:\/\//i.test(maybeUrl)
+          ? maybeUrl
+          : `${API_BASE}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
         return NextResponse.redirect(absolute, { status: 303 });
       } else {
         lastMsg = `(${res.status}) ${msg || "Unknown error"}`;
@@ -143,8 +141,8 @@ export async function GET(req: NextRequest) {
   }
 
   // Fallback — send back to product page with the last error we saw
-  const fallback = `/products/${encodeURIComponent(pid)}?error=${encodeURIComponent(
-    lastMsg || "Could not start checkout"
-  )}`;
+  const fallback = `/products/${encodeURIComponent(
+    pid
+  )}?error=${encodeURIComponent(lastMsg || "Could not start checkout")}`;
   return NextResponse.redirect(abs(req, fallback), { status: 302 });
 }

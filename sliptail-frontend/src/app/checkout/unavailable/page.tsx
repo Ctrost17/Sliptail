@@ -1,155 +1,48 @@
-// src/app/stripe-checkout/start/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// app/checkout/unavailable/page.tsx
+"use client";
 
-export const dynamic = "force-dynamic"; // avoid caching in app router
+import { useRouter, useSearchParams } from "next/navigation";
+import { useMemo } from "react";
 
-function abs(req: NextRequest, path: string) {
-  return new URL(path, req.url).toString();
-}
+export const dynamic = "force-dynamic";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ||
-  process.env.API_BASE_URL?.replace(/\/$/, "") ||
-  "http://localhost:5000";
+export default function CheckoutUnavailablePage() {
+  const router = useRouter();
+  const search = useSearchParams();
+  const pid = useMemo(() => search.get("pid"), [search]);
 
-type Json = Record<string, unknown>;
+  const message =
+    "This creator is still finishing their payout setup. Please try again later.";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
-}
-function getString(obj: unknown, key: string): string | undefined {
-  if (!isRecord(obj)) return undefined;
-  const v = obj[key];
-  return typeof v === "string" ? v : undefined;
-}
-
-/**
- * Usage:
- *   /stripe-checkout/start?pid=<productId>&action=purchase|membership|request
- *
- * Behavior:
- * - POST directly to backend to create a Stripe session (forwarding cookies).
- *   - If backend returns 401/403 ⇒ redirect to login (with ?next back here).
- *   - If backend returns { url } ⇒ 303 redirect to Stripe Checkout.
- *   - If backend returns { error: "creator_not_ready" } ⇒ redirect to checkout/unavailable.
- *   - Else ⇒ redirect back to product page with an error message.
- */
-export async function GET(req: NextRequest) {
-  const { searchParams, pathname } = new URL(req.url);
-  const pid = searchParams.get("pid");
-  const actionRaw = (searchParams.get("action") || "").toLowerCase();
-  const action = actionRaw || "purchase"; // treat missing as a purchase
-
-  if (!pid) {
-    return NextResponse.redirect(abs(req, "/"), { status: 302 });
-  }
-
-  // Build success/cancel URLs:
-  // - Requests go to /checkout/success (so we can collect details)
-  // - Purchases/Memberships go straight to /purchases (optionally with a toast flag)
-  const origin = new URL(req.url).origin;
-
-  const successUrl =
-    action === "request"
-      ? `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-          pid
-        )}&action=${encodeURIComponent(action)}`
-      : `${origin}/purchases?flash=purchase_success&session_id={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
-          pid
-        )}&action=${encodeURIComponent(action)}`;
-
-  const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
-    pid
-  )}&action=${encodeURIComponent(action)}`;
-
-  // Build payload once
-  const payload = JSON.stringify({
-    product_id: pid, // expected by your backend
-    productId: pid, // leniency for any older handlers
-    action: action || undefined, // optional echo
-    mode: action === "membership" ? "subscription" : "payment",
-    quantity: 1,
-    success_url: successUrl, // <— key change
-    cancel_url: cancelUrl, // <— unchanged behavior
-  });
-
-  // Forward cookies so cookie-based auth works server-to-server
-  const headers = {
-    "content-type": "application/json",
-    cookie: req.headers.get("cookie") || "",
+  const handleBack = () => {
+    // Prefer going back in history; if that fails, go to product page
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+    } else if (pid) {
+      router.replace(`/products/${encodeURIComponent(pid)}`);
+    } else {
+      router.replace("/"); // ultimate fallback
+    }
   };
 
-  // Try your current route first, then fallbacks
-  const endpoints = [
-    `${API_BASE}/api/stripe-checkout/create-session`, // your implemented route
-    `${API_BASE}/api/stripe-checkout/session`,
-    `${API_BASE}/api/stripe-checkout/create`,
-    `${API_BASE}/api/checkout/create-session`,
-    `${API_BASE}/api/checkout/session`,
-    `${API_BASE}/api/checkout/create`,
-    `${API_BASE}/api/stripe/checkout/session`,
-    `${API_BASE}/api/stripe/checkout/create-session`,
-  ];
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center px-4">
+      <div className="max-w-md w-full rounded-xl border border-neutral-200 bg-white p-6 shadow-sm">
+        <h1 className="text-xl font-semibold text-neutral-900">
+          Creator not ready yet
+        </h1>
+        <p className="mt-3 text-sm text-neutral-600">
+          {message}
+        </p>
 
-  let lastMsg = "";
-
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: payload,
-        cache: "no-store",
-      });
-
-      // If not authenticated, send to login with next back to this URL
-      if (res.status === 401 || res.status === 403) {
-        const nextUrl = `${pathname}?${searchParams.toString()}`;
-        const loginUrl = `/auth/login?next=${encodeURIComponent(nextUrl)}`;
-        return NextResponse.redirect(abs(req, loginUrl), { status: 302 });
-      }
-
-      const ct = res.headers.get("content-type") || "";
-      const data: Json | string | null = ct.includes("application/json")
-        ? ((await res.json().catch(() => ({}))) as Json)
-        : await res.text().catch(() => "");
-
-      const maybeUrl = isRecord(data) ? getString(data, "url") : null;
-      const errorCode = isRecord(data) ? getString(data, "error") : undefined;
-
-      const msg =
-        (isRecord(data) &&
-          (getString(data, "message") || getString(data, "error"))) ||
-        (typeof data === "string" ? data : "") ||
-        res.statusText;
-
-      // 🔴 Special case: creator's payouts not ready → show friendly page
-      if (errorCode === "creator_not_ready") {
-        const unavailableUrl = `/checkout/unavailable?pid=${encodeURIComponent(
-          pid
-        )}&reason=creator_not_ready`;
-        return NextResponse.redirect(abs(req, unavailableUrl), {
-          status: 302,
-        });
-      }
-
-      if (res.ok && maybeUrl) {
-        // Support absolute or relative (rare) URLs
-        const absolute = /^https?:\/\//i.test(maybeUrl)
-          ? maybeUrl
-          : `${API_BASE}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
-        return NextResponse.redirect(absolute, { status: 303 });
-      } else {
-        lastMsg = `(${res.status}) ${msg || "Unknown error"}`;
-      }
-    } catch {
-      // try next endpoint
-    }
-  }
-
-  // Fallback — send back to product page with the last error we saw
-  const fallback = `/products/${encodeURIComponent(
-    pid
-  )}?error=${encodeURIComponent(lastMsg || "Could not start checkout")}`;
-  return NextResponse.redirect(abs(req, fallback), { status: 302 });
+        <button
+          type="button"
+          onClick={handleBack}
+          className="mt-6 inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium border border-neutral-300 hover:bg-neutral-100 transition"
+        >
+          ← Go back
+        </button>
+      </div>
+    </div>
+  );
 }
