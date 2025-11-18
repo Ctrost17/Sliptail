@@ -25,6 +25,7 @@ type CreatorProfile = {
   profile_image: string | null;
   average_rating: number;
   products_count: number;
+  stripe_charges_enabled?: boolean; // NEW: whether this creator can take payments
   gallery?: string[];
 };
 
@@ -120,7 +121,32 @@ function parseCreatorProfile(json: unknown, fallbackId: string | null): CreatorP
     return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
   })();
 
-  return { creator_id: id, display_name, bio, profile_image, average_rating, products_count, gallery };
+  // NEW: parse stripe_charges_enabled in a tolerant way
+  const stripe_charges_enabled = ((): boolean | undefined => {
+    const v = (json as any)["stripe_charges_enabled"];
+    if (typeof v === "boolean") return v;
+    if (typeof v === "string") {
+      const s = v.toLowerCase();
+      if (s === "true" || s === "t" || s === "1") return true;
+      if (s === "false" || s === "f" || s === "0") return false;
+    }
+    if (typeof v === "number") {
+      if (v === 1) return true;
+      if (v === 0) return false;
+    }
+    return undefined;
+  })();
+
+  return {
+    creator_id: id,
+    display_name,
+    bio,
+    profile_image,
+    average_rating,
+    products_count,
+    gallery,
+    stripe_charges_enabled,
+  };
 }
 
 function parseProductItem(x: unknown): Product | null {
@@ -503,6 +529,12 @@ useEffect(() => {
   async function startCheckout(p: Product) {
     if (!creatorId) return;
 
+      // NEW: if this creator can't take payments yet, send to the "unavailable" page
+    if (creator && creator.stripe_charges_enabled === false) {
+      router.push(`/checkout/unavailable?pid=${encodeURIComponent(String(p.id))}`);
+      return;
+    }
+
     if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
       router.push("/purchases");
       return;
@@ -602,6 +634,7 @@ useEffect(() => {
   const galleryUrls = (gallery || []).slice(0, 4).map((u) => resolveImageUrl(u, apiBase)).filter((u): u is string => !!u);
   const avg = Math.max(0, Math.min(5, Number(creator?.average_rating || 0)));
   const productCount = Number(creator?.products_count || 0);
+  const chargesEnabled = creator?.stripe_charges_enabled !== false;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -711,6 +744,11 @@ useEffect(() => {
                 if (p.product_type === "membership") cta = isSubscribed ? "Currently Subscribed" : "Subscribe for membership";
                 else if (p.product_type === "request") cta = "Purchase request";
 
+                 const disabledForStripe = !chargesEnabled;
+                if (disabledForStripe) {
+                  cta = "Creator is setting up Stripe";
+                }
+
                 return (
                   <div key={p.id} className="group overflow-hidden rounded-2xl ring-1 ring-black/5 bg-white hover:shadow-md transition flex flex-col">
                     {/* Header visual: brand gradient + darker text */}
@@ -739,16 +777,29 @@ useEffect(() => {
                         ) : (
                           <button
                             className={`mt-3 w-full rounded-xl px-4 py-2 text-sm font-medium transition
-                              ${isSubscribed && p.product_type === "membership"
-                                ? "bg-gray-200 text-gray-700 cursor-pointer"
-                                : "bg-gray-900 text-white hover:bg-black/90 cursor-pointer"}`}
+                              ${
+                                !chargesEnabled
+                                  ? "bg-gray-200 text-gray-600 cursor-not-allowed"
+                                  : isSubscribed && p.product_type === "membership"
+                                  ? "bg-gray-200 text-gray-700 cursor-pointer"
+                                  : "bg-gray-900 text-white hover:bg-black/90 cursor-pointer"
+                              }`}
                             onClick={() => {
-                              if (isSubscribed && p.product_type === "membership") router.push("/purchases");
-                              else void startCheckout(p);
+                              if (!chargesEnabled) {
+                                router.push(`/checkout/unavailable?pid=${encodeURIComponent(String(p.id))}`);
+                                return;
+                              }
+
+                              if (isSubscribed && p.product_type === "membership") {
+                                router.push("/purchases");
+                              } else {
+                                void startCheckout(p);
+                              }
                             }}
-                            disabled={checkingOutId === p.id}
                           >
-                            {checkingOutId === p.id ? "Redirecting…" : cta}
+                            {isSubscribed && p.product_type === "membership"
+                              ? "Manage subscription"
+                              : cta}
                           </button>
                         )}
                       </div>

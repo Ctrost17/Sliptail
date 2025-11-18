@@ -1196,35 +1196,44 @@ router.get("/:creatorId", async (req, res) => {
   try {
     const enabledClause = await usersEnabledClause();
 
-    const { rows } = await db.query(
-      `
-      SELECT
-        cp.user_id,
-        cp.display_name,
-        cp.bio,
-        cp.profile_image,
-        ${featuredExpr} AS is_featured,
-        COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-        COUNT(DISTINCT p.id)::int               AS products_count
-      FROM creator_profiles cp
-      JOIN users u
-        ON u.id = cp.user_id
-      LEFT JOIN reviews  r
-        ON r.creator_id = cp.user_id
-      LEFT JOIN products p
-        ON p.user_id = cp.user_id
-       AND p.active  = TRUE
-      WHERE cp.user_id = $1
-        AND ${enabledClause}
-        AND u.role = 'creator'
-        AND cp.is_profile_complete = TRUE
-        AND cp.is_active = TRUE
-      GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
-      HAVING COUNT(DISTINCT p.id) > 0
-      `,
-      [creatorId]
-    );
-
+        const { rows } = await db.query(
+          `
+          SELECT
+            cp.user_id,
+            cp.display_name,
+            cp.bio,
+            cp.profile_image,
+            -- use stripe_connect as source of truth, fall back to profile flag, default false
+            COALESCE(sc.charges_enabled, cp.stripe_charges_enabled, false) AS stripe_charges_enabled,
+            ${featuredExpr} AS is_featured,
+            COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
+            COUNT(DISTINCT p.id)::int               AS products_count
+          FROM creator_profiles cp
+          JOIN users u
+            ON u.id = cp.user_id
+          LEFT JOIN stripe_connect sc
+            ON sc.user_id = cp.user_id
+          LEFT JOIN reviews  r
+            ON r.creator_id = cp.user_id
+          LEFT JOIN products p
+            ON p.user_id = cp.user_id
+          AND p.active  = TRUE
+          WHERE cp.user_id = $1
+            AND ${enabledClause}
+            AND u.role = 'creator'
+            AND cp.is_profile_complete = TRUE
+            AND cp.is_active = TRUE
+          GROUP BY
+            cp.user_id,
+            cp.display_name,
+            cp.bio,
+            cp.profile_image,
+            COALESCE(sc.charges_enabled, cp.stripe_charges_enabled, false),
+            ${featuredExpr}
+          HAVING COUNT(DISTINCT p.id) > 0
+          `,
+          [creatorId]
+        );
     if (!rows.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
 
     const base = rows[0];
