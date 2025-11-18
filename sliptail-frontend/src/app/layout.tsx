@@ -9,10 +9,32 @@ import Toast from "@/components/Toast";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://sliptail.com"),
-  title: "Sliptail",
+  title: {
+    default:
+      "Sliptail – Creator Platform for Memberships, Downloads & Custom Requests",
+    template: "%s | Sliptail",
+  },
   description:
-    "Sliptail helps creators sell memberships, digital downloads, and custom requests — all in one place.",
-  icons: { icon: "/icon.png" },
+    "Sliptail helps creators sell memberships, digital downloads, and custom requests — all in one place, while keeping 96% of their earnings.",
+  openGraph: {
+    type: "website",
+    url: "https://sliptail.com",
+    siteName: "Sliptail",
+    title: "Sliptail – Creator Platform",
+    description:
+      "Sliptail is a creator platform where creators sell memberships, digital downloads, and custom requests while keeping 96% of their earnings.",
+    images: [
+      {
+        url: "https://sliptail.com/icon.png", // or another OG image
+        width: 1200,
+        height: 630,
+        alt: "Sliptail logo",
+      },
+    ],
+  },
+  icons: {
+    icon: "/icon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
