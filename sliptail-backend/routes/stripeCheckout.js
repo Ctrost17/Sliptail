@@ -56,36 +56,26 @@ router.post(
     } = req.body || {};
 
     // 1) Load product and creator’s connect account
-      const { rows } = await db.query(
-        `
-        SELECT
-          p.id,
-          p.title,
-          p.product_type,       -- e.g. 'download' | 'request' | 'membership'
-          p.price,              -- integer cents
-          p.user_id AS creator_id,
-          u.stripe_account_id,
-          cp.stripe_charges_enabled AS creator_charges_enabled
-        FROM products p
-        JOIN users u ON u.id = p.user_id
-        LEFT JOIN creator_profiles cp ON cp.user_id = u.id
-        WHERE p.id = $1
-        `,
-        [product_id]
-      );
+    const { rows } = await db.query(
+      `
+      SELECT
+        p.id,
+        p.title,
+        p.product_type,       -- e.g. 'download' | 'request' | 'membership' (adapt to your enum)
+        p.price,              -- integer cents
+        p.user_id AS creator_id,
+        u.stripe_account_id
+      FROM products p
+      JOIN users u ON u.id = p.user_id
+      WHERE p.id = $1
+      `,
+      [product_id]
+    );
     const p = rows[0];
     if (!p) return res.status(404).json({ error: "Product not found" });
 
-    // Creator must both HAVE a Stripe account id AND be chargeable
-    const creatorReady =
-      !!p.stripe_account_id && p.creator_charges_enabled === true;
-
-    if (!creatorReady) {
-      // Don’t even hit Stripe – just tell the frontend this creator isn’t ready
-      return res.status(400).json({
-        error: "creator_not_ready",
-        message: "This creator is still finishing their payout setup. Please try again later.",
-      });
+    if (!p.stripe_account_id) {
+      return res.status(400).json({ error: "Creator has not completed Stripe onboarding" });
     }
 
     // Compute cents from DB value (already cents)
