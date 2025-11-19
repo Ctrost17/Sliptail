@@ -494,23 +494,37 @@ function keyFromPublicUrl(url) {
   }
 }
 
-async function getPresignedPutUrl(key, { contentType = "application/octet-stream", contentDisposition = null, expiresIn = 3600 } = {}) {
-  // For local storage, return a direct upload URL to our backend
+async function getPresignedPutUrl(
+  key,
+  { contentType = "application/octet-stream", contentDisposition = null, expiresIn = 3600 } = {}
+) {
   if (DRIVER === "local") {
     const baseUrl = process.env.APP_URL || process.env.BACKEND_URL || 'http://localhost:5000';
-    // Return a URL that points to our backend upload endpoint
     return `${baseUrl.replace(/\/$/, '')}/api/uploads/direct?key=${encodeURIComponent(key)}`;
   }
-  
-  // For S3, use presigned PUT
+
   if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3 or local");
-  const cmd = new PutObjectCommand({
+
+  // AWS will reject signatures if checksum headers appear.
+  // FORCE the presigned request to ignore checksums.
+  const params = {
     Bucket: PRIVATE_BUCKET,
     Key: String(key).replace(/^\/+/, ""),
     ContentType: contentType,
+    // DO NOT allow AWS-SDK to auto-add checksum headers
+    ChecksumAlgorithm: undefined,
+    // No Content-MD5
+    ContentMD5: undefined,
     ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
+  };
+
+  const cmd = new PutObjectCommand(params);
+
+  return await s3Presign(s3, cmd, {
+    expiresIn,
+    signingRegion: S3_REGION,
+    signingService: "s3",
   });
-  return await s3Presign(s3, cmd, { expiresIn });
 }
 
 /**

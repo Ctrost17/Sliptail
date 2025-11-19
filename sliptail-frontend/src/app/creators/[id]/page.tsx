@@ -413,7 +413,6 @@ useEffect(() => {
       try {
         const profReq = fetch(`${apiBase}/api/creators/${creatorId}`, { credentials: "include", signal: ac.signal });
         const cardReq = fetch(`${apiBase}/api/creators/${creatorId}/card`, { credentials: "include", signal: ac.signal });
-        const prodReq = fetch(`${apiBase}/api/products/user/${creatorId}`, { credentials: "include", signal: ac.signal });
 
         const profRes = await profReq;
         if (!profRes.ok) throw new Error(`HTTP ${profRes.status}`);
@@ -435,8 +434,13 @@ useEffect(() => {
           }
         } catch {}
 
-        try {
-          const res = await prodReq;
+      try {
+          // Use the numeric creator_id from the loaded profile,
+          // not the slug from the URL.
+          const res = await fetch(`${apiBase}/api/products/user/${prof.creator_id}`, {
+            credentials: "include",
+            signal: ac.signal,
+          });
           if (res.ok) {
             const prodJson: unknown = await res.json();
             const list = parseProductsResponse(prodJson);

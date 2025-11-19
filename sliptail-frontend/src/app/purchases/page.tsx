@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState,useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { creatorProfilePath } from "@/lib/creatorSlug";
 import { fetchApi } from "@/lib/api";
 import { loadAuth } from "@/lib/auth";
 import Image from "next/image";
@@ -1254,7 +1255,7 @@ function ProfileAvatar({
   return creatorId
     ? (
         <Link
-          href={`/creators/${creatorId}`}
+          href={creatorProfilePath(alt, creatorId ?? "")}
           aria-label={`View ${alt}`}
           title={`View ${alt}`}
           className="outline-none focus:ring-2 focus:ring-emerald-500 rounded-full"
@@ -1343,11 +1344,29 @@ export default function PurchasesPage() {
           const k = num((r as any).order_id);
           if (k !== null) byOrder[k] = r;
         }
-
-        // Normalize legacy orders shape
         const mappedOrders: Order[] = (legacy?.orders || []).map((o: any) => {
           const orderId = Number(o.id);
           const r = byOrder[orderId];
+
+          // Normalize product type:
+          // - Prefer nested product.product_type
+          // - Fall back to o.product_type if the API exposes it there
+          // - Default to "purchase" for any non-request product (since memberships come from /api/memberships/mine)
+          const rawType =
+            (o.product?.product_type ??
+              o.product_type ??
+              "").toString().toLowerCase();
+
+          let productType: string;
+          if (rawType === "request") {
+            productType = "request";
+          } else if (rawType === "membership") {
+            productType = "membership";
+          } else if (rawType === "download" || rawType === "purchase" || !rawType) {
+            productType = "purchase";
+          } else {
+            productType = rawType;
+          }
 
           return {
             id: orderId,
@@ -1372,26 +1391,24 @@ export default function PurchasesPage() {
               description: o.product?.description ?? null,
               view_url: o.product?.view_url ?? null,
               download_url: o.product?.download_url ?? null,
-              product_type: String(o.product?.product_type ?? "unknown"),
+              product_type: productType,
               title: String(o.product?.title ?? ""),
               filename: String(o.product?.filename ?? ""),
             },
 
-             user_has_review: Boolean(o.user_has_review ?? byOrder[orderId]?.user_has_review),
+            user_has_review: Boolean(o.user_has_review ?? byOrder[orderId]?.user_has_review),
 
-            // Creator delivery (prefer joined request fields if present)
             request_response: firstText(o.request_response, r?.creator) ?? null,
             request_media_url:
               resolveImageUrl(firstText(o.request_media_url, r?.creator_attachment_path), apiBase) ?? null,
 
-            // Buyer details from custom_requests
             request_id: num(r?.id),
             request_status: r?.status ?? null,
             request_user_message: firstText(r?.user),
-            request_user_attachment_url: resolveImageUrl(firstText(r?.attachment_path), apiBase) ?? null,
+            request_user_attachment_url:
+              resolveImageUrl(firstText(r?.attachment_path), apiBase) ?? null,
           };
         });
-
         // Normalize memberships into Order-like (+ include cancel-at-period-end info)
         const membershipOrders: Order[] = (memberships?.memberships || []).map((m: any) => {
           const price =

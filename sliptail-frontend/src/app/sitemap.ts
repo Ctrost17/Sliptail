@@ -1,5 +1,6 @@
 // app/sitemap.ts
 import type { MetadataRoute } from "next";
+import { creatorProfilePath } from "@/lib/creatorSlug";
 
 const BASE_URL = "https://sliptail.com";
 
@@ -16,13 +17,16 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     const res = await fetch(`${BASE_URL}/api/creators`, { next: { revalidate: 3600 } });
     if (res.ok) {
-      const data = (await res.json()) as { creators: { creator_id: number | string }[] };
-      dynamic = (data.creators || []).map((c) => ({
-        url: `${BASE_URL}/creators/${c.creator_id}`,
+    const data = (await res.json()) as { creators: { creator_id: number | string; display_name: string }[] };
+    dynamic = (data.creators || []).map((c) => {
+      const path = creatorProfilePath(c.display_name, c.creator_id);
+      return {
+        url: `${BASE_URL}${path}`,
         lastModified: new Date(),
         changeFrequency: "daily",
         priority: 0.8,
-      }));
+      };
+    });
     }
   } catch {
     // ignore if API not available — static routes still work

@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { creatorProfilePath } from "@/lib/creatorSlug";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { loadAuth } from "@/lib/auth";
 import React from "react";
@@ -2443,7 +2444,11 @@ function guessTypeFromKey(k: string) {
     loadReviewsForProduct(productId, next);
   }
 
-  const publicProfilePath = creatorId ? `/creators/${creatorId}` : "/";
+   const publicProfilePath = creator
+    ? creatorProfilePath(creator.display_name, creator.creator_id)
+    : creatorId
+    ? creatorProfilePath(null, creatorId)
+    : "/";
   const onViewProfile = () => router.push(publicProfilePath);
 
   function showToast(text: string) {

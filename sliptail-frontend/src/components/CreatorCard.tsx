@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { creatorProfilePath } from "@/lib/creatorSlug";
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -225,9 +226,8 @@ export default function CreatorCard({ creator }: { creator: Creator }) {
                 </div>
               ))}
             </div>
-
           <Link
-            href={`/creators/${creator.id}`}
+            href={creatorProfilePath(creator.displayName, creator.id)}
             className="rounded-xl border-2 border-black bg-black/10 py-2 text-center text-black hover:bg-white/15 transition"
             onClick={(e) => e.stopPropagation()}
           >

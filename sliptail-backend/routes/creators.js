@@ -1092,47 +1092,77 @@ router.get("/featured", async (req, res) => {
  * Supports ?limit & ?offset. Placed BEFORE "/:creatorId" to avoid route clash.
  */
 router.get("/:creatorId/reviews", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
-  if (Number.isNaN(creatorId)) return res.status(400).json({ error: "Invalid creator id" });
+  const raw = (req.params.creatorId || "").trim();
+
+  if (!raw) {
+    return res.status(400).json({ error: "Missing creator id or slug" });
+  }
 
   const limit = Math.min(parseInt(req.query.limit || "20", 10), 100);
   const offset = Math.max(parseInt(req.query.offset || "0", 10), 0);
 
   try {
+    let creatorId = parseInt(raw, 10);
+
+    if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
+      // Not a pure numeric id → resolve via display_name
+      const enabledClause = await usersEnabledClause();
+      const decoded = decodeURIComponent(raw);
+      const displayName = decoded.replace(/-/g, " ").trim();
+
+      if (!displayName) {
+        return res.status(400).json({ error: "Invalid creator slug" });
+      }
+
+      const { rows } = await db.query(
+        `
+        SELECT cp.user_id
+        FROM creator_profiles cp
+        JOIN users u ON u.id = cp.user_id
+        WHERE LOWER(TRIM(cp.display_name)) = LOWER($1)
+          AND ${enabledClause}
+          AND u.role = 'creator'
+          AND cp.is_profile_complete = TRUE
+          AND cp.is_active = TRUE
+        LIMIT 1
+        `,
+        [displayName]
+      );
+
+      if (!rows.length) {
+        return res.status(404).json({ error: "Creator not found" });
+      }
+
+      creatorId = rows[0].user_id;
+    }
+
     const { rows: list } = await db.query(
-      `SELECT r.id,
-              r.rating,
-              r.comment,
-              r.created_at,
-              u.username AS author_name,
-              COALESCE(p.title, NULL) AS product_title
-         FROM reviews r
-         JOIN users u ON u.id = r.buyer_id
-    LEFT JOIN products p ON p.id = r.product_id
-        WHERE r.creator_id = $1
-        ORDER BY r.created_at DESC
-        LIMIT $2 OFFSET $3`,
+      `
+      SELECT r.id,
+             r.rating,
+             r.comment,
+             r.created_at,
+             u.username AS author_name,
+             COALESCE(p.title, NULL) AS product_title
+      FROM reviews r
+      JOIN users u ON u.id = r.buyer_id
+      LEFT JOIN products p ON p.id = r.product_id
+      WHERE r.creator_id = $1
+      ORDER BY r.created_at DESC
+      LIMIT $2 OFFSET $3
+      `,
       [creatorId, limit, offset]
     );
 
-    const { rows: summaryRows } = await db.query(
-      `SELECT COUNT(*)::int AS total,
-              COALESCE(AVG(rating),0)::numeric(3,2) AS average,
-              COALESCE(SUM(CASE WHEN rating=5 THEN 1 ELSE 0 END),0)::int AS star5,
-              COALESCE(SUM(CASE WHEN rating=4 THEN 1 ELSE 0 END),0)::int AS star4,
-              COALESCE(SUM(CASE WHEN rating=3 THEN 1 ELSE 0 END),0)::int AS star3,
-              COALESCE(SUM(CASE WHEN rating=2 THEN 1 ELSE 0 END),0)::int AS star2,
-              COALESCE(SUM(CASE WHEN rating=1 THEN 1 ELSE 0 END),0)::int AS star1
-         FROM reviews
-        WHERE creator_id = $1`,
-      [creatorId]
-    );
-
-    return res.json({ reviews: list, summary: summaryRows[0] || null });
+    res.json({
+      reviews: list,
+      limit,
+      offset,
+    });
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.error("list creator reviews error:", e);
-    return res.status(500).json({ error: "Failed to fetch reviews" });
+    console.error("creator reviews error:", e);
+    res.status(500).json({ error: "Failed to fetch reviews" });
   }
 });
 
@@ -1191,79 +1221,117 @@ router.post("/:creatorId/reviews", requireAuth, async (req, res) => {
  * PUBLIC: Get a creator profile (eligible only)
  */
 router.get("/:creatorId", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const raw = (req.params.creatorId || "").trim();
+
+  if (!raw) {
+    return res.status(400).json({ error: "Missing creator id or slug" });
+  }
 
   try {
     const enabledClause = await usersEnabledClause();
 
-        const { rows } = await db.query(
-          `
-          SELECT
-            cp.user_id,
-            cp.display_name,
-            cp.bio,
-            cp.profile_image,
-            -- use stripe_connect as source of truth, fall back to profile flag, default false
-            COALESCE(sc.charges_enabled, cp.stripe_charges_enabled, false) AS stripe_charges_enabled,
-            ${featuredExpr} AS is_featured,
-            COALESCE(AVG(r.rating),0)::numeric(3,2) AS average_rating,
-            COUNT(DISTINCT p.id)::int               AS products_count
-          FROM creator_profiles cp
-          JOIN users u
-            ON u.id = cp.user_id
-          LEFT JOIN stripe_connect sc
-            ON sc.user_id = cp.user_id
-          LEFT JOIN reviews  r
-            ON r.creator_id = cp.user_id
-          LEFT JOIN products p
-            ON p.user_id = cp.user_id
-          AND p.active  = TRUE
-          WHERE cp.user_id = $1
-            AND ${enabledClause}
-            AND u.role = 'creator'
-            AND cp.is_profile_complete = TRUE
-            AND cp.is_active = TRUE
-          GROUP BY
-            cp.user_id,
-            cp.display_name,
-            cp.bio,
-            cp.profile_image,
-            COALESCE(sc.charges_enabled, cp.stripe_charges_enabled, false),
-            ${featuredExpr}
-          HAVING COUNT(DISTINCT p.id) > 0
-          `,
-          [creatorId]
-        );
-    if (!rows.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
+    const numericId = parseInt(raw, 10);
+    const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
+
+    let whereSql;
+    let param;
+
+    if (isNumeric) {
+      // Old behavior: look up by user_id
+      whereSql = "cp.user_id = $1";
+      param = numericId;
+    } else {
+      // New behavior: treat as slug based on display_name
+      const decoded = decodeURIComponent(raw);
+      const displayName = decoded.replace(/-/g, " ").trim();
+
+      if (!displayName) {
+        return res.status(400).json({ error: "Invalid creator slug" });
+      }
+
+      whereSql = "LOWER(TRIM(cp.display_name)) = LOWER($1)";
+      param = displayName;
+    }
+
+    const { rows } = await db.query(
+      `
+      SELECT
+        cp.user_id,
+        cp.display_name,
+        cp.bio,
+        cp.profile_image,
+        -- use stripe_connect as source of truth, fall back to profile flag, default false
+        COALESCE(sc.charges_enabled, cp.stripe_charges_enabled, false) AS stripe_charges_enabled,
+        ${featuredExpr} AS is_featured,
+        COALESCE(r.avg_rating, 0)::numeric(3,2) AS average_rating,
+        COALESCE(r.review_count, 0)::int        AS review_count,
+        COALESCE(prod.products_count, 0)::int   AS products_count
+      FROM creator_profiles cp
+      JOIN users u
+        ON u.id = cp.user_id
+      LEFT JOIN stripe_connect sc
+        ON sc.user_id = cp.user_id
+      LEFT JOIN LATERAL (
+        SELECT AVG(r.rating)::numeric(10,4) AS avg_rating,
+               COUNT(*)::int                AS review_count
+        FROM reviews r
+        WHERE r.creator_id = cp.user_id
+      ) r ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS products_count
+        FROM products p
+        WHERE p.user_id = cp.user_id
+          AND p.active = TRUE
+      ) prod ON TRUE
+      WHERE ${whereSql}
+        AND ${enabledClause}
+        AND u.role = 'creator'
+        AND cp.is_profile_complete = TRUE
+        AND cp.is_active = TRUE
+      LIMIT 1
+      `,
+      [param]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Creator profile not found or not eligible" });
+    }
 
     const base = rows[0];
 
+    // Categories (simple names)
     const { rows: cats } = await db.query(
-      `SELECT c.name
-         FROM creator_categories cc
-         JOIN categories c ON c.id = cc.category_id
-        WHERE cc.creator_id = $1
-        ORDER BY c.name ASC`,
-      [creatorId]
+      `
+      SELECT c.name
+      FROM creator_categories cc
+      JOIN categories c ON c.id = cc.category_id
+      WHERE cc.creator_id = $1
+      ORDER BY c.name ASC
+      `,
+      [base.user_id]
     );
     const categories = cats.map((c) => c.name);
 
+    // Gallery photos
     const { rows: photos } = await db.query(
-      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
-         FROM creator_profile_photos WHERE user_id=$1`,
-      [creatorId]
+      `
+      SELECT ARRAY_AGG(url ORDER BY position) AS gallery
+      FROM creator_profile_photos
+      WHERE user_id = $1
+      `,
+      [base.user_id]
     );
+    const gallery = (photos[0] && photos[0].gallery) || [];
 
     res.json({
       ...base,
-      featured: !!base.is_featured, // keep legacy field name too
       categories,
-      gallery: photos?.[0]?.gallery || [],
+      gallery,
     });
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.error("public profile error:", e);
-    res.status(500).json({ error: "Failed to fetch profile" });
+    console.error("creator profile error:", e);
+    res.status(500).json({ error: "Failed to fetch creator" });
   }
 });
 
@@ -1471,10 +1539,35 @@ router.patch("/:creatorId/featured", requireAuth, requireAdmin, async (req, res)
  * PUBLIC: Creator card (front/back) — eligible only
  */
 router.get("/:creatorId/card", async (req, res) => {
-  const creatorId = parseInt(req.params.creatorId, 10);
+  const raw = (req.params.creatorId || "").trim();
+
+  if (!raw) {
+    return res.status(400).json({ error: "Missing creator id or slug" });
+  }
 
   try {
     const enabledClause = await usersEnabledClause();
+
+    const numericId = parseInt(raw, 10);
+    const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
+
+    let whereSql;
+    let param;
+
+    if (isNumeric) {
+      whereSql = "cp.user_id = $1";
+      param = numericId;
+    } else {
+      const decoded = decodeURIComponent(raw);
+      const displayName = decoded.replace(/-/g, " ").trim();
+
+      if (!displayName) {
+        return res.status(400).json({ error: "Invalid creator slug" });
+      }
+
+      whereSql = "LOWER(TRIM(cp.display_name)) = LOWER($1)";
+      param = displayName;
+    }
 
     const { rows: prof } = await db.query(
       `
@@ -1490,29 +1583,31 @@ router.get("/:creatorId/card", async (req, res) => {
       FROM creator_profiles cp
       JOIN users u ON u.id = cp.user_id
       LEFT JOIN LATERAL (
-        SELECT
-          AVG(r.rating)::numeric(10,4) AS avg_rating,
-          COUNT(*)::int                AS review_count
+        SELECT AVG(r.rating)::numeric(10,4) AS avg_rating,
+               COUNT(*)::int                AS review_count
         FROM reviews r
         WHERE r.creator_id = cp.user_id
-          AND (r.hidden IS NOT TRUE)
       ) r ON TRUE
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::int AS products_count
         FROM products p
         WHERE p.user_id = cp.user_id
-          AND p.active  = TRUE
+          AND p.active = TRUE
       ) prod ON TRUE
-      WHERE cp.user_id = $1
+      WHERE ${whereSql}
         AND ${enabledClause}
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
         AND COALESCE(prod.products_count, 0) > 0
+      LIMIT 1
       `,
-      [creatorId]
+      [param]
     );
-    if (!prof.length) return res.status(404).json({ error: "Creator profile not found or not eligible" });
+
+    if (!prof.length) {
+      return res.status(404).json({ error: "Creator profile not found or not eligible" });
+    }
 
     const p = prof[0];
 
@@ -1521,34 +1616,29 @@ router.get("/:creatorId/card", async (req, res) => {
 
     const { rows: cats } = await db.query(
       `
-      SELECT ${slugExists ? "c.id, c.name, c.slug" : "c.id, c.name, lower(regexp_replace(c.name,'\\s+','-','g')) AS slug"}
+      SELECT ${slugExists
+        ? "c.id, c.name, c.slug"
+        : "c.id, c.name, lower(regexp_replace(c.name,'\\s+','-','g')) AS slug"}
       FROM creator_categories cc
       JOIN categories c ON c.id = cc.category_id
       WHERE cc.creator_id = $1
       ORDER BY c.name ASC
       `,
-      [creatorId]
+      [p.creator_id]
     );
 
     const { rows: photoAgg } = await db.query(
-      `SELECT ARRAY_AGG(url ORDER BY position) AS gallery
-         FROM creator_profile_photos WHERE user_id=$1`,
-      [creatorId]
-    );
-    const gallery = (photoAgg?.[0]?.gallery || []).slice(0, 4);
-
-    const { rows: prods } = await db.query(
       `
-      SELECT id, title, product_type, price
-      FROM (
-        SELECT *,
-               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) rn
-        FROM products
-      ) t
-      WHERE user_id = $1 AND active = TRUE AND rn <= 4
+      SELECT ARRAY_AGG(url ORDER BY position) AS gallery
+      FROM creator_profile_photos
+      WHERE user_id = $1
       `,
-      [creatorId]
+      [p.creator_id]
     );
+    const gallery = (photoAgg[0] && photoAgg[0].gallery) || [];
+
+    const slugOrId =
+      (p.display_name || "").trim().replace(/\s+/g, "-") || String(p.creator_id);
 
     const card = {
       creator_id: p.creator_id,
@@ -1556,14 +1646,17 @@ router.get("/:creatorId/card", async (req, res) => {
         display_name: p.display_name,
         bio: p.bio,
         profile_image: p.profile_image,
-        categories: cats,
+        is_featured: p.is_featured,
         average_rating: p.average_rating,
+        review_count: p.review_count,
         products_count: p.products_count,
-        featured: !!p.is_featured,
-        products_preview: prods,
+        categories: cats,
       },
       back: { gallery },
-      links: { profile: `/creators/${p.creator_id}` },
+      links: {
+        // Not currently used on the front-end, but now correct:
+        profile: `/creators/${encodeURIComponent(slugOrId)}`,
+      },
     };
 
     res.json(card);
