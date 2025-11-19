@@ -119,29 +119,27 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
     stripeSubId && typeof stripeSubId === "string" && stripeSubId.startsWith("free_");
 
   // If there's no real Stripe subscription, just cancel locally
-  if (!stripeSubId || isFakeFreeId) {
-    await db.query(
-      `UPDATE memberships
-          SET cancel_at_period_end = TRUE,
-              status = 'canceled',
-              stripe_subscription_id = NULL
-        WHERE id = $1`,
-      [id]
-    );
+      if (!stripeSubId || isFakeFreeId) {
+        // No real Stripe subscription – just cancel locally
+        await db.query(
+          `UPDATE memberships
+              SET cancel_at_period_end = TRUE,
+                  status = 'canceled'
+            WHERE id = $1`,
+          [id]
+        );
 
-    const { rows: updated } = await db.query(
-      `SELECT * FROM memberships WHERE id = $1`,
-      [id]
-    );
+        const { rows: updated } = await db.query(
+          `SELECT * FROM memberships WHERE id = $1`,
+          [id]
+        );
 
-    return res.json({
-      success: true,
-      membership: updated[0],
-      note: isFakeFreeId
-        ? "Free membership canceled locally (no Stripe subscription)."
-        : "Membership canceled locally.",
-    });
-  }
+        return res.json({
+          success: true,
+          membership: updated[0],
+          stripeSubscription: null,
+        });
+      }
 
   // Has a Stripe subscription ID – try Stripe first
   try {
