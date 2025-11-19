@@ -102,6 +102,7 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
 
+  // Load membership
   const { rows } = await db.query(
     `SELECT id, buyer_id, stripe_subscription_id
        FROM memberships
@@ -115,42 +116,17 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
   }
 
   const stripeSubId = m.stripe_subscription_id;
-  const isFakeFreeId =
-    stripeSubId && typeof stripeSubId === "string" && stripeSubId.startsWith("free_");
 
-  // If there's no real Stripe subscription, just cancel locally
-      if (!stripeSubId || isFakeFreeId) {
-        // No real Stripe subscription – just cancel locally
-        await db.query(
-          `UPDATE memberships
-              SET cancel_at_period_end = TRUE,
-                  status = 'canceled'
-            WHERE id = $1`,
-          [id]
-        );
-
-        const { rows: updated } = await db.query(
-          `SELECT * FROM memberships WHERE id = $1`,
-          [id]
-        );
-
-        return res.json({
-          success: true,
-          membership: updated[0],
-          stripeSubscription: null,
-        });
-      }
-
-  // Has a Stripe subscription ID – try Stripe first
-  try {
-    const sub = await stripe.subscriptions.update(stripeSubId, {
-      cancel_at_period_end: true,
-    });
-
+  /**
+   * 1️⃣ If no Stripe subscription is connected, just cancel locally.
+   *    (IMPORTANT: we do NOT modify stripe_subscription_id ever.)
+   */
+  if (!stripeSubId) {
     await db.query(
       `UPDATE memberships
           SET cancel_at_period_end = TRUE,
-              status = 'canceled'
+              status = 'canceled',
+              canceled_at = NOW()
         WHERE id = $1`,
       [id]
     );
@@ -163,22 +139,55 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
     return res.json({
       success: true,
       membership: updated[0],
-      stripeSubscription: sub,
+      stripe: null
     });
+  }
+
+  /**
+   * 2️⃣ Cancel on Stripe
+   */
+  try {
+    const sub = await stripe.subscriptions.update(stripeSubId, {
+      cancel_at_period_end: true,
+    });
+
+    // Stripe cancel succeeded → update locally
+    await db.query(
+      `UPDATE memberships
+          SET cancel_at_period_end = TRUE,
+              status = 'canceled',
+              canceled_at = NOW()
+        WHERE id = $1`,
+      [id]
+    );
+
+    const { rows: updated } = await db.query(
+      `SELECT * FROM memberships WHERE id = $1`,
+      [id]
+    );
+
+    return res.json({
+      success: true,
+      membership: updated[0],
+      stripe: sub
+    });
+
   } catch (err) {
-    console.error("Stripe cancel_at_period_end failed:", err);
+    console.error("Stripe cancel error:", err);
 
-    const msg = String(err && err.message || "").toLowerCase();
-    const code = err && err.code;
+    /**
+     * 3️⃣ Stripe says "subscription not found"
+     *     → still cancel locally
+     *     → DO NOT TOUCH stripe_subscription_id
+     */
+    const message = String(err?.message || "").toLowerCase();
+    if (message.includes("no such subscription") || err?.code === "resource_missing") {
 
-    // If Stripe says the subscription doesn't exist (resource_missing),
-    // cancel locally instead of blocking the user.
-    if (code === "resource_missing" || msg.includes("no such subscription")) {
       await db.query(
         `UPDATE memberships
             SET cancel_at_period_end = TRUE,
                 status = 'canceled',
-                stripe_subscription_id = NULL
+                canceled_at = NOW()
           WHERE id = $1`,
         [id]
       );
@@ -191,14 +200,17 @@ router.post("/:id/cancel", requireAuth, async (req, res) => {
       return res.json({
         success: true,
         membership: updated[0],
-        note: "Stripe subscription not found; membership closed locally.",
+        note: "Stripe subscription missing; canceled locally but ID preserved."
       });
     }
 
-    // Any other Stripe error: still surface the generic message
-    return res
-      .status(502)
-      .json({ error: "Stripe cancellation failed. Please try again." });
+    /**
+     * 4️⃣ Any other Stripe error → return error
+     *     but still DO NOT modify stripe_subscription_id
+     */
+    return res.status(502).json({
+      error: "Could not cancel on Stripe. Try again later."
+    });
   }
 });
 
