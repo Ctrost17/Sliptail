@@ -167,39 +167,57 @@ export default function ProductEditPage() {
     }
   }
 
-  async function xhrPutWithProgress(opts: {
+async function xhrPutWithProgress(opts: {
     url: string;
     file: File | Blob;
     contentType: string;
     onProgress?: (pct: number) => void;
-    }): Promise<void> {
-      const { url, file, contentType, onProgress } = opts;
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", url);
-        xhr.setRequestHeader("Content-Type", contentType);
-        
-        // Add authentication for local storage uploads
-        const { token } = loadAuth();
-        if (token && url.includes(API_BASE)) {
+  }): Promise<void> {
+    const { url, file, contentType, onProgress } = opts;
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+
+      // Always send the same Content-Type used when presigning
+      xhr.setRequestHeader("Content-Type", contentType);
+
+      // Only send auth/cookies when talking to YOUR backend, not S3
+      const { token } = loadAuth();
+      const normalizedApiBase = API_BASE.replace(/\/$/, "");
+      const isBackendUrl =
+        normalizedApiBase && url.startsWith(normalizedApiBase);
+
+      if (isBackendUrl) {
+        // local /api/uploads/direct style uploads
+        if (token) {
           xhr.setRequestHeader("Authorization", `Bearer ${token}`);
         }
-        
-        xhr.withCredentials = true; // Include cookies for CORS
+        xhr.withCredentials = true;
+      } else {
+        // S3 presigned URL – no auth headers, no cookies
+        xhr.withCredentials = false;
+      }
 
-        xhr.upload.onprogress = (evt) => {
-          if (!evt.lengthComputable) return;
-          const pct = Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100));
-          onProgress?.(pct);
-        };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`S3 upload failed (${xhr.status})`));
-        };
-        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
-        xhr.send(file);
-      });
-    }
+      xhr.upload.onprogress = (evt) => {
+        if (!evt.lengthComputable) return;
+        const pct = Math.max(0, Math.min(100, (evt.loaded / evt.total) * 100));
+        onProgress?.(pct);
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`S3 upload failed (${xhr.status})`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+
+      xhr.send(file);
+    });
+  }
 
     async function xhrFormPutWithProgress(opts: {
         url: string;

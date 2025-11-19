@@ -498,33 +498,29 @@ async function getPresignedPutUrl(
   key,
   { contentType = "application/octet-stream", contentDisposition = null, expiresIn = 3600 } = {}
 ) {
+  // Local: we still bounce through the backend direct-upload endpoint
   if (DRIVER === "local") {
-    const baseUrl = process.env.APP_URL || process.env.BACKEND_URL || 'http://localhost:5000';
-    return `${baseUrl.replace(/\/$/, '')}/api/uploads/direct?key=${encodeURIComponent(key)}`;
+    const baseUrl =
+      process.env.APP_URL || process.env.BACKEND_URL || "http://localhost:5000";
+    return `${baseUrl.replace(/\/$/, "")}/api/uploads/direct?key=${encodeURIComponent(
+      key
+    )}`;
   }
 
-  if (DRIVER !== "s3") throw new Error("Presigned PUT only available for S3 or local");
+  if (DRIVER !== "s3") {
+    throw new Error("Presigned PUT only available for S3 or local");
+  }
 
-  // AWS will reject signatures if checksum headers appear.
-  // FORCE the presigned request to ignore checksums.
-  const params = {
+  const cmd = new PutObjectCommand({
     Bucket: PRIVATE_BUCKET,
     Key: String(key).replace(/^\/+/, ""),
     ContentType: contentType,
-    // DO NOT allow AWS-SDK to auto-add checksum headers
-    ChecksumAlgorithm: undefined,
-    // No Content-MD5
-    ContentMD5: undefined,
     ...(contentDisposition ? { ContentDisposition: contentDisposition } : {}),
-  };
-
-  const cmd = new PutObjectCommand(params);
-
-  return await s3Presign(s3, cmd, {
-    expiresIn,
-    signingRegion: S3_REGION,
-    signingService: "s3",
+    // ❌ no checksum fields, no extra signing options
   });
+
+  // Let the AWS SDK handle region/service – don't override
+  return await s3Presign(s3, cmd, { expiresIn });
 }
 
 /**
