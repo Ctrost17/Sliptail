@@ -501,14 +501,18 @@ module.exports = async function stripeWebhook(req, res) {
           : null;
 
         // 1) First, try to UPDATE by subscription id (metadata is often missing on updates)
-        const upd = await db.query(
-          `UPDATE memberships
-              SET status = $2,
-                  cancel_at_period_end = $3,
-                  current_period_end   = $4
-            WHERE stripe_subscription_id = $1`,
-          [sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
-        );
+          const upd = await db.query(
+            `UPDATE memberships
+                SET status = $2,
+                    cancel_at_period_end = $3,
+                    current_period_end   = $4,
+                    canceled_at = CASE
+                                    WHEN $2 = 'canceled' THEN NOW()
+                                    ELSE canceled_at
+                                  END
+              WHERE stripe_subscription_id = $1`,
+            [sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
+          );
 
         // 2) If no row exists yet and metadata is present (e.g., first created), INSERT
         if (upd.rowCount === 0) {
@@ -518,18 +522,25 @@ module.exports = async function stripeWebhook(req, res) {
           const productId = meta.product_id && parseInt(meta.product_id, 10);
 
           if (buyerId && creatorId && productId) {
-            await db.query(
-              `INSERT INTO memberships
-                (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
-              VALUES ($1,$2,$3,$4,$5,FALSE,$6,NOW())
-              ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
-                SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-                    status                 = EXCLUDED.status,
-                    cancel_at_period_end   = FALSE,
-                    current_period_end     = EXCLUDED.current_period_end`,
-              [buyerId, creatorId, productId, sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
+              await db.query(
+                `INSERT INTO memberships
+                    (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+                ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
+                  SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+                      status                 = EXCLUDED.status,
+                      cancel_at_period_end   = EXCLUDED.cancel_at_period_end,
+                      current_period_end     = EXCLUDED.current_period_end`,
+                [
+                  buyerId,
+                  creatorId,
+                  productId,
+                  sub.id,
+                  status,
+                  cancelAtPeriodEnd,
+                  currentPeriodEnd
+                ]
               );
-
             // NEW: Only on initial purchase (created), ping creator with "creator_sale"
             if (event.type === "customer.subscription.created") {
               try {
@@ -571,15 +582,18 @@ module.exports = async function stripeWebhook(req, res) {
           const currentPeriodEnd = sub.current_period_end
             ? new Date(sub.current_period_end * 1000)
             : null;
-
-          await db.query(
-            `UPDATE memberships
-                SET status=$1,
-                    cancel_at_period_end=$2,
-                    current_period_end=$3
-              WHERE stripe_subscription_id=$4`,
-            [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
-          );
+            await db.query(
+              `UPDATE memberships
+                  SET status=$1,
+                      cancel_at_period_end=$2,
+                      current_period_end=$3,
+                      canceled_at = CASE
+                                      WHEN $1 = 'canceled' THEN NOW()
+                                      ELSE canceled_at
+                                    END
+                WHERE stripe_subscription_id=$4`,
+              [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
+            );
           // No creator notification here — renewals would be too noisy
         }
         break;
