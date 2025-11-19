@@ -101,7 +101,7 @@ function ProductTypesSection() {
       key: "memberships",
       title: "Memberships",
       blurb:
-        "Creators build recurring clubs with perks. Fans get ongoing access and community.",
+        "Creators build loyal fanbases. Fans get exclusive content and perks.",
       creatorPoints: [
         "Simple post and manage",
         "Predictable monthly income",
@@ -165,14 +165,14 @@ function ProductTypesSection() {
       key: "custom",
       title: "Custom Requests",
       blurb:
-        "Creators take bespoke commissions. Fans ask for exactly what they want.",
+        "Creators provide custom work. Fans get personalized content made just for them.",
       creatorPoints: [
-        "Built-in brief & Details",
-        "Allows for any type of request",
+        "Built-in request management",
+        "Allows for any type of requests on your terms",
       ],
       fanPoints: [
         "Attach references & specifics",
-        "Clear status and easy Access to delivered work",
+        "Clear status and easy access to delivered work",
       ],
       icon: (
         <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
@@ -195,7 +195,7 @@ function ProductTypesSection() {
       blurb:
         "Creators run quick one-time content without subscriptions. Fans buy exactly what they want.",
       creatorPoints: ["Lifetime access", "Digital Downloads"],
-      fanPoints: ["No commitment required", "Keep forever in your My Purcahses Page"],
+      fanPoints: ["No commitment required", "Keep forever in your My Purchases Page"],
       icon: (
         <svg viewBox="0 0 48 48" className="h-10 w-10" aria-hidden="true">
           <defs>
