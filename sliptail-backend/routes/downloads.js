@@ -2,6 +2,7 @@
 const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
+const path = require("path");
 const storage = require("../storage");
 
 const router = express.Router();
@@ -25,8 +26,21 @@ async function getPurchasedFile(userId, productId) {
   if (!row.filename) return { error: "File not found", code: 404 };
 
   const key = storage.keyFromPublicUrl(row.filename);
+
+  // Get the original filename/extension from the key
   const fallback = key.split("/").pop() || "download";
-  const filename = (row.title ? String(row.title).trim() : fallback) || fallback;
+  const ext = path.extname(fallback) || "";
+
+  const rawTitle = row.title ? String(row.title).trim() : "";
+  const baseName = rawTitle || fallback.replace(ext, "") || "download";
+
+  // Ensure the final filename keeps the correct extension,
+  // but don’t duplicate it if the title already includes it.
+  let filename = baseName;
+  if (ext && !baseName.toLowerCase().endsWith(ext.toLowerCase())) {
+    filename = `${baseName}${ext}`;
+  }
+
   return { orderId: row.order_id, key, filename };
 }
 
