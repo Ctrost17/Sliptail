@@ -1104,30 +1104,32 @@ router.get("/:creatorId/reviews", async (req, res) => {
   try {
     let creatorId = parseInt(raw, 10);
 
-    if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
-      // Not a pure numeric id → resolve via display_name
-      const enabledClause = await usersEnabledClause();
-      const decoded = decodeURIComponent(raw);
-      const displayName = decoded.replace(/-/g, " ").trim();
+      if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
+            // Not a pure numeric id → resolve via slug-ish display_name
+            const enabledClause = await usersEnabledClause();
+            const decoded = decodeURIComponent(raw);
+            const slugLike = decoded.trim();
 
-      if (!displayName) {
-        return res.status(400).json({ error: "Invalid creator slug" });
-      }
+            if (!slugLike) {
+              return res.status(400).json({ error: "Invalid creator slug" });
+            }
 
-      const { rows } = await db.query(
-        `
-        SELECT cp.user_id
-        FROM creator_profiles cp
-        JOIN users u ON u.id = cp.user_id
-        WHERE LOWER(TRIM(cp.display_name)) = LOWER($1)
-          AND ${enabledClause}
-          AND u.role = 'creator'
-          AND cp.is_profile_complete = TRUE
-          AND cp.is_active = TRUE
-        LIMIT 1
-        `,
-        [displayName]
-      );
+            const { rows } = await db.query(
+              `
+              SELECT cp.user_id
+              FROM creator_profiles cp
+              JOIN users u ON u.id = cp.user_id
+              WHERE
+                regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g')
+                  = regexp_replace(lower($1), '[\\s-]+', '', 'g')
+                AND ${enabledClause}
+                AND u.role = 'creator'
+                AND cp.is_profile_complete = TRUE
+                AND cp.is_active = TRUE
+              LIMIT 1
+              `,
+              [slugLike]
+            );
 
       if (!rows.length) {
         return res.status(404).json({ error: "Creator not found" });
@@ -1240,17 +1242,19 @@ router.get("/:creatorId", async (req, res) => {
       // Old behavior: look up by user_id
       whereSql = "cp.user_id = $1";
       param = numericId;
-    } else {
-      // New behavior: treat as slug based on display_name
-      const decoded = decodeURIComponent(raw);
-      const displayName = decoded.replace(/-/g, " ").trim();
+     } else {
+        // Treat as slug-ish identifier derived from display_name
+        const decoded = decodeURIComponent(raw);
+        const slugLike = decoded.trim();
 
-      if (!displayName) {
+      if (!slugLike) {
         return res.status(400).json({ error: "Invalid creator slug" });
       }
 
-      whereSql = "LOWER(TRIM(cp.display_name)) = LOWER($1)";
-      param = displayName;
+      whereSql =
+        "regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g') = " +
+        "regexp_replace(lower($1), '[\\s-]+', '', 'g')";
+      param = slugLike;
     }
 
     const { rows } = await db.query(
@@ -1558,16 +1562,18 @@ router.get("/:creatorId/card", async (req, res) => {
       whereSql = "cp.user_id = $1";
       param = numericId;
     } else {
-      const decoded = decodeURIComponent(raw);
-      const displayName = decoded.replace(/-/g, " ").trim();
+    const decoded = decodeURIComponent(raw);
+    const slugLike = decoded.trim();
 
-      if (!displayName) {
-        return res.status(400).json({ error: "Invalid creator slug" });
-      }
-
-      whereSql = "LOWER(TRIM(cp.display_name)) = LOWER($1)";
-      param = displayName;
+    if (!slugLike) {
+      return res.status(400).json({ error: "Invalid creator slug" });
     }
+
+    whereSql =
+      "regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g') = " +
+      "regexp_replace(lower($1), '[\\s-]+', '', 'g')";
+    param = slugLike;
+  }
 
     const { rows: prof } = await db.query(
       `
