@@ -85,6 +85,8 @@ export default function CreatorSetupPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [syncingStripe, setSyncingStripe] = useState(false);
 
+  const [connectingStripe, setConnectingStripe] = useState(false);
+
   // If returning from Stripe (?onboarded=1 or ?refresh=1): sync & clean URL
   useEffect(() => {
     const onboarded = search.get("onboarded");
@@ -352,34 +354,45 @@ export default function CreatorSetupPage() {
     }
   }
 
-  async function connectStripe() {
-    let token: string | null = null;
-    try {
-      token = loadAuthSafe()?.token ?? null;
-    } catch {
-      token = null;
-    }
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) headers.Authorization = `Bearer ${token}`;
+    async function connectStripe() {
+      if (connectingStripe) return; // extra guard
 
-    const res = await fetch("/api/stripe-connect/create-link", {
-      method: "POST",
-      credentials: "include",
-      headers,
-    });
+      setConnectingStripe(true);
+      try {
+        let token: string | null = null;
+        try {
+          token = loadAuthSafe()?.token ?? null;
+        } catch {
+          token = null;
+        }
 
-    if (!res.ok) {
-      const msg = await res.text().catch(() => "");
-      alert(`Stripe link error: ${res.status} ${msg || ""}`);
-      return;
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) headers.Authorization = `Bearer ${token}`;
+
+        const res = await fetch("/api/stripe-connect/create-link", {
+          method: "POST",
+          credentials: "include",
+          headers,
+        });
+
+        if (!res.ok) {
+          const msg = await res.text().catch(() => "");
+          alert(`Stripe link error: ${res.status} ${msg || ""}`);
+          return;
+        }
+
+        const data = await res.json().catch(() => null);
+        if (data?.url) {
+          window.location.href = data.url;
+        } else {
+          alert("Stripe link response was missing a URL.");
+        }
+      } finally {
+        setConnectingStripe(false);
+      }
     }
-    const data = await res.json().catch(() => null);
-    if (data?.url) {
-      window.location.href = data.url;
-    } else {
-      alert("Stripe link response was missing a URL.");
-    }
-  }
 
   function toggleCategory(id: number) {
     setCategories((prev) =>
@@ -605,8 +618,12 @@ export default function CreatorSetupPage() {
             Payouts are handled via Stripe. You’ll be redirected to finish onboarding.
           </p>
           <div className="flex items-center gap-2">
-            <button onClick={connectStripe} className="cursor-pointer rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 transition-colors">
-              Connect Stripe
+            <button
+              onClick={connectStripe}
+              disabled={connectingStripe}
+              className="cursor-pointer rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {connectingStripe ? "Redirecting to Stripe…" : "Connect Stripe"}
             </button>
             <button
               onClick={syncStripeNow}

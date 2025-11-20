@@ -182,36 +182,47 @@ async function upsertStripeState(userId, acct) {
  *   - flips users.stripe_connected = TRUE (keeps your behavior)
  *   - returns onboarding link (if not finished) or login link (if finished)
  */
+/**
+ * POST /api/stripe-connect/create-link
+ * Creates (or reuses) a Stripe Express account and:
+ *   - writes users.stripe_account_id
+ *   - flips users.stripe_connected = TRUE
+ *   - returns onboarding link (if not finished) or login link (if finished)
+ */
 router.post("/create-link", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // 1) Load user & existing account id (if any)
-      const { rows } = await db.query(
-        `
-        SELECT u.id,
-              u.email,
-              u.stripe_account_id,
-              cp.display_name
-          FROM users u
-          LEFT JOIN creator_profiles cp ON cp.user_id = u.id
-        WHERE u.id = $1
-        LIMIT 1
-        `,
-        [userId]
-      );
+    // 1) Load user, creator profile, and any existing connect account
+    const { rows } = await db.query(
+      `
+      SELECT u.id,
+             u.email,
+             u.stripe_account_id,
+             sc.account_id AS stripe_connect_account_id,
+             cp.display_name
+        FROM users u
+        LEFT JOIN creator_profiles cp ON cp.user_id = u.id
+        LEFT JOIN stripe_connect   sc ON sc.user_id = u.id
+       WHERE u.id = $1
+       LIMIT 1
+      `,
+      [userId]
+    );
 
-      const me = rows[0];
-      if (!me) return res.status(404).json({ error: "User not found" });
+    const me = rows[0];
+    if (!me) return res.status(404).json({ error: "User not found" });
 
-      // Fallback if they don't have a display_name yet
-      const displayName = me.display_name || `Sliptail Creator #${me.id}`;
+    const displayName = me.display_name || `Sliptail Creator #${me.id}`;
 
-      let accountId = me.stripe_account_id || null;
+    // Prefer users.stripe_account_id, but fall back to legacy stripe_connect.account_id
+    let accountId =
+      me.stripe_account_id || me.stripe_connect_account_id || null;
 
-    // 2) Create Express account if missing
+    const stripe = getStripe();
+
+    // 2) If no account anywhere, create a fresh Express account
     if (!accountId) {
-      const stripe = getStripe();
       const account = await stripe.accounts.create({
         type: "express",
         email: me.email || undefined,
@@ -220,25 +231,26 @@ router.post("/create-link", requireAuth, async (req, res) => {
           transfers: { requested: true },
         },
         business_profile: {
-          // This is what Stripe shows to the buyer instead of the creator's legal name
-          name: displayName, // e.g. "Quintin"
+          name: displayName,
           product_description: "Digital content and creator services from Sliptail",
         },
       });
 
       accountId = account.id;
 
-      // Write both account_id AND stripe_connected=TRUE
+      // Store on users table for future reuse
       await db.query(
-        `UPDATE users
-            SET stripe_account_id=$1,
-                stripe_connected=TRUE,
-                updated_at=NOW()
-          WHERE id=$2`,
+        `
+        UPDATE users
+           SET stripe_account_id = $1,
+               stripe_connected   = TRUE,
+               updated_at         = NOW()
+         WHERE id = $2
+        `,
         [accountId, userId]
       );
 
-      // Seed stripe_connect so /sync can always find it
+      // Seed / update stripe_connect row
       try {
         await ensureStripeConnectTable();
         const { accountCol, userIsInteger } = await detectStripeConnectSchema();
@@ -250,7 +262,7 @@ router.post("/create-link", requireAuth, async (req, res) => {
           VALUES (${userParam}, $2, NOW())
           ON CONFLICT (user_id) DO UPDATE
             SET ${accountCol} = EXCLUDED.${accountCol},
-                updated_at = NOW()
+                updated_at    = NOW()
           `,
           [String(userId), accountId]
         );
@@ -258,18 +270,35 @@ router.post("/create-link", requireAuth, async (req, res) => {
         console.warn("[create-link] seed stripe_connect warn:", seedErr.message || seedErr);
       }
 
-      // Optional: initial snapshot (flags likely false until onboarding completes)
-      try { await upsertStripeState(userId, account); } catch (_) {}
+      // Initial snapshot (flags may still be false until onboarding completes)
+      try {
+        await upsertStripeState(userId, account);
+      } catch (_) {}
+
+    } else if (!me.stripe_account_id && accountId) {
+      // 3) Account exists only in stripe_connect → normalize into users table
+      await db.query(
+        `
+        UPDATE users
+           SET stripe_account_id = $1,
+               stripe_connected   = TRUE,
+               updated_at         = NOW()
+         WHERE id = $2
+        `,
+        [accountId, userId]
+      );
     }
 
-    // 3) Retrieve the account to decide the flow
-    const stripe = getStripe();
+    // 4) Retrieve account from Stripe to decide onboarding vs. manage
     const acct = await stripe.accounts.retrieve(accountId);
+
+    // Persist the latest flags into stripe_connect / creator_profiles
+    try {
+      await upsertStripeState(userId, acct);
+    } catch (_) {}
+
     const needsOnboarding =
       !acct.details_submitted || !acct.charges_enabled || !acct.payouts_enabled;
-
-    // Persist latest flags
-    try { await upsertStripeState(userId, acct); } catch (_) {}
 
     if (needsOnboarding) {
       const link = await stripe.accountLinks.create({
@@ -278,18 +307,28 @@ router.post("/create-link", requireAuth, async (req, res) => {
         refresh_url: `${FRONTEND_BASE}/creator/setup?refresh=1`,
         return_url: `${FRONTEND_BASE}/creator/setup?onboarded=1`,
       });
-      return res.json({ url: link.url, account_id: accountId, mode: "onboarding" });
+      return res.json({
+        url: link.url,
+        account_id: accountId,
+        mode: "onboarding",
+      });
     }
 
+    // Already fully enabled → send them to Stripe dashboard
     const loginLink = await stripe.accounts.createLoginLink(accountId, {
       redirect_url: `${FRONTEND_BASE}/dashboard`,
     });
-    return res.json({ url: loginLink.url, account_id: accountId, mode: "manage" });
+    return res.json({
+      url: loginLink.url,
+      account_id: accountId,
+      mode: "manage",
+    });
   } catch (e) {
     console.error("Stripe Connect create-link error:", e);
     return res.status(500).json({ error: "Failed to create Stripe account link" });
   }
 });
+
 
 /**
  * POST /api/stripe-connect/sync
