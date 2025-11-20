@@ -1017,6 +1017,7 @@ router.get("/featured", async (req, res) => {
         AND u.role = 'creator'
         AND cp.is_profile_complete = TRUE
         AND cp.is_active = TRUE
+        AND cp.is_listed = TRUE
         AND ${featuredExpr} = TRUE
       GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
@@ -1685,7 +1686,13 @@ router.get("/", async (req, res) => {
 
   const params = [];
   const enabledClause = await usersEnabledClause();
-  const where = [enabledClause, "u.role = 'creator'", "cp.is_profile_complete = TRUE", "cp.is_active = TRUE"];
+  const where = [
+  enabledClause,
+  "u.role = 'creator'",
+  "cp.is_profile_complete = TRUE",
+  "cp.is_active = TRUE",
+  "cp.is_listed = TRUE"
+];
 
   if (q) {
     params.push(`%${q}%`);

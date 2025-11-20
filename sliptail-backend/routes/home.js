@@ -18,6 +18,7 @@ const REQUIRE_PROFILE_COMPLETE = true;
 async function queryFeatured(limit) {
   const whereConds = [
     `${featuredExpr} = TRUE`,
+    `cp.is_listed = TRUE`,
   ];
   if (REQUIRE_ROLE_CREATOR) whereConds.push(`u.role = 'creator'`);
   if (REQUIRE_PROFILE_ACTIVE) whereConds.push(`cp.is_active = TRUE`);

@@ -27,9 +27,9 @@ interface AdminCreator {
   creator_active: boolean;
   featured?: boolean | null;
   is_featured: boolean;
+  is_listed?: boolean; // new
   display_name: string | null;
   created_at: string;
-  updated_at: string;
 }
 
 interface Category {
@@ -152,6 +152,24 @@ export async function hardDeleteCreatorAction(formData: FormData) {
   if (!Number.isFinite(id)) return;
   const url = await apiUrl(`/api/admin/creators/${id}`);
   await fetch(url, { method: "DELETE", headers: await buildAuthHeaders() }).catch(()=>{});
+  revalidatePath("/admin");
+}
+
+export async function hideCreatorAction(formData: FormData) {
+  "use server";
+  const id = Number(formData.get("id"));
+  if (!Number.isFinite(id)) return;
+  const url = await apiUrl(`/api/admin/creators/${id}/hide`);
+  await fetch(url, { method: "POST", headers: await buildAuthHeaders() }).catch(() => {});
+  revalidatePath("/admin");
+}
+
+export async function showCreatorAction(formData: FormData) {
+  "use server";
+  const id = Number(formData.get("id"));
+  if (!Number.isFinite(id)) return;
+  const url = await apiUrl(`/api/admin/creators/${id}/show`);
+  await fetch(url, { method: "POST", headers: await buildAuthHeaders() }).catch(() => {});
   revalidatePath("/admin");
 }
 
@@ -278,51 +296,67 @@ export default async function AdminDashboardPage() {
         <h2 className="text-xl font-semibold">Creators</h2>
         <div className="overflow-x-auto border rounded-xl">
           <table className="min-w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="p-2 text-left">ID</th>
-                <th className="p-2 text-left">Email</th>
-                <th className="p-2 text-left">Display name</th>
-                <th className="p-2 text-left">Featured</th>
-                <th className="p-2 text-left">Active</th>
-                <th className="p-2 text-left">Actions</th>
-              </tr>
-            </thead>
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="p-2 text-left">ID</th>
+                  <th className="p-2 text-left">Email</th>
+                  <th className="p-2 text-left">Display name</th>
+                  <th className="p-2 text-left">Featured</th>
+                  <th className="p-2 text-left">Listed</th>
+                  <th className="p-2 text-left">Active</th>
+                  <th className="p-2 text-left">Actions</th>
+                </tr>
+              </thead>
             <tbody>
-              {creators.map((c) => {
-                const isFeatured = Boolean(c.is_featured || c.featured);
-                return (
-                  <tr key={c.id} className="border-t">
-                    <td className="p-2">{c.id}</td>
-                    <td className="p-2">{c.email}</td>
-                    <td className="p-2">{c.display_name || "-"}</td>
-                    <td className="p-2">{isFeatured ? "Yes" : "No"}</td>
-                    <td className="p-2">
-                      {c.user_active && c.creator_active ? "Yes" : "No"}
-                    </td>
-                    <td className="p-2 space-x-2">
-                      {isFeatured ? (
-                        <form action={unfeatureCreatorAction} className="inline">
+                {creators.map((c) => {
+                  const isFeatured = Boolean(c.is_featured || c.featured);
+                  const isListed = c.is_listed ?? true;
+                  return (
+                    <tr key={c.id} className="border-t">
+                      <td className="p-2">{c.id}</td>
+                      <td className="p-2">{c.email}</td>
+                      <td className="p-2">{c.display_name || "-"}</td>
+                      <td className="p-2">{isFeatured ? "Yes" : "No"}</td>
+                      <td className="p-2">{isListed ? "Yes" : "No"}</td>
+                      <td className="p-2">
+                        {c.user_active && c.creator_active ? "Yes" : "No"}
+                      </td>
+                      <td className="p-2 space-x-2">
+                        {isFeatured ? (
+                          <form action={unfeatureCreatorAction} className="inline">
+                            <input type="hidden" name="id" value={c.id} />
+                            <button className="px-2 py-1 border rounded">Unfeature</button>
+                          </form>
+                        ) : (
+                          <form action={featureCreatorAction} className="inline">
+                            <input type="hidden" name="id" value={c.id} />
+                            <button className="px-2 py-1 border rounded">Feature</button>
+                          </form>
+                        )}
+
+                        {isListed ? (
+                          <form action={hideCreatorAction} className="inline">
+                            <input type="hidden" name="id" value={c.id} />
+                            <button className="px-2 py-1 border rounded">Hide</button>
+                          </form>
+                        ) : (
+                          <form action={showCreatorAction} className="inline">
+                            <input type="hidden" name="id" value={c.id} />
+                            <button className="px-2 py-1 border rounded">Show</button>
+                          </form>
+                        )}
+
+                        <form action={hardDeleteCreatorAction} className="inline">
                           <input type="hidden" name="id" value={c.id} />
-                          <button className="px-2 py-1 border rounded">Unfeature</button>
+                          <button className="px-2 py-1 border rounded">Delete</button>
                         </form>
-                      ) : (
-                        <form action={featureCreatorAction} className="inline">
-                          <input type="hidden" name="id" value={c.id} />
-                          <button className="px-2 py-1 border rounded">Feature</button>
-                        </form>
-                      )}
-                      <form action={hardDeleteCreatorAction} className="inline">
-                        <input type="hidden" name="id" value={c.id} />
-                        <button className="px-2 py-1 border rounded">Delete</button>
-                      </form>
-                    </td>
-                  </tr>
-                );
-              })}
+                      </td>
+                    </tr>
+                  );
+                })}
               {creators.length === 0 && (
                 <tr>
-                  <td className="p-3 text-center opacity-70" colSpan={6}>
+                  <td className="p-3 text-center opacity-70" colSpan={7}>
                     No creators.
                   </td>
                 </tr>

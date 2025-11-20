@@ -285,23 +285,24 @@ router.get("/creators", async (req, res) => {
 
     const { rows } = await db.query(
       `
-      SELECT
-        u.id,
-        u.email,
-        u.username,
-        u.role,
-        ${userActiveSel},
-        ${creatorActiveSel},
-        ${featuredExpr},
-        cp.display_name,
-        cp.created_at,
-        cp.updated_at
-      FROM users u
-      JOIN creator_profiles cp ON cp.user_id = u.id
-      ${where}
-      ORDER BY cp.created_at DESC
-      LIMIT $1 OFFSET $2
-      `,
+          SELECT
+            u.id,
+            u.email,
+            u.username,
+            u.role,
+            ${userActiveSel},
+            ${creatorActiveSel},
+            ${featuredExpr},
+            COALESCE(cp.is_listed, TRUE) AS is_listed,
+            cp.display_name,
+            cp.created_at,
+            cp.updated_at
+          FROM users u
+          JOIN creator_profiles cp ON cp.user_id = u.id
+          ${where}
+          ORDER BY cp.created_at DESC
+          LIMIT $1 OFFSET $2
+          `,
       [limit, offset]
     );
 
@@ -384,6 +385,44 @@ router.post("/creators/:id/unfeature", async (req, res) => {
     // eslint-disable-next-line no-console
     console.error("admin POST /creators/:id/unfeature error:", e);
     return res.status(500).json({ error: "Failed to unfeature creator" });
+  }
+});
+
+router.post("/creators/:id/hide", async (req, res) => {
+  try {
+    const creatorId = parseInt(req.params.id, 10);
+    const { rows } = await db.query(
+      `UPDATE creator_profiles
+         SET is_listed = FALSE
+       WHERE user_id = $1
+       RETURNING user_id, is_listed`,
+      [creatorId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Creator profile not found" });
+    return res.json({ success: true, profile: rows[0] });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("admin POST /creators/:id/hide error:", e);
+    return res.status(500).json({ error: "Failed to hide creator" });
+  }
+});
+
+router.post("/creators/:id/show", async (req, res) => {
+  try {
+    const creatorId = parseInt(req.params.id, 10);
+    const { rows } = await db.query(
+      `UPDATE creator_profiles
+         SET is_listed = TRUE
+       WHERE user_id = $1
+       RETURNING user_id, is_listed`,
+      [creatorId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Creator profile not found" });
+    return res.json({ success: true, profile: rows[0] });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("admin POST /creators/:id/show error:", e);
+    return res.status(500).json({ error: "Failed to show creator" });
   }
 });
 
