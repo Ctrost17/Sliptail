@@ -265,7 +265,8 @@ router.post("/create-link", requireAuth, async (req, res) => {
     // 3) Retrieve the account to decide the flow
     const stripe = getStripe();
     const acct = await stripe.accounts.retrieve(accountId);
-    const needsOnboarding = !acct.details_submitted;
+    const needsOnboarding =
+      !acct.details_submitted || !acct.charges_enabled || !acct.payouts_enabled;
 
     // Persist latest flags
     try { await upsertStripeState(userId, acct); } catch (_) {}
