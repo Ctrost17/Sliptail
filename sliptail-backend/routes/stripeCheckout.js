@@ -157,15 +157,34 @@ router.post(
       mode
     );
 
-       // Memberships require a logged in user to avoid duplicate subscriptions
+  const finalMode = productType === "membership" ? "subscription" : "payment";
+    console.log(
+      "[checkout] product_type:",
+      productType,
+      "finalMode:",
+      finalMode,
+      "reqMode:",
+      mode
+    );
+
+    // Memberships require a logged in user to avoid duplicate subscriptions
     if (finalMode === "subscription" && !buyerId) {
       return res
         .status(401)
         .json({ error: "Please log in to subscribe to this membership." });
     }
 
+    // Decide where Stripe should send the user after checkout:
+    // - Guests buying one-time products → signed-out success page
+    // - Logged-in buyers (or any membership) → auth success flow that pushes to My Purchases
+    const isGuest = !buyerId;
+    const isMembership = finalMode === "subscription";
+
+    const defaultSuccessPath =
+      isGuest && !isMembership ? "/checkout/signed-out" : "/checkout/success";
+
     // Build success/cancel with acct & pid AFTER we know action
-    const baseSuccess = ensureSuccessUrl(success_url);
+    const baseSuccess = ensureSuccessUrl(success_url, defaultSuccessPath);
     const sep = baseSuccess.includes("?") ? "&" : "?";
     const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(
       p.stripe_account_id

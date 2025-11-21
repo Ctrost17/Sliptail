@@ -19,13 +19,16 @@ type FinalizeResponse =
 export default function CheckoutSuccessPage() {
   const search = useSearchParams();
   const router = useRouter();
-  const { token, loading } = useAuth();
+
+  // ⬇️ pull both user and token from auth
+  const { user, token, loading } = useAuth();
   const finalizingRef = useRef(false);
 
-const sessionId = (search.get("sid") ||
-                   search.get("session_id") ||
-                   search.get("sessionId") ||
-                   "") as string;
+  const sessionId = (search.get("sid") ||
+    search.get("session_id") ||
+    search.get("sessionId") ||
+    "") as string;
+
   const acct = useMemo(() => search.get("acct"), [search]);
   const pid = useMemo(() => search.get("pid"), [search]);
   const isFreeSession = useMemo(
@@ -33,7 +36,8 @@ const sessionId = (search.get("sid") ||
     [sessionId]
   );
 
-  const isGuest = !loading && !token;
+  // ⬇️ guest = no user once loading has finished
+  const isGuest = !loading && !user;
 
   useEffect(() => {
     if (loading) return;
@@ -50,7 +54,7 @@ const sessionId = (search.get("sid") ||
       return;
     }
 
-    // Guest buyers - let the Stripe webhooks handle everything
+    // Guest buyers: show the success UI only, let webhooks handle fulfillment
     if (isGuest) {
       return;
     }
@@ -58,8 +62,10 @@ const sessionId = (search.get("sid") ||
     async function finalize() {
       if (finalizingRef.current) return;
       finalizingRef.current = true;
+
       try {
         const headers: Record<string, string> = { Accept: "application/json" };
+        // still send Bearer token when we have one (local dev, etc)
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
         const q = new URLSearchParams();
@@ -88,7 +94,8 @@ const sessionId = (search.get("sid") ||
             setFlash({
               kind: "error",
               title:
-                payload.error || "Something went wrong finalizing your order.",
+                payload.error ||
+                "Something went wrong finalizing your order.",
               ts: Date.now(),
             });
           } catch {}
@@ -133,10 +140,10 @@ const sessionId = (search.get("sid") ||
       }
     }
 
-    if (!loading && !finalizingRef.current) {
+    if (!finalizingRef.current) {
       void finalize();
     }
-  }, [sessionId, acct, pid, router, token, loading, isGuest]);
+  }, [sessionId, acct, pid, router, loading, isGuest, token]);
 
   const title = !sessionId
     ? "Something went wrong"
