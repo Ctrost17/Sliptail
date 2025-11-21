@@ -156,17 +156,6 @@ router.post(
       "reqMode:",
       mode
     );
-
-  const finalMode = productType === "membership" ? "subscription" : "payment";
-    console.log(
-      "[checkout] product_type:",
-      productType,
-      "finalMode:",
-      finalMode,
-      "reqMode:",
-      mode
-    );
-
     // Memberships require a logged in user to avoid duplicate subscriptions
     if (finalMode === "subscription" && !buyerId) {
       return res
