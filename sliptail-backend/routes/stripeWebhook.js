@@ -49,13 +49,12 @@ async function sendAccessEmailForUser(userId, email) {
   const token = crypto.randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-  try {
+ try {
     await db.query(
       `INSERT INTO user_tokens (user_id, token, token_type, expires_at, created_at)
-      VALUES ($1, $2, 'guest_access', $3, NOW())`,
+       VALUES ($1, $2, 'password_reset', $3, NOW())`,
       [userId, token, expires]
     );
-
   } catch (e) {
     console.error("sendAccessEmailForUser: failed to insert token:", e?.message || e);
     return;
