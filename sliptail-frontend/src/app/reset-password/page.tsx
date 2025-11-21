@@ -3,32 +3,31 @@
 import { useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { apiPost } from "@/lib/api";
+import { apiPost, apiGet } from "@/lib/api";
 import { isAxiosError } from "axios";
 
 type ResetResponse = {
   success?: boolean;
   message?: string;
   error?: string;
-  auto_verified?: boolean;
 };
 
 export default function ResetPasswordPage() {
   const sp = useSearchParams();
   const router = useRouter();
   const token = sp.get("token") ?? "";
+
   const [pwd, setPwd] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [done, setDone] = useState<boolean>(false);
   const [err, setErr] = useState<string>("");
-  const [autoVerified, setAutoVerified] = useState<boolean>(false);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr("");
 
     if (!token) {
-      setErr("Missing token");
+      setErr("Missing or invalid reset link.");
       return;
     }
     if (pwd.length < 8) {
@@ -38,29 +37,45 @@ export default function ResetPasswordPage() {
 
     setSubmitting(true);
     try {
-      // Uses Axios instance with baseURL `${API_BASE}/api` and withCredentials=true
+      // 1) Call backend to reset password
       const json = await apiPost<ResetResponse>("/auth/reset", {
         token,
         password: pwd,
       });
 
-      if (json?.success) {
-        const isAutoVerified = !!json.auto_verified;
-        setAutoVerified(isAutoVerified);
-        setDone(true);
+      if (!json?.success) {
+        throw new Error(json?.error || json?.message || "Reset failed");
+      }
 
-        // Guest buyer who just claimed their account:
-        // - backend already set auth cookie
-        // - send them to home
-        if (isAutoVerified) {
-          setTimeout(() => router.push("/"), 1500);
-        } else {
-          // Normal forgot-password user:
-          // keep them logged out, send to login
-          setTimeout(() => router.push("/auth/login"), 1500);
+      // 2) Check if the user is now logged in via cookie
+      //    For guest-buyer tokens, your backend sets a login cookie.
+      let isNowLoggedIn = false;
+      try {
+        const me = await apiGet<{ user?: unknown }>("/auth/me");
+        if (me && me.user) {
+          isNowLoggedIn = true;
+        }
+      } catch {
+        // 401/403 just means they are *not* logged in (normal forgot-password flow)
+        isNowLoggedIn = false;
+      }
+
+      if (isNowLoggedIn) {
+        // Guest buyer flow:
+        // Backend has logged them in via cookie → do a HARD redirect
+        // so the entire app (Navbar/AuthProvider) sees the new auth state.
+        if (typeof window !== "undefined") {
+          window.location.href = "/";
+          return;
         }
       } else {
-        throw new Error(json?.error || json?.message || "Reset failed");
+        // Normal forgot-password flow:
+        // Show success message and keep them logged out.
+        setDone(true);
+        // After a short pause, send them to the login page
+        setTimeout(() => {
+          router.push("/auth/login");
+        }, 1500);
       }
     } catch (e: unknown) {
       if (isAxiosError(e)) {
@@ -84,25 +99,10 @@ export default function ResetPasswordPage() {
 
       {done ? (
         <>
-          {autoVerified ? (
-            <>
-              <p className="mb-4">
-                Your password has been set and your account is ready. Redirecting you to your account...
-              </p>
-              <Link href="/" className="underline">
-                Go to homepage
-              </Link>
-            </>
-          ) : (
-            <>
-              <p className="mb-4">
-                Your password has been updated. You can now sign in with your new password.
-              </p>
-              <Link href="/auth/login" className="underline">
-                Sign in
-              </Link>
-            </>
-          )}
+          <p className="mb-4">Your password has been updated.</p>
+          <Link href="/auth/login" className="underline">
+            Go to sign in
+          </Link>
         </>
       ) : (
         <form onSubmit={onSubmit} className="space-y-4">
