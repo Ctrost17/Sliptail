@@ -529,84 +529,112 @@ useEffect(() => {
     };
   }, [token]);
 
-  // Checkout handler (guard against already-subscribed membership)
-  async function startCheckout(p: Product) {
-    if (!creatorId) return;
+      // Checkout handler:
+      // - One-time products (purchase/request): guests allowed
+      // - Memberships: require login
+      async function startCheckout(p: Product) {
+        if (!creatorId) return;
 
-      // NEW: if this creator can't take payments yet, send to the "unavailable" page
-    if (creator && creator.stripe_charges_enabled === false) {
-      router.push(`/checkout/unavailable?pid=${encodeURIComponent(String(p.id))}`);
-      return;
-    }
-
-    if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
-      router.push("/purchases");
-      return;
-    }
-
-    if (authLoading) {
-      const selfWithCheckout = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
-      router.replace(selfWithCheckout);
-      return;
-    }
-    if (!user) {
-      const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
-      router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
-      return;
-    }
-
-    setCheckingOutId(p.id);
-    try {
-      const mode = p.product_type === "membership" ? "subscription" : "payment";
-      const origin = window.location.origin;
-      const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
-      const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
-
-      const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          product_id: Number(p.id) || p.id,
-          mode,
-          quantity: 1,
-          success_url: successUrl,
-          cancel_url: cancelUrl,
-        }),
-      });
-
-      if (res.status === 401 || res.status === 403) {
-        const nextUrl = `/creators/${encodeURIComponent(String(creatorId))}?checkout=${encodeURIComponent(p.id)}`;
-        router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
-        return;
-      }
-
-      if (!res.ok) {
-        let msg = "Checkout failed";
-        try {
-          const j = await res.json();
-          msg = (j && (j.error || j.message)) || msg;
-        } catch {
-          try { msg = await res.text(); } catch {}
+        // If this creator cannot take payments yet, send to the "unavailable" page
+        if (creator && creator.stripe_charges_enabled === false) {
+          router.push(`/checkout/unavailable?pid=${encodeURIComponent(String(p.id))}`);
+          return;
         }
-        router.push(`/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(msg || "Checkout failed")}`);
-        return;
-      }
 
-      const data = (await res.json().catch(() => ({}))) as { url?: string };
-      if (data?.url) {
-        window.location.href = data.url;
-        return;
+        // If user is already subscribed to this membership, send them to purchases
+        if (p.product_type === "membership" && subscribedIds.has(Number(p.id))) {
+          router.push("/purchases");
+          return;
+        }
+
+        // Memberships must be logged in so we do not create duplicate subscriptions
+        if (p.product_type === "membership" && !user) {
+          const nextUrl = `/creators/${encodeURIComponent(
+            String(creatorId)
+          )}?checkout=${encodeURIComponent(p.id)}`;
+          router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+          return;
+        }
+
+        setCheckingOutId(p.id);
+        try {
+          const mode = p.product_type === "membership" ? "subscription" : "payment";
+          const origin = window.location.origin;
+          const successUrl = `${origin}/checkout/success?sid={CHECKOUT_SESSION_ID}&pid=${encodeURIComponent(
+            p.id
+          )}&action=${encodeURIComponent(p.product_type)}`;
+          const cancelUrl = `${origin}/checkout/cancel?pid=${encodeURIComponent(
+            p.id
+          )}&action=${encodeURIComponent(p.product_type)}`;
+
+          const res = await fetch(`${apiBase}/api/stripe-checkout/create-session`, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({
+              product_id: Number(p.id) || p.id,
+              mode,
+              quantity: 1,
+              success_url: successUrl,
+              cancel_url: cancelUrl,
+            }),
+          });
+
+          // Backend can return 401 for things that require login (free items and memberships)
+          if (res.status === 401) {
+            const nextUrl = `/creators/${encodeURIComponent(
+              String(creatorId)
+            )}?checkout=${encodeURIComponent(p.id)}`;
+            router.push(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+            return;
+          }
+
+          if (res.status === 403) {
+            const msg = "Could not start checkout";
+            router.push(
+              `/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(msg)}`
+            );
+            return;
+          }
+
+          if (!res.ok) {
+            let msg = "Checkout failed";
+            try {
+              const j = await res.json();
+              msg = (j && (j.error || j.message)) || msg;
+            } catch {
+              try {
+                msg = await res.text();
+              } catch {
+                // ignore
+              }
+            }
+            router.push(
+              `/products/${encodeURIComponent(p.id)}?error=${encodeURIComponent(
+                msg || "Checkout failed"
+              )}`
+            );
+            return;
+          }
+
+          const data = (await res.json().catch(() => ({}))) as { url?: string };
+          if (data?.url) {
+            window.location.href = data.url;
+            return;
+          }
+
+          // Fallback - should not normally be hit
+          window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(
+            p.id
+          )}&action=${encodeURIComponent(p.product_type)}`;
+        } finally {
+          setCheckingOutId(null);
+        }
       }
-      window.location.href = `/stripe-checkout/start?pid=${encodeURIComponent(p.id)}&action=${encodeURIComponent(p.product_type)}`;
-    } finally {
-      setCheckingOutId(null);
-    }
-  }
 
   // Auto-start after login if ?checkout=PID (wait for subsReady, and guard for already-subscribed)
   useEffect(() => {

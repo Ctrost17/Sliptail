@@ -58,6 +58,22 @@ exports.passwordReset = ({ actionUrl }) => ({
   text: `Reset your password\n\nWe received a request to reset the password for your ${BRAND.company} account.\nReset link: ${actionUrl}\nThis link expires in 30 minutes.\n`,
 });
 
+exports.accountAccessLink = ({ actionUrl }) => ({
+  subject: "Set your Sliptail password",
+  html: wrap("Set your Sliptail password", `
+    <h1>Set your password</h1>
+    <p>We created a Sliptail account for you so you can manage your purchases and memberships.</p>
+    <p><a class="btn" href="${actionUrl}">Set password and access your account</a></p>
+    <p class="muted">This link expires in 70 Days.</p>
+  `),
+  text: `Set your password
+
+We created a Sliptail account for you so you can manage your purchases and memberships.
+Set password: ${actionUrl}
+This link expires in 7 Days.
+`,
+});
+
 exports.newEmailVerification = ({ actionUrl }) => ({
   subject: "Please Verify Your New Email",
   html: wrap("Please Verify Your New Email", `

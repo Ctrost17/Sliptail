@@ -1,10 +1,17 @@
 const Stripe = require("stripe");
 const db = require("../db");
 const path = require("path");
+const crypto = require("crypto");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const { notifyPurchase } = require("../utils/notify");
 const { recomputeCreatorActive } = require("../services/creatorStatus");
-const { notify } = require("../services/notifications"); // NEW: in-app notifications for creators
+const { notify } = require("../services/notifications");
+const { createUser, findUserByEmail } = require("../models/User");
+const { sendEmail } = require("../emails/mailer");
+const T = require("../emails/templates");
+
+const { FRONTEND_URL } = process.env;
+const FRONTEND_BASE = (FRONTEND_URL || "http://localhost:3000").replace(/\/$/, "");
 
 function getStripe() {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -19,6 +26,174 @@ function getStripe() {
 // optionally put its secret in STRIPE_CONNECT_WEBHOOK_SECRET and keep using ?connect=1.
 const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 const connectEndpointSecret = process.env.STRIPE_CONNECT_WEBHOOK_SECRET;
+
+async function sendAccessEmailForUser(userId, email) {
+  const lower = String(email || "").trim().toLowerCase();
+  if (!lower) return;
+
+  // Mark any previous password reset tokens as consumed
+  try {
+    await db.query(
+      `UPDATE user_tokens
+          SET consumed_at = NOW()
+        WHERE user_id = $1
+          AND token_type = 'password_reset'
+          AND consumed_at IS NULL`,
+      [userId]
+    );
+  } catch (e) {
+    console.warn("sendAccessEmailForUser: failed to consume old tokens:", e?.message || e);
+  }
+
+  // Create a fresh token that works for 7 days
+  const token = crypto.randomBytes(32).toString("hex");
+  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+  try {
+    await db.query(
+      `INSERT INTO user_tokens (user_id, token, token_type, expires_at, created_at)
+       VALUES ($1, $2, 'password_reset', $3, NOW())`,
+      [userId, token, expires]
+    );
+  } catch (e) {
+    console.error("sendAccessEmailForUser: failed to insert token:", e?.message || e);
+    return;
+  }
+
+  const resetUrl = `${FRONTEND_BASE}/reset-password?token=${token}`;
+  const msg = T.accountAccessLink({ actionUrl: resetUrl });
+
+  try {
+    await sendEmail({
+      to: lower,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    });
+  } catch (e) {
+    console.warn("sendAccessEmailForUser: sendEmail failed:", e?.message || e);
+  }
+}
+
+async function ensureBuyerFromEmailAndCustomer(email, customerId) {
+  if (!email) return null;
+  const lower = String(email).trim().toLowerCase();
+
+  // 1 - see if a user already exists
+  let user = await findUserByEmail(lower);
+  if (user) {
+    // Attach stripe_customer_id if needed
+    if (customerId && user.stripe_customer_id !== customerId) {
+      try {
+        await db.query(
+          `UPDATE users
+             SET stripe_customer_id = $1
+           WHERE id = $2
+             AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
+          [customerId, user.id]
+        );
+      } catch (e) {
+        console.warn(
+          "[webhook] failed updating stripe_customer_id:",
+          e.message || e
+        );
+      }
+    }
+    // Existing user: do NOT send a new password email
+    return user.id;
+  }
+
+  // 2 - create a "ghost" user with a random password hash
+  const randomHash = "guest_" + crypto.randomBytes(32).toString("hex");
+  user = await createUser({
+    email: lower,
+    passwordHash: randomHash,
+    role: "user",
+  });
+
+  // Attach stripe_customer_id for this new ghost user
+  if (customerId) {
+    try {
+      await db.query(
+        `UPDATE users
+           SET stripe_customer_id = $1
+         WHERE id = $2`,
+        [customerId, user.id]
+      );
+    } catch (e) {
+      console.warn(
+        "[webhook] failed setting stripe_customer_id on new ghost user:",
+        e.message || e
+      );
+    }
+  }
+
+  // NEW: send them an email to set their password and claim the account
+  try {
+    await sendAccessEmailForUser(user.id, lower);
+  } catch (e) {
+    console.warn(
+      "ensureBuyerFromEmailAndCustomer: sendAccessEmailForUser failed:",
+      e?.message || e
+    );
+  }
+
+  return user.id;
+}
+
+// Used for Checkout sessions (mode=payment or subscription)
+async function ensureBuyerForSession(session) {
+  const meta = session.metadata || {};
+  const email =
+    (session.customer_details && session.customer_details.email) ||
+    session.customer_email ||
+    meta.buyer_email ||
+    null;
+  const customerId = session.customer || meta.customer_id || null;
+
+  if (!email && !customerId) {
+    return null;
+  }
+
+  if (!email && customerId) {
+    // Fallback to customer lookup
+    const stripe = getStripe();
+    try {
+      const customer = await stripe.customers.retrieve(customerId);
+      if (!customer.deleted && customer.email) {
+        return ensureBuyerFromEmailAndCustomer(customer.email, customerId);
+      }
+    } catch (e) {
+      console.warn("[webhook] ensureBuyerForSession - customer lookup failed:", e.message || e);
+      return null;
+    }
+  }
+
+  return ensureBuyerFromEmailAndCustomer(email, customerId);
+}
+
+// Used for subscription lifecycle events when we only have the customer id
+async function ensureBuyerForCustomer(customerId, fallbackMeta) {
+  if (!customerId) return null;
+  const stripe = getStripe();
+
+  let email = null;
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    if (!customer.deleted && customer.email) {
+      email = customer.email;
+    }
+  } catch (e) {
+    console.warn("[webhook] ensureBuyerForCustomer - customer fetch failed:", e.message || e);
+  }
+
+  if (!email && fallbackMeta && fallbackMeta.buyer_email) {
+    email = fallbackMeta.buyer_email;
+  }
+
+  if (!email) return null;
+  return ensureBuyerFromEmailAndCustomer(email, customerId);
+}
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -198,22 +373,24 @@ async function upsertPaidOrderFromSession(session) {
   const meta = session.metadata || {};
   const sessionId = session.id;
   const paymentIntentId = session.payment_intent || null;
-  const amountCents = Number.isFinite(session.amount_total) ? Number(session.amount_total) : 0;
+  const amountCents = Number.isFinite(session.amount_total)
+    ? Number(session.amount_total)
+    : 0;
 
   // Prefer metadata if present (these are set in stripeCheckout.js)
   const orderIdFromMeta = meta.order_id ? parseInt(meta.order_id, 10) : null;
-  const buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
+  let buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
   const productId = meta.product_id ? parseInt(meta.product_id, 10) : null;
 
   // 1) Try to mark an existing pending order as paid and set the session id
   if (orderIdFromMeta) {
     const { rowCount } = await db.query(
       `UPDATE public.orders
-          SET status='paid',
-              stripe_payment_intent_id=$1,
-              stripe_checkout_session_id=COALESCE(stripe_checkout_session_id, $2)
-        WHERE id=$3 AND status IN ('pending','created')
-      `,
+          SET status = 'paid',
+              stripe_payment_intent_id = $1,
+              stripe_checkout_session_id = COALESCE(stripe_checkout_session_id, $2)
+        WHERE id = $3
+          AND status IN ('pending','created')`,
       [paymentIntentId, sessionId, orderIdFromMeta]
     );
     if (rowCount > 0) {
@@ -221,8 +398,7 @@ async function upsertPaidOrderFromSession(session) {
     }
   }
 
-  // 2) If no existing row, insert a new PAID order (idempotent-ish by session id)
-  // Try to find by session id first (if we processed earlier)
+  // 2) If there is already an order row for this session, just return it
   const { rows: existing } = await db.query(
     `SELECT id FROM public.orders WHERE stripe_checkout_session_id = $1 LIMIT 1`,
     [sessionId]
@@ -231,7 +407,12 @@ async function upsertPaidOrderFromSession(session) {
     return existing[0].id;
   }
 
-  // Insert only if we have the minimal data
+  // 3) We need a buyer row. If metadata did not include buyer_id (guest checkout),
+  //    derive or create one from the Stripe email / customer.
+  if (!buyerId) {
+    buyerId = await ensureBuyerForSession(session);
+  }
+
   const insertableBuyer = Number.isFinite(buyerId) ? buyerId : null;
   const insertableProduct = Number.isFinite(productId) ? productId : null;
   const insertableAmount = Number.isFinite(amountCents) ? amountCents : 0;
@@ -249,6 +430,7 @@ async function upsertPaidOrderFromSession(session) {
 
   return inserted[0].id;
 }
+
 
 /** NEW: dedupe helper so we don't notify a creator twice for the same sale */
 async function alreadyNotifiedCreatorSaleByOrder(orderId) {
@@ -407,19 +589,35 @@ module.exports = async function stripeWebhook(req, res) {
           }
         }
 
-        if (session.mode === "subscription") {
-          // keep existing behavior: ensure we store customer id; initial sale notification is handled below
-          const customer = session.customer;
-          const buyerId = session.metadata?.buyer_id && parseInt(session.metadata.buyer_id, 10);
-          if (customer && buyerId) {
-            await db.query(
-              `UPDATE users
-                 SET stripe_customer_id=$1
-               WHERE id=$2 AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
-              [customer, buyerId]
-            );
+         if (session.mode === "subscription") {
+        // Allow guest membership: ensure a user row exists and attach stripe_customer_id
+        const customer = session.customer || null;
+        const meta = session.metadata || {};
+        const emailFromMeta = meta.buyer_email || null;
+
+        let buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
+        if (!buyerId) {
+          // If buyer_id is not present (guest), derive it from customer + email
+          if (customer || emailFromMeta) {
+            buyerId = await ensureBuyerFromEmailAndCustomer(emailFromMeta, customer);
           }
         }
+
+        if (customer && buyerId) {
+          try {
+            await db.query(
+              `UPDATE users
+                SET stripe_customer_id = $1
+              WHERE id = $2
+                AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
+              [customer, buyerId]
+            );
+          } catch (e) {
+            console.warn("[webhook] failed to update stripe_customer_id on subscription checkout:", e.message || e);
+          }
+        }
+        }
+
         break;
       }
 
@@ -495,79 +693,76 @@ module.exports = async function stripeWebhook(req, res) {
         const status = sub.status; // trialing, active, past_due, canceled, etc.
         const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
 
-        // Use Stripe's timestamp if present; otherwise leave NULL (don't guess)
+        // Use Stripe's timestamp if present; otherwise leave NULL
         const currentPeriodEnd = sub.current_period_end
           ? new Date(sub.current_period_end * 1000)
           : null;
 
+        const subId = sub.id;
+        const customerId = sub.customer || null;
+
         // 1) First, try to UPDATE by subscription id (metadata is often missing on updates)
-          const upd = await db.query(
-            `UPDATE memberships
-                SET status = $2,
-                    cancel_at_period_end = $3,
-                    current_period_end   = $4,
-                    canceled_at = CASE
-                                    WHEN $2 = 'canceled' THEN NOW()
-                                    ELSE canceled_at
-                                  END
-              WHERE stripe_subscription_id = $1`,
-            [sub.id, status, cancelAtPeriodEnd, currentPeriodEnd]
-          );
+        const upd = await db.query(
+          `UPDATE memberships
+              SET status = $2,
+                  cancel_at_period_end = $3,
+                  current_period_end   = $4,
+                  canceled_at = CASE
+                                  WHEN $2 = 'canceled' THEN NOW()
+                                  ELSE canceled_at
+                                END
+            WHERE stripe_subscription_id = $1`,
+          [subId, status, cancelAtPeriodEnd, currentPeriodEnd]
+        );
 
         // 2) If no row exists yet and metadata is present (e.g., first created), INSERT
         if (upd.rowCount === 0) {
           const meta = sub.metadata || {};
-          const buyerId   = meta.buyer_id && parseInt(meta.buyer_id, 10);
+          let buyerId   = meta.buyer_id && parseInt(meta.buyer_id, 10);
           const creatorId = meta.creator_id && parseInt(meta.creator_id, 10);
           const productId = meta.product_id && parseInt(meta.product_id, 10);
 
+          // Guest membership: no buyer_id in metadata, derive it from customer + email
+          if (!buyerId && customerId) {
+            buyerId = await ensureBuyerForCustomer(customerId, meta);
+          }
+
           if (buyerId && creatorId && productId) {
-              await db.query(
-                `INSERT INTO memberships
-                    (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
-                ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
-                  SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-                      status                 = EXCLUDED.status,
-                      cancel_at_period_end   = EXCLUDED.cancel_at_period_end,
-                      current_period_end     = EXCLUDED.current_period_end`,
-                [
-                  buyerId,
-                  creatorId,
-                  productId,
-                  sub.id,
-                  status,
-                  cancelAtPeriodEnd,
-                  currentPeriodEnd
-                ]
-              );
-            // NEW: Only on initial purchase (created), ping creator with "creator_sale"
-            if (event.type === "customer.subscription.created") {
-              try {
-                if (!(await alreadyNotifiedCreatorSaleBySubscription(sub.id))) {
-                  const { rows: prod } = await db.query(
-                    `SELECT title FROM products WHERE id=$1 LIMIT 1`,
-                    [productId]
-                  );
-                  const title = prod[0]?.title || "membership";
-                  notify(
-                    Number(creatorId),
-                    "creator_sale",
-                    "Great news!",
-                    `Someone just purchased your ${title}!`,
-                    { product_id: productId, stripe_subscription_id: sub.id }
-                  ).catch(console.error);
-                }
-              } catch (e) {
-                console.error("creator_sale notify (subscription.created) error:", e);
+            await db.query(
+              `INSERT INTO memberships
+                  (buyer_id, creator_id, product_id, stripe_subscription_id, status, cancel_at_period_end, current_period_end, created_at)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+              ON CONFLICT (buyer_id, creator_id, product_id) DO UPDATE
+                SET stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+                    status                 = EXCLUDED.status,
+                    cancel_at_period_end   = EXCLUDED.cancel_at_period_end,
+                    current_period_end     = EXCLUDED.current_period_end`,
+              [buyerId, creatorId, productId, subId, status, cancelAtPeriodEnd, currentPeriodEnd]
+            );
+
+            // Optional: only notify the creator on initial creation, not every update
+            try {
+              if (event.type === "customer.subscription.created") {
+                const { rows: prod } = await db.query(
+                  `SELECT title FROM products WHERE id = $1 LIMIT 1`,
+                  [productId]
+                );
+                const title = (prod[0] && prod[0].title) || "membership";
+                await notify(
+                  Number(creatorId),
+                  "creator_sale",
+                  "Great news!",
+                  `Someone just purchased your ${title}!`,
+                  { product_id: productId, stripe_subscription_id: subId }
+                );
               }
+            } catch (e) {
+              console.error("creator_sale notify (subscription) error:", e);
             }
-          } else {
-            // No metadata and no existing row; log and move on (can be expected on some updates)
-            console.warn("[webhook] subscription event with no local row and no metadata", sub.id);
           }
         }
 
+        // No extra work needed for subsequent updates; the UPDATE above kept status in sync
         break;
       }
 
