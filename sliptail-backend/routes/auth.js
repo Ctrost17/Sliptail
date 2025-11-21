@@ -482,19 +482,20 @@ router.post("/reset", strictLimiter, async (req, res) => {
       return res.status(400).json({ error: "token and password are required" });
     }
 
-    // Pull token + user info so we can detect guest users
+    // Pull token + user info in one query so we can detect "guest" users
     const { rows } = await db.query(
       `SELECT
          t.user_id,
          t.expires_at,
          t.consumed_at,
-         t.token_type,
+         u.email,
+         u.role,
          u.email_verified_at,
          u.password_hash
        FROM user_tokens t
        JOIN users u ON u.id = t.user_id
       WHERE t.token = $1
-        AND t.token_type IN ('password_reset', 'guest_access')
+        AND t.token_type = 'password_reset'
       LIMIT 1`,
       [token]
     );
@@ -508,16 +509,13 @@ router.post("/reset", strictLimiter, async (req, res) => {
 
     const userId = t.user_id;
 
-    // Guest accounts:
-    //  - token_type = guest_access   (sent from Stripe guest flow)
-    //  or
-    //  - no email_verified_at and password_hash starts with "guest_"
-    const isGuestToken = t.token_type === "guest_access";
-    const looksLikeGhostPassword =
+    // Detect "guest" accounts that came from Stripe guest checkout:
+    // - never verified email
+    // - password_hash still in the "guest_..." synthetic format
+    const wasGuestBeforeReset =
+      !t.email_verified_at &&
       typeof t.password_hash === "string" &&
       t.password_hash.startsWith("guest_");
-    const wasGuestBeforeReset =
-      isGuestToken || (!t.email_verified_at && looksLikeGhostPassword);
 
     const hashed = await bcrypt.hash(String(password), 10);
 
@@ -540,11 +538,11 @@ router.post("/reset", strictLimiter, async (req, res) => {
       [token]
     );
 
-    // 3) If this was a guest account, auto verify the email
+    // 3) If this was a guest account, auto-verify the email
     if (wasGuestBeforeReset) {
-      const sets = ["email_verified_at = COALESCE(email_verified_at, NOW())", "updated_at = NOW()"];
+      const sets = ["email_verified_at = NOW()", "updated_at = NOW()"];
 
-      // Keep boolean email_verified in sync if it exists
+      // If you have a boolean "email_verified" column, keep it in sync
       if (await hasColumn("users", "email_verified")) {
         sets.push("email_verified = TRUE");
       }
@@ -559,59 +557,53 @@ router.post("/reset", strictLimiter, async (req, res) => {
 
     await db.query("COMMIT");
 
-    // 4) Branch behavior based on guest vs normal reset
-
+    // 4) If this was a guest account, auto login + send welcome notification
     if (wasGuestBeforeReset) {
-      // Guest buyer: auto login and send them home
-
-      const { rows: uRows } = await db.query(
-        `SELECT id, email, username, role, email_verified_at, created_at
+      // Pull fresh user row
+      const { rows: urows } = await db.query(
+        `SELECT id, email, role, email_verified_at, created_at
            FROM users
           WHERE id = $1
           LIMIT 1`,
         [userId]
       );
+      const user = urows[0];
 
-      const user = uRows[0];
-      if (!user) {
-        return res.status(500).json({ error: "User not found after reset" });
+      if (user) {
+        // Fire welcome notification (same vibe as signup)
+        try {
+          await notify(
+            user.id,
+            "welcome",
+            "Welcome aboard!",
+            "Your account has been successfully created. We are glad to have you with us - start creating and supporting",
+            {}
+          );
+        } catch (e) {
+          console.warn("welcome notify (guest->user) failed:", e?.message || e);
+        }
+
+        // Issue JWT and set auth cookie so they are logged in immediately
+        try {
+          const sessionToken = issueJwt(user);
+          res.cookie("token", sessionToken, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV !== "development",
+            path: "/",
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+          });
+        } catch (e) {
+          console.warn("Failed to set auth cookie after guest claim:", e?.message || e);
+        }
       }
-
-      const jwtToken = issueJwt(user);
-
-      try {
-        res.cookie("token", jwtToken, {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV !== "development",
-          path: "/",
-          maxAge: 1 * 24 * 60 * 60 * 1000, // 1 day
-        });
-      } catch (e) {
-        console.warn("Failed to set auth cookie on guest reset:", e?.message || e);
-      }
-
-      return res.json({
-        ok: true,
-        success: true,
-        message: "Password updated",
-        reset_kind: "guest",
-        auto_login: true,
-        redirect: "/", // frontend can use this to push("/")
-        token: jwtToken,
-        user: toSafeUser(user),
-      });
     }
 
-    // Normal forgot-password user: do NOT auto login
     return res.json({
-      ok: true,
       success: true,
       message: "Password updated",
-      reset_kind: "forgot",
-      auto_login: false,
-      // frontend can read this and redirect to your sign up / login page
-      // for example: router.push("/auth/login") or "/auth/signup"
+      // frontend uses this to decide redirect behavior
+      auto_verified: wasGuestBeforeReset,
     });
   } catch (e) {
     try {

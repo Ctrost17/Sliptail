@@ -10,8 +10,7 @@ type ResetResponse = {
   success?: boolean;
   message?: string;
   error?: string;
-  reset_kind?: "guest" | "forgot";
-  auto_login?: boolean;
+  auto_verified?: boolean;
 };
 
 export default function ResetPasswordPage() {
@@ -22,6 +21,7 @@ export default function ResetPasswordPage() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [done, setDone] = useState<boolean>(false);
   const [err, setErr] = useState<string>("");
+  const [autoVerified, setAutoVerified] = useState<boolean>(false);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -44,24 +44,24 @@ export default function ResetPasswordPage() {
         password: pwd,
       });
 
-      if (!json?.success) {
+      if (json?.success) {
+        const isAutoVerified = !!json.auto_verified;
+        setAutoVerified(isAutoVerified);
+        setDone(true);
+
+        // Guest buyer who just claimed their account:
+        // - backend already set auth cookie
+        // - send them to home
+        if (isAutoVerified) {
+          setTimeout(() => router.push("/"), 1500);
+        } else {
+          // Normal forgot-password user:
+          // keep them logged out, send to login
+          setTimeout(() => router.push("/auth/login"), 1500);
+        }
+      } else {
         throw new Error(json?.error || json?.message || "Reset failed");
       }
-
-      // Backend tells us what kind of reset this is
-      const resetKind = json.reset_kind;
-      const autoLogin = !!json.auto_login;
-
-      // Guest buyer: backend set cookie + auto_verify, so send them home
-      if (resetKind === "guest" && autoLogin) {
-        router.push("/");
-        return;
-      }
-
-      // Normal forgot-password user:
-      // show success message briefly, then send to login
-      setDone(true);
-      setTimeout(() => router.push("/auth/login"), 1500);
     } catch (e: unknown) {
       if (isAxiosError(e)) {
         const data = e.response?.data as Partial<ResetResponse> | undefined;
@@ -80,13 +80,29 @@ export default function ResetPasswordPage() {
 
   return (
     <main className="mx-auto max-w-md p-6">
-      <h1 className="mb-3 text-2xl font-semibold">Reset Password</h1>
+      <h1 className="text-2xl font-semibold mb-3">Reset Password</h1>
+
       {done ? (
         <>
-          <p className="mb-4">Your password has been updated.</p>
-          <Link href="/auth/login" className="underline">
-            Go to login
-          </Link>
+          {autoVerified ? (
+            <>
+              <p className="mb-4">
+                Your password has been set and your account is ready. Redirecting you to your account...
+              </p>
+              <Link href="/" className="underline">
+                Go to homepage
+              </Link>
+            </>
+          ) : (
+            <>
+              <p className="mb-4">
+                Your password has been updated. You can now sign in with your new password.
+              </p>
+              <Link href="/auth/login" className="underline">
+                Sign in
+              </Link>
+            </>
+          )}
         </>
       ) : (
         <form onSubmit={onSubmit} className="space-y-4">
@@ -95,13 +111,13 @@ export default function ResetPasswordPage() {
             value={pwd}
             onChange={(e) => setPwd(e.target.value)}
             placeholder="New password"
-            className="w-full rounded px-3 py-2 border"
+            className="w-full border rounded px-3 py-2"
           />
           {err && <p className="text-red-600">{err}</p>}
           <button
             type="submit"
             disabled={submitting}
-            className="rounded px-4 py-2 border"
+            className="border rounded px-4 py-2"
           >
             {submitting ? "Saving…" : "Set new password"}
           </button>
