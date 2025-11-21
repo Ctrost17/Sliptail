@@ -265,11 +265,19 @@ router.post(
     /* ------------------------------ STRIPE FLOW ------------------------------ */
 
     const stripe = getStripe();
-    let session;
+      let session;
 
     // Message that appears on Stripe Checkout
     const EMAIL_HINT =
       "Please double check your email. This is where your Sliptail access will be sent.";
+
+    // Only show warning description if guest + one time purchase/request + paid product
+    const shouldShowEmailWarning =
+      !buyerId && finalMode === "payment" && amountCents > 0;
+
+    const productDescription = shouldShowEmailWarning
+      ? "⚠️ Make sure your email is correct so we can send you access!"
+      : undefined; // Stripe will omit undefined fields
 
     try {
       if (finalMode === "payment") {
@@ -280,7 +288,12 @@ router.post(
             {
               price_data: {
                 currency: "usd",
-                product_data: { name: p.title || p.product_type || "Item" },
+                product_data: {
+                  name: p.title || p.product_type || "Item",
+                  ...(productDescription
+                    ? { description: productDescription }
+                    : {}),
+                },
                 unit_amount: Number(p.price), // already cents in DB
               },
               quantity: 1,
@@ -322,7 +335,7 @@ router.post(
             },
           ],
           subscription_data: {
-            application_fee_percent: PLATFORM_FEE_BPS / 100.0, // e.g. 4.0
+            application_fee_percent: PLATFORM_FEE_BPS / 100.0, // for example 4.0
             metadata: { ...baseMetadata },
           },
           metadata: { ...baseMetadata },
