@@ -63,8 +63,16 @@ exports.accountAccessLink = ({ actionUrl }) => ({
   html: wrap("Set your Sliptail password", `
     <h1>Set your password</h1>
     <p>We created a Sliptail account for you so you can manage your purchases and memberships.</p>
-    <p><a class="btn" href="${actionUrl}">Set password and access your account</a></p>
-    <p class="muted">This link expires in 70 Days.</p>
+      <p>
+      <a
+        class="btn"
+        href="${actionUrl}"
+        style="color:#ffffff !important;"
+      >
+        Set password and access your account
+      </a>
+    </p>
+    <p class="muted">This link expires in 7 Days.</p>
   `),
   text: `Set your password
 

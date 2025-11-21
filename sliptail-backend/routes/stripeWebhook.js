@@ -52,9 +52,10 @@ async function sendAccessEmailForUser(userId, email) {
   try {
     await db.query(
       `INSERT INTO user_tokens (user_id, token, token_type, expires_at, created_at)
-       VALUES ($1, $2, 'password_reset', $3, NOW())`,
+      VALUES ($1, $2, 'guest_access', $3, NOW())`,
       [userId, token, expires]
     );
+
   } catch (e) {
     console.error("sendAccessEmailForUser: failed to insert token:", e?.message || e);
     return;

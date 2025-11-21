@@ -482,28 +482,142 @@ router.post("/reset", strictLimiter, async (req, res) => {
       return res.status(400).json({ error: "token and password are required" });
     }
 
+    // Pull token + user info so we can detect guest users
     const { rows } = await db.query(
-      `SELECT user_id, expires_at, consumed_at
-         FROM user_tokens
-        WHERE token=$1 AND token_type='password_reset'`,
+      `SELECT
+         t.user_id,
+         t.expires_at,
+         t.consumed_at,
+         t.token_type,
+         u.email_verified_at,
+         u.password_hash
+       FROM user_tokens t
+       JOIN users u ON u.id = t.user_id
+      WHERE t.token = $1
+        AND t.token_type IN ('password_reset', 'guest_access')
+      LIMIT 1`,
       [token]
     );
+
     const t = rows[0];
     if (!t) return res.status(400).json({ error: "Invalid token" });
     if (t.consumed_at) return res.status(400).json({ error: "Token already used" });
-    if (new Date(t.expires_at) < new Date()) return res.status(400).json({ error: "Token expired" });
+    if (new Date(t.expires_at) < new Date()) {
+      return res.status(400).json({ error: "Token expired" });
+    }
 
-    const hashed = await bcrypt.hash(password, 10);
+    const userId = t.user_id;
+
+    // Guest accounts:
+    //  - token_type = guest_access   (sent from Stripe guest flow)
+    //  or
+    //  - no email_verified_at and password_hash starts with "guest_"
+    const isGuestToken = t.token_type === "guest_access";
+    const looksLikeGhostPassword =
+      typeof t.password_hash === "string" &&
+      t.password_hash.startsWith("guest_");
+    const wasGuestBeforeReset =
+      isGuestToken || (!t.email_verified_at && looksLikeGhostPassword);
+
+    const hashed = await bcrypt.hash(String(password), 10);
 
     await db.query("BEGIN");
-    await db.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [hashed, t.user_id]);
-    await db.query(`UPDATE user_tokens SET consumed_at=NOW() WHERE token=$1`, [token]);
+
+    // 1) Update password
+    await db.query(
+      `UPDATE users
+          SET password_hash = $1,
+              updated_at    = NOW()
+        WHERE id = $2`,
+      [hashed, userId]
+    );
+
+    // 2) Consume token
+    await db.query(
+      `UPDATE user_tokens
+          SET consumed_at = NOW()
+        WHERE token = $1`,
+      [token]
+    );
+
+    // 3) If this was a guest account, auto verify the email
+    if (wasGuestBeforeReset) {
+      const sets = ["email_verified_at = COALESCE(email_verified_at, NOW())", "updated_at = NOW()"];
+
+      // Keep boolean email_verified in sync if it exists
+      if (await hasColumn("users", "email_verified")) {
+        sets.push("email_verified = TRUE");
+      }
+
+      await db.query(
+        `UPDATE users
+            SET ${sets.join(", ")}
+          WHERE id = $1`,
+        [userId]
+      );
+    }
+
     await db.query("COMMIT");
 
-    return res.json({ success: true, message: "Password updated" });
+    // 4) Branch behavior based on guest vs normal reset
+
+    if (wasGuestBeforeReset) {
+      // Guest buyer: auto login and send them home
+
+      const { rows: uRows } = await db.query(
+        `SELECT id, email, username, role, email_verified_at, created_at
+           FROM users
+          WHERE id = $1
+          LIMIT 1`,
+        [userId]
+      );
+
+      const user = uRows[0];
+      if (!user) {
+        return res.status(500).json({ error: "User not found after reset" });
+      }
+
+      const jwtToken = issueJwt(user);
+
+      try {
+        res.cookie("token", jwtToken, {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: process.env.NODE_ENV !== "development",
+          path: "/",
+          maxAge: 1 * 24 * 60 * 60 * 1000, // 1 day
+        });
+      } catch (e) {
+        console.warn("Failed to set auth cookie on guest reset:", e?.message || e);
+      }
+
+      return res.json({
+        ok: true,
+        success: true,
+        message: "Password updated",
+        reset_kind: "guest",
+        auto_login: true,
+        redirect: "/", // frontend can use this to push("/")
+        token: jwtToken,
+        user: toSafeUser(user),
+      });
+    }
+
+    // Normal forgot-password user: do NOT auto login
+    return res.json({
+      ok: true,
+      success: true,
+      message: "Password updated",
+      reset_kind: "forgot",
+      auto_login: false,
+      // frontend can read this and redirect to your sign up / login page
+      // for example: router.push("/auth/login") or "/auth/signup"
+    });
   } catch (e) {
-    try { await db.query("ROLLBACK"); } catch {}
-    // eslint-disable-next-line no-console
+    try {
+      await db.query("ROLLBACK");
+    } catch {}
+
     console.error("reset error:", e);
     return res.status(500).json({ error: "Failed to reset password" });
   }

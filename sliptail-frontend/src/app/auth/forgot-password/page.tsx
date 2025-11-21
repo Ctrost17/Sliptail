@@ -23,7 +23,7 @@ function ForgotPasswordClient() {
     setLoading(true);
     try {
       // Adjust the endpoint to match your backend.
-      const res = await fetch("/api/auth/password/reset/start", {
+      const res = await fetch("/api/auth/forgot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
