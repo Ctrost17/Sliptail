@@ -546,7 +546,8 @@ router.get("/finalize", requireAuth, async (req, res) => {
               (buyer_id, product_id, amount_cents, stripe_payment_intent_id, status, created_at, stripe_checkout_session_id)
             VALUES ($1,$2,$3,$4,'paid',NOW(),$5)
             ON CONFLICT (stripe_checkout_session_id) DO UPDATE
-              SET amount_cents = EXCLUDED.amount_cents,
+              SET buyer_id = COALESCE(public.orders.buyer_id, EXCLUDED.buyer_id),
+                  amount_cents = EXCLUDED.amount_cents,
                   stripe_payment_intent_id = COALESCE(EXCLUDED.stripe_payment_intent_id, public.orders.stripe_payment_intent_id),
                   status = 'paid'
             RETURNING id
