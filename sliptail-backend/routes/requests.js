@@ -158,25 +158,20 @@ async function alreadyNotified(userId, type, requestId) {
   }
 }
 
-// Helper: find connected Stripe account id for a given creator user_id
 async function getStripeAccountIdForUser(userId) {
   const uid = String(userId);
 
   try {
     const { rows } = await db.query(
-      `
-      SELECT stripe_account_id
-        FROM users
-       WHERE id::text = $1
-       LIMIT 1
-      `,
+      `SELECT account_id FROM stripe_connect WHERE user_id = $1 LIMIT 1`,
       [uid]
     );
-    if (rows.length && rows[0].stripe_account_id) {
-      return rows[0].stripe_account_id;
+
+    if (rows.length && rows[0].account_id) {
+      return rows[0].account_id;   // <-- Correct column that exists in your DB
     }
   } catch (e) {
-    console.warn("getStripeAccountIdForUser failed:", e?.message || e);
+    console.error("Stripe account lookup failed:", e?.message || e);
   }
 
   return null;
