@@ -158,6 +158,49 @@ async function alreadyNotified(userId, type, requestId) {
   }
 }
 
+// Helper: find connected Stripe account id for a given creator user_id
+async function getStripeAccountIdForUser(userId) {
+  const uid = String(userId);
+
+  // 1) Try stripe_connect table (supports either stripe_account_id or account_id)
+  try {
+    const { rows } = await db.query(
+      `
+      SELECT stripe_account_id, account_id
+        FROM stripe_connect
+       WHERE user_id::text = $1
+       LIMIT 1
+      `,
+      [uid]
+    );
+    if (rows.length) {
+      return rows[0].stripe_account_id || rows[0].account_id || null;
+    }
+  } catch (e) {
+    console.warn("getStripeAccountIdForUser: stripe_connect lookup failed:", e?.message || e);
+  }
+
+  // 2) Fallback: users.stripe_account_id if you have that column
+  try {
+    const { rows } = await db.query(
+      `
+      SELECT stripe_account_id
+        FROM users
+       WHERE id::text = $1
+       LIMIT 1
+      `,
+      [uid]
+    );
+    if (rows.length) {
+      return rows[0].stripe_account_id || null;
+    }
+  } catch (e) {
+    console.warn("getStripeAccountIdForUser: users lookup failed:", e?.message || e);
+  }
+
+  return null;
+}
+
 /* -------------------------------- Routes -------------------------------- */
 
 /**
@@ -471,8 +514,9 @@ router.get("/mine", requireAuth, async (req, res) => {
  * Body: { action: "accept" | "decline" }
  *
  * If declined:
- *  - Refunds the buyer for (amount_cents - Stripe fee) in production
- *  - Keeps the Stripe processing fee on your side so you are not losing money
+ *  - Refunds the buyer for (amount_cents - Stripe processing fee) in production
+ *  - Also reverses the 4% application fee
+ *  - Does NOT refund the Stripe merchant processing fee
  */
 router.patch(
   "/:id/decision",
@@ -492,7 +536,7 @@ router.patch(
     try {
       await db.query("BEGIN");
 
-      // 1) Lock ONLY the custom_requests row
+      // 1) Lock ONLY the custom_requests row (no joins here)
       const { rows: crRows } = await db.query(
         `
         SELECT id, status, order_id
@@ -520,7 +564,7 @@ router.patch(
           .json({ error: "Request is not pending and cannot be changed" });
       }
 
-      // 2) Load order row separately
+      // 2) Load order row separately (no FOR UPDATE, no join)
       let order = null;
       if (cr.order_id) {
         const { rows: orderRows } = await db.query(
@@ -555,10 +599,20 @@ router.patch(
           try {
             const stripe = getStripe();
 
-            // Fetch the PaymentIntent and expand the balance transaction to get fees
+            // Look up creator connected account
+            const stripeAccountId = await getStripeAccountIdForUser(creatorId);
+            if (!stripeAccountId) {
+              throw new Error(
+                `No connected Stripe account found for creator ${creatorId}`
+              );
+            }
+
+            const stripeOpts = { stripeAccount: stripeAccountId };
+
+            // Fetch the PaymentIntent on the connected account and expand balance transaction
             const pi = await stripe.paymentIntents.retrieve(
               order.stripe_payment_intent_id,
-              { expand: ["charges.data.balance_transaction"] }
+              { expand: ["charges.data.balance_transaction"], ...stripeOpts }
             );
 
             const charge =
@@ -577,19 +631,22 @@ router.patch(
                   : order.amount_cents;
               const alreadyRefunded = charge.amount_refunded || 0;
 
-              // Try to read Stripe fee from the balance transaction
+              // Read Stripe fees from the balance transaction
               let feeCents = 0;
-              const bt = charge.balance_transaction;
+              let bt = charge.balance_transaction;
 
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
-                const fullBt = await stripe.balanceTransactions.retrieve(bt);
+                const fullBt = await stripe.balanceTransactions.retrieve(
+                  bt,
+                  stripeOpts
+                );
                 feeCents = fullBt.fee || 0;
               }
 
-              // For now we refund the buyer everything except the Stripe processing fee.
-              // If you later compute "creator payout plus 4 percent" explicitly, plug that in here.
+              // desiredRefund = amount that went to creator + app fee
+              // Stripe keeps its own processing fee
               let desiredRefund = totalAmount - feeCents;
               if (desiredRefund < 0) desiredRefund = 0;
 
@@ -602,10 +659,15 @@ router.patch(
 
             // Only call refund if there is something to refund
             if (refundAmountCents > 0) {
-              await stripe.refunds.create({
-                payment_intent: order.stripe_payment_intent_id,
-                amount: refundAmountCents,
-              });
+              await stripe.refunds.create(
+                {
+                  payment_intent: order.stripe_payment_intent_id,
+                  amount: refundAmountCents,
+                  // Also reverse the 4 percent application fee on this charge
+                  refund_application_fee: true,
+                },
+                stripeOpts
+              );
               didRefund = true;
             }
 
@@ -619,12 +681,22 @@ router.patch(
           } catch (e) {
             console.error("Failed to process partial refund for request:", e);
 
-            // Safety net: full refund if partial logic fails
+            // Safety net: full refund on the connected account if partial logic fails
             try {
               const stripe = getStripe();
-              await stripe.refunds.create({
-                payment_intent: order.stripe_payment_intent_id,
-              });
+              const stripeAccountId = await getStripeAccountIdForUser(
+                creatorId
+              );
+              if (!stripeAccountId) throw e;
+              const stripeOpts = { stripeAccount: stripeAccountId };
+
+              await stripe.refunds.create(
+                {
+                  payment_intent: order.stripe_payment_intent_id,
+                  refund_application_fee: true,
+                },
+                stripeOpts
+              );
               await db.query(
                 `UPDATE orders SET status = 'refunded' WHERE id = $1`,
                 [cr.order_id]
@@ -707,12 +779,13 @@ router.patch(
       console.error("request decision error:", err);
       try {
         await db.query("ROLLBACK");
-      } catch (_) {}
+      } catch (_) {
+        // ignore rollback failure
+      }
       return res.status(500).json({ error: "Failed to update request" });
     }
   }
 );
-
 
 
 /**
