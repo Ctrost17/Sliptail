@@ -1344,71 +1344,82 @@ export default function PurchasesPage() {
           const k = num((r as any).order_id);
           if (k !== null) byOrder[k] = r;
         }
-        const mappedOrders: Order[] = (legacy?.orders || []).map((o: any) => {
-          const orderId = Number(o.id);
-          const r = byOrder[orderId];
+const mappedOrders: Order[] = (legacy?.orders || [])
+  .map((o: any): Order | null => {
+    const orderId = Number(o.id);
+    const r = byOrder[orderId];
 
-          // Normalize product type:
-          // - Prefer nested product.product_type
-          // - Fall back to o.product_type if the API exposes it there
-          // - Default to "purchase" for any non-request product (since memberships come from /api/memberships/mine)
-          const rawType =
-            (o.product?.product_type ??
-              o.product_type ??
-              "").toString().toLowerCase();
+    // Normalize product type:
+    // - Prefer nested product.product_type
+    // - Fall back to o.product_type if the API exposes it there
+    // - Default to "purchase" for any non-request product (since memberships come from /api/memberships/mine)
+    const rawType =
+      (o.product?.product_type ??
+        o.product_type ??
+        "").toString().toLowerCase();
 
-          let productType: string;
-          if (rawType === "request") {
-            productType = "request";
-          } else if (rawType === "membership") {
-            productType = "membership";
-          } else if (rawType === "download" || rawType === "purchase" || !rawType) {
-            productType = "purchase";
-          } else {
-            productType = rawType;
+    let productType: string;
+    if (rawType === "request") {
+      productType = "request";
+    } else if (rawType === "membership") {
+      productType = "membership";
+    } else if (rawType === "download" || rawType === "purchase" || !rawType) {
+      productType = "purchase";
+    } else {
+      productType = rawType;
+    }
+
+    // - Hide declined or refunded requests on the My Purchases page
+    //   Using the status coming from /api/requests/mine
+    if (productType === "request") {
+      const st = (r?.status || "").toLowerCase();
+      if (["declined", "refunded", "rejected", "cancelled"].includes(st)) {
+        return null; // skip this order completely
+      }
+    }
+
+    return {
+      id: orderId,
+      product_id: o.product_id ?? (o.product?.id ?? null),
+      amount_cents:
+        typeof o.amount_cents === "number"
+          ? o.amount_cents
+          : typeof o.amount === "number"
+          ? Math.round(o.amount * 100)
+          : 0,
+      status: String(o.status ?? "unknown"),
+      created_at: String(o.created_at ?? new Date().toISOString()),
+      creator_profile: o.creator_profile
+        ? {
+            user_id: num(o.creator_profile.user_id),
+            display_name: String(o.creator_profile.display_name ?? ""),
+            bio: o.creator_profile.bio ?? null,
+            profile_image: o.creator_profile.profile_image ?? null,
           }
+        : null,
+      product: {
+        description: o.product?.description ?? null,
+        view_url: o.product?.view_url ?? null,
+        download_url: o.product?.download_url ?? null,
+        product_type: productType,
+        title: String(o.product?.title ?? ""),
+        filename: String(o.product?.filename ?? ""),
+      },
 
-          return {
-            id: orderId,
-            product_id: o.product_id ?? (o.product?.id ?? null),
-            amount_cents:
-              typeof o.amount_cents === "number"
-                ? o.amount_cents
-                : typeof o.amount === "number"
-                ? Math.round(o.amount * 100)
-                : 0,
-            status: String(o.status ?? "unknown"),
-            created_at: String(o.created_at ?? new Date().toISOString()),
-            creator_profile: o.creator_profile
-              ? {
-                  user_id: num(o.creator_profile.user_id),
-                  display_name: String(o.creator_profile.display_name ?? ""),
-                  bio: o.creator_profile.bio ?? null,
-                  profile_image: o.creator_profile.profile_image ?? null,
-                }
-              : null,
-            product: {
-              description: o.product?.description ?? null,
-              view_url: o.product?.view_url ?? null,
-              download_url: o.product?.download_url ?? null,
-              product_type: productType,
-              title: String(o.product?.title ?? ""),
-              filename: String(o.product?.filename ?? ""),
-            },
+      user_has_review: Boolean(o.user_has_review ?? byOrder[orderId]?.user_has_review),
 
-            user_has_review: Boolean(o.user_has_review ?? byOrder[orderId]?.user_has_review),
+      request_response: firstText(o.request_response, r?.creator) ?? null,
+      request_media_url:
+        resolveImageUrl(firstText(o.request_media_url, r?.creator_attachment_path), apiBase) ?? null,
 
-            request_response: firstText(o.request_response, r?.creator) ?? null,
-            request_media_url:
-              resolveImageUrl(firstText(o.request_media_url, r?.creator_attachment_path), apiBase) ?? null,
-
-            request_id: num(r?.id),
-            request_status: r?.status ?? null,
-            request_user_message: firstText(r?.user),
-            request_user_attachment_url:
-              resolveImageUrl(firstText(r?.attachment_path), apiBase) ?? null,
-          };
-        });
+      request_id: num(r?.id),
+      request_status: r?.status ?? null,
+      request_user_message: firstText(r?.user),
+      request_user_attachment_url:
+        resolveImageUrl(firstText(r?.attachment_path), apiBase) ?? null,
+    };
+  })
+  .filter((o): o is Order => o !== null);
         // Normalize memberships into Order-like (+ include cancel-at-period-end info)
         const membershipOrders: Order[] = (memberships?.memberships || []).map((m: any) => {
           const price =

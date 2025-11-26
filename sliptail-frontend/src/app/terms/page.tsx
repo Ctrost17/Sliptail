@@ -15,7 +15,7 @@ export default function TermsPage() {
           <header className="mb-8">
             <h1 className="text-3xl font-bold text-black md:text-4xl">Terms of Use</h1>
             <p className="mt-2 text-sm text-neutral-600">
-              Last updated: October 12, 2025
+              Last updated: November 26, 2025
             </p>
             <div className="mt-4">
               <Link
@@ -129,16 +129,40 @@ export default function TermsPage() {
                 Creator Content without the Creator’s prior written permission.
               </li>
             </ul>
+        <h2>5) Refunds & Support</h2>
+        <p>
+          Support is available at <a href="mailto:info@sliptail.com">info@sliptail.com</a>.
+          Sliptail uses an item-type based refund policy:
+        </p>
 
-            <h2>5) Refunds & support</h2>
-            <p>
-              Support is available via <a href="mailto:info@sliptail.com">info@sliptail.com</a>.
-              Refunds are reviewed case-by-case and are not guaranteed. We typically
-              do not refund after digital access or downloads have been delivered,
-              except where required by law. In the event of a dispute, chargeback,
-              or suspected fraud, we may suspend access, delay payouts, or take other
-              appropriate actions.
-            </p>
+        <ul>
+          <li>
+            <strong>Custom Requests:</strong>  
+            Refunds are automatically issued only if the Creator declines the request.  
+            If declined, the User receives a refund for the request amount (minus non-refundable Stripe
+            processing fees) back to the original payment method. Refund completion times vary by bank
+            and typically arrive in <strong>3–10 business days</strong> (up to 14 days internationally).
+            If a request is accepted or completed by the Creator, the sale is final.
+          </li>
+
+          <li>
+            <strong>Digital Downloads:</strong>  
+            Due to instant access and the irreversible nature of digital goods, download purchases
+            are <strong>non-refundable</strong> once delivered, except where required by law.
+          </li>
+
+          <li>
+            <strong>Memberships:</strong>  
+            Membership charges are <strong>non-refundable</strong> once billing occurs.  
+            Users may cancel at any time, and access continues through the remainder of the paid period.
+          </li>
+        </ul>
+
+        <p>
+          Sliptail may intervene or issue refunds only when legally required or in cases of 
+          fraud or platform misuse. Chargebacks, disputes, and fraudulent activity may result
+          in account suspension or withheld payouts.
+        </p>
 
             <h2>6) Intellectual property; anti-leak & enforcement</h2>
             <ul>

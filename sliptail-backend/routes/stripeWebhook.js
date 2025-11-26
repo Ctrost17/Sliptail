@@ -684,6 +684,29 @@ module.exports = async function stripeWebhook(req, res) {
         break;
       }
 
+            case "charge.refunded": {
+        const charge = event.data.object;
+
+        // If there is no payment_intent, nothing to link in our DB
+        if (!charge.payment_intent) break;
+
+        try {
+          await db.query(
+            `UPDATE orders
+                SET status = 'refunded'
+              WHERE stripe_payment_intent_id = $1
+                AND status <> 'refunded'`,
+            [charge.payment_intent]
+          );
+        } catch (e) {
+          console.error("charge.refunded handler error:", e);
+          // Let Stripe retry if DB update fails
+          return res.status(500).send("webhook handler error");
+        }
+
+        break;
+      }
+
       /* ----------------- Subscription lifecycle → memberships ----------------- */
       case "customer.subscription.created":
       case "customer.subscription.updated":

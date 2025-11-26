@@ -16,6 +16,20 @@ const { makeAndStorePoster } = require("../utils/videoPoster");
 const os = require("os");
 const mime = require("mime-types");
 
+const Stripe = require("stripe");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+
+const { sendEmail } = require("../emails/mailer");
+const T = require("../emails/templates");
+
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) {
+    throw new Error("Stripe not configured: missing STRIPE_SECRET_KEY");
+  }
+  return Stripe(key);
+}
+
 // NEW: in-app notifications service (writes to notifications.metadata)
 const { notify } = require("../services/notifications");
 
@@ -455,6 +469,10 @@ router.get("/mine", requireAuth, async (req, res) => {
 /**
  * CREATOR accepts or declines a request
  * Body: { action: "accept" | "decline" }
+ *
+ * If declined:
+ *  - Refunds the buyer for (amount_cents - Stripe fee) in production
+ *  - Keeps the Stripe processing fee on your side so you are not losing money
  */
 router.patch(
   "/:id/decision",
@@ -465,33 +483,237 @@ router.patch(
   async (req, res) => {
     const creatorId = req.user.id;
     const requestId = parseInt(req.params.id, 10);
-    const { action } = req.body;
+    const { action } = req.body; // "accept" or "decline"
+
+    if (action !== "accept" && action !== "decline") {
+      return res.status(400).json({ error: "Invalid action" });
+    }
 
     try {
-      // must be this creator's request
-      const { rows } = await db.query(
-        `SELECT id, status FROM custom_requests WHERE id=$1 AND creator_id=$2`,
+      await db.query("BEGIN");
+
+      // 1) Lock ONLY the custom_requests row
+      const { rows: crRows } = await db.query(
+        `
+        SELECT id, status, order_id
+        FROM custom_requests
+        WHERE id = $1
+          AND creator_id = $2
+        FOR UPDATE
+        `,
         [requestId, creatorId]
       );
-      const r = rows[0];
-      if (!r) return res.status(404).json({ error: "Request not found" });
-      // allow legacy 'open' to be treated as pending
-      if (!(r.status === "pending" || r.status === "open"))
-        return res.status(400).json({ error: "Request is not pending" });
+
+      const cr = crRows[0];
+      if (!cr) {
+        await db.query("ROLLBACK");
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      // Treat legacy "open" as "pending"
+      const currentStatus = cr.status === "open" ? "pending" : cr.status;
+
+      if (currentStatus !== "pending") {
+        await db.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "Request is not pending and cannot be changed" });
+      }
+
+      // 2) Load order row separately
+      let order = null;
+      if (cr.order_id) {
+        const { rows: orderRows } = await db.query(
+          `
+          SELECT
+            status AS order_status,
+            stripe_payment_intent_id,
+            amount_cents
+          FROM orders
+          WHERE id = $1
+          `,
+          [cr.order_id]
+        );
+        order = orderRows[0] || null;
+      }
 
       const newStatus = action === "accept" ? "accepted" : "declined";
+
+      // Track whether we actually processed a refund
+      let didRefund = false;
+
+      // If creator is declining, try to refund the order if it was paid and nonzero
+      if (
+        action === "decline" &&
+        order &&
+        cr.order_id &&
+        order.order_status === "paid" &&
+        order.stripe_payment_intent_id &&
+        order.amount_cents > 0
+      ) {
+        if (process.env.NODE_ENV === "production") {
+          try {
+            const stripe = getStripe();
+
+            // Fetch the PaymentIntent and expand the balance transaction to get fees
+            const pi = await stripe.paymentIntents.retrieve(
+              order.stripe_payment_intent_id,
+              { expand: ["charges.data.balance_transaction"] }
+            );
+
+            const charge =
+              pi.charges &&
+              Array.isArray(pi.charges.data) &&
+              pi.charges.data.length > 0
+                ? pi.charges.data[0]
+                : null;
+
+            let refundAmountCents = 0;
+
+            if (charge) {
+              const totalAmount =
+                typeof charge.amount === "number"
+                  ? charge.amount
+                  : order.amount_cents;
+              const alreadyRefunded = charge.amount_refunded || 0;
+
+              // Try to read Stripe fee from the balance transaction
+              let feeCents = 0;
+              const bt = charge.balance_transaction;
+
+              if (bt && typeof bt === "object" && bt.fee != null) {
+                feeCents = bt.fee;
+              } else if (bt && typeof bt === "string") {
+                const fullBt = await stripe.balanceTransactions.retrieve(bt);
+                feeCents = fullBt.fee || 0;
+              }
+
+              // For now we refund the buyer everything except the Stripe processing fee.
+              // If you later compute "creator payout plus 4 percent" explicitly, plug that in here.
+              let desiredRefund = totalAmount - feeCents;
+              if (desiredRefund < 0) desiredRefund = 0;
+
+              const maxRefundable = totalAmount - alreadyRefunded;
+              refundAmountCents = Math.max(
+                Math.min(desiredRefund, maxRefundable),
+                0
+              );
+            }
+
+            // Only call refund if there is something to refund
+            if (refundAmountCents > 0) {
+              await stripe.refunds.create({
+                payment_intent: order.stripe_payment_intent_id,
+                amount: refundAmountCents,
+              });
+              didRefund = true;
+            }
+
+            // Mark order as refunded in our DB if we refunded anything
+            if (didRefund) {
+              await db.query(
+                `UPDATE orders SET status = 'refunded' WHERE id = $1`,
+                [cr.order_id]
+              );
+            }
+          } catch (e) {
+            console.error("Failed to process partial refund for request:", e);
+
+            // Safety net: full refund if partial logic fails
+            try {
+              const stripe = getStripe();
+              await stripe.refunds.create({
+                payment_intent: order.stripe_payment_intent_id,
+              });
+              await db.query(
+                `UPDATE orders SET status = 'refunded' WHERE id = $1`,
+                [cr.order_id]
+              );
+              didRefund = true;
+            } catch (fallbackErr) {
+              console.error(
+                "Failed to process fallback full refund for request:",
+                fallbackErr
+              );
+              await db.query("ROLLBACK");
+              return res.status(500).json({
+                error: "Failed to process refund, please try again.",
+              });
+            }
+          }
+        } else {
+          // Local or staging: simulate refund without hitting Stripe
+          console.log(
+            "[DEV] Skipping real Stripe refund for request decline; marking order as refunded in DB only."
+          );
+          await db.query(
+            `UPDATE orders SET status = 'refunded' WHERE id = $1`,
+            [cr.order_id]
+          );
+          didRefund = true;
+        }
+      }
+
+      // 3) Update the request status
       const { rows: upd } = await db.query(
-        `UPDATE custom_requests SET status=$1 WHERE id=$2 RETURNING *`,
+        `UPDATE custom_requests SET status = $1 WHERE id = $2 RETURNING *`,
         [newStatus, requestId]
       );
 
-      res.json({ success: true, request: normalizeStatus(upd[0]) });
+      await db.query("COMMIT");
+
+      // 4) If we actually refunded, send refund email to the buyer
+      if (action === "decline" && didRefund) {
+        (async () => {
+          try {
+            const { rows: emailRows } = await db.query(
+              `SELECT u.email AS buyer_email,
+                      p.title AS product_title
+                 FROM custom_requests cr
+                 JOIN orders   o ON o.id = cr.order_id
+                 JOIN products p ON p.id = o.product_id
+                 JOIN users    u ON u.id = cr.buyer_id
+                WHERE cr.id = $1
+                LIMIT 1`,
+              [requestId]
+            );
+
+            if (!emailRows.length) return;
+            const { buyer_email, product_title } = emailRows[0];
+            if (!buyer_email) return;
+
+            const msg = T.userRequestRefunded({ productTitle: product_title });
+
+            await sendEmail({
+              to: buyer_email,
+              subject: msg.subject,
+              text: msg.text,
+              html: msg.html,
+            });
+          } catch (e) {
+            console.warn(
+              "Failed to send refund email for declined request:",
+              e?.message || e
+            );
+          }
+        })();
+      }
+
+      return res.json({
+        success: true,
+        request: normalizeStatus(upd[0]),
+      });
     } catch (err) {
-      console.error("Decision error:", err);
-      res.status(500).json({ error: "Failed to update request" });
+      console.error("request decision error:", err);
+      try {
+        await db.query("ROLLBACK");
+      } catch (_) {}
+      return res.status(500).json({ error: "Failed to update request" });
     }
   }
 );
+
+
 
 /**
  * CREATOR delivers a file (only after payment)

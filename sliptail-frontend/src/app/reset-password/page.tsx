@@ -117,7 +117,9 @@ export default function ResetPasswordPage() {
           <button
             type="submit"
             disabled={submitting}
-            className="border rounded px-4 py-2"
+             className={`border rounded px-4 py-2 ${
+                submitting ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              }`}
           >
             {submitting ? "Saving…" : "Set new password"}
           </button>

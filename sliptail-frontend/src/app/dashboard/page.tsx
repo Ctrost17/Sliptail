@@ -8,6 +8,9 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { loadAuth } from "@/lib/auth";
 import React from "react";
 
+import { API_BASE } from "@/lib/api";
+import { setFlash } from "@/lib/flash";
+
 /* ----------------------------- Types ----------------------------- */
 type Product = {
   id: string;
@@ -1778,6 +1781,16 @@ export default function DashboardPage() {
 
   const token = loadAuth()?.token ?? null;
 
+  const [decisionDialog, setDecisionDialog] = useState<{
+  open: boolean;
+  requestId: number | null;
+  action: "accept" | "decline" | null;
+}>({
+  open: false,
+  requestId: null,
+  action: null,
+});
+
   useEffect(() => {
     (async () => {
       try {
@@ -1882,6 +1895,9 @@ export default function DashboardPage() {
   const [toastText, setToastText] = useState<string>("");
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Track which request is being accepted or declined
+  const [decidingRequestId, setDecidingRequestId] = useState<number | null>(null);
+
   // Average rating (force fresh)
   const [averageRating, setAverageRating] = useState<number | null>(null);
 
@@ -1889,6 +1905,58 @@ export default function DashboardPage() {
   const [activeRequest, setActiveRequest] = useState<any | null>(null);
   function openRequest(req: any) { setActiveRequest(req); }
   function closeRequest() { setActiveRequest(null); }
+
+async function handleRequestDecision(
+  requestId: number,
+  action: "accept" | "decline"
+) {
+  if (!requestId || !action) return;
+
+  // We already showed the nice dialog, so no window.confirm here
+  setDecidingRequestId(requestId);
+
+  try {
+    const res = await fetch(
+      `${apiBase}/api/requests/${encodeURIComponent(String(requestId))}/decision`,
+      {
+        method: "PATCH",
+        credentials: "include",
+        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ action }),
+      }
+    );
+
+    const payload: any = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      const msg =
+        (payload && (payload.error || payload.message)) ||
+        "Failed to update request";
+      throw new Error(msg);
+    }
+
+    // Remove the request from the pending list after success
+    setPendingRequests((prev) =>
+      prev.filter((req) => Number(req.id) !== Number(requestId))
+    );
+
+    showToast(
+      action === "decline"
+        ? "Request rejected and the buyer has been refunded (minus Stripe fees)."
+        : "Request updated."
+    );
+  } catch (err) {
+    console.error("handleRequestDecision error:", err);
+    showToast(
+      err instanceof Error
+        ? err.message
+        : "Something went wrong while updating the request."
+    );
+  } finally {
+    setDecidingRequestId(null);
+    setDecisionDialog({ open: false, requestId: null, action: null });
+  }
+}
 
   // Complete modal
   const [activeCompleteRequest, setActiveCompleteRequest] = useState<any | null>(null);
@@ -2933,20 +3001,33 @@ function guessTypeFromKey(k: string) {
                           {new Date(req.created_at).toLocaleDateString()} · {new Date(req.created_at).toLocaleTimeString()}
                         </div>
                       </div>
-                      <div className="ml-2 shrink-0 flex gap-2">
-                        <button
-                          onClick={() => openRequest(req)}
-                          className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
-                        >
-                          View
-                        </button>
-                        <button
-                          onClick={() => openComplete(req)}
-                          className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
-                        >
-                          Complete
-                        </button>
-                      </div>
+                    <div className="ml-2 shrink-0 flex flex-col gap-2 items-stretch">
+                      <button
+                        onClick={() => openRequest(req)}
+                        className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                      >
+                        View
+                      </button>
+                      <button
+                        onClick={() => openComplete(req)}
+                        className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 hover:brightness-95"
+                      >
+                        Complete
+                      </button>
+                      <button
+                        onClick={() =>
+                          setDecisionDialog({
+                            open: true,
+                            requestId: req.id,
+                            action: "decline",
+                          })
+                        }
+                        disabled={decidingRequestId === req.id}
+                        className="cursor-pointer text-xs px-3 py-1 rounded-md font-medium border border-red-500 text-red-600 hover:bg-red-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Reject
+                      </button>
+                    </div>
                     </div>
                   </div>
                 ))}
@@ -3075,7 +3156,46 @@ function guessTypeFromKey(k: string) {
             <div className="text-sm text-neutral-300">No products yet.</div>
           )}
         </section>
+              {decisionDialog.open && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+                  <div className="w-full max-w-md space-y-4 rounded-xl bg-white p-6">
+                    <h3 className="text-lg font-semibold">Reject this request?</h3>
+                    <p className="text-sm text-neutral-700">
+                      The buyer will be refunded (minus Stripe processing fees) and you will
+                      not be paid for this request.
+                    </p>
 
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() =>
+                          setDecisionDialog({ open: false, requestId: null, action: null })
+                        }
+                        className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium bg-neutral-200 hover:bg-neutral-300"
+                        disabled={decidingRequestId !== null}
+                      >
+                        Cancel
+                      </button>
+
+                      <button
+                        onClick={async () => {
+                          if (!decisionDialog.requestId || !decisionDialog.action) return;
+                          await handleRequestDecision(
+                            decisionDialog.requestId,
+                            decisionDialog.action
+                          );
+                          setDecisionDialog({ open: false, requestId: null, action: null });
+                        }}
+                        className="cursor-pointer rounded-lg px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-60"
+                        disabled={decidingRequestId !== null}
+                      >
+                        {decidingRequestId === decisionDialog.requestId
+                          ? "Rejecting..."
+                          : "Yes, reject"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
         {/* Delete confirm modal */}
         {confirmDeleteId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

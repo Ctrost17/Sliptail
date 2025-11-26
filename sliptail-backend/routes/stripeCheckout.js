@@ -277,7 +277,7 @@ router.post(
 
     // Message that appears on Stripe Checkout
     const EMAIL_HINT =
-      "Please double check your email. This is where your Sliptail access will be sent.";
+      "Please double check your email. This is where your access will be sent.";
 
     // Only show warning description if guest + one time purchase/request + paid product
     const shouldShowEmailWarning =

@@ -112,6 +112,26 @@ exports.userRequestCompleted = ({ productTitle, purchasesUrl }) => ({
   text: `Your request is complete\n\nYour creator has completed your request: ${productTitle}.\nView request: ${purchasesUrl}\n`,
 });
 
+exports.userRequestRefunded = ({ productTitle }) => {
+  const safeTitle = productTitle || "your custom request";
+
+  return {
+    subject: "Your custom request has been refunded",
+    html: wrap("Your custom request has been refunded", `
+      <h1>Your request has been refunded</h1>
+      <p>Hello,</p>
+      <p>Your custom request for <strong>${safeTitle}</strong> has been refunded. The payment has been returned to your original payment method and refunds typically appear back on your account in 3 to 10 business days depending on your bank (14 days outside US).</p>
+      <p>If you have any questions please reach out to support at <a href="mailto:info@sliptail.com">info@sliptail.com</a>!</p>
+    `),
+    text: `Hello,
+
+Your custom request for ${safeTitle} has been refunded. The payment has been returned to your original payment method and refunds typically appear back on your account in 3 to 10 business days depending on your bank (14 days outside US).
+
+If you have any questions please reach out to support at info@sliptail.com!
+`,
+  };
+};
+
 exports.userPurchaseDownloadReady = ({ purchasesUrl }) => ({
   subject: "Your download is ready!",
   html: wrap("Your download is ready!", `

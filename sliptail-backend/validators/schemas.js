@@ -92,8 +92,15 @@ const requestCreate = z.object({
 });
 
 const requestDecision = z.object({
-  params: z.object({ id }),
-  body: z.object({ action: z.enum(["accept","decline"]) }),
+  params: z.object({
+    id: z
+      .string()
+      .regex(/^\d+$/)
+      .transform((val) => parseInt(val, 10)),
+  }),
+  body: z.object({
+    action: z.enum(["accept", "decline"]),
+  }),
 });
 
 const requestDeliver = z.object({
