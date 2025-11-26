@@ -586,14 +586,13 @@ router.patch(
       // Track whether we actually processed a refund
       let didRefund = false;
 
-      // If creator is declining, try to refund the order if it was paid and nonzero
+      // If creator is declining, try to refund the order if it was paid
       if (
         action === "decline" &&
         order &&
         cr.order_id &&
         order.order_status === "paid" &&
-        order.stripe_payment_intent_id &&
-        order.amount_cents > 0
+        order.stripe_payment_intent_id
       ) {
         if (process.env.NODE_ENV === "production") {
           try {
@@ -609,10 +608,12 @@ router.patch(
 
             const stripeOpts = { stripeAccount: stripeAccountId };
 
-            // Fetch the PaymentIntent on the connected account and expand balance transaction
+            // ✅ Correct Stripe signature:
+            // retrieve(id, params, options)
             const pi = await stripe.paymentIntents.retrieve(
               order.stripe_payment_intent_id,
-              { expand: ["charges.data.balance_transaction"], ...stripeOpts }
+              { expand: ["charges.data.balance_transaction"] },
+              stripeOpts
             );
 
             const charge =
@@ -629,6 +630,7 @@ router.patch(
                 typeof charge.amount === "number"
                   ? charge.amount
                   : order.amount_cents;
+
               const alreadyRefunded = charge.amount_refunded || 0;
 
               // Read Stripe fees from the balance transaction
@@ -638,8 +640,10 @@ router.patch(
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
+                // For this call, second arg is params, third is options
                 const fullBt = await stripe.balanceTransactions.retrieve(
                   bt,
+                  {},
                   stripeOpts
                 );
                 feeCents = fullBt.fee || 0;
@@ -786,7 +790,6 @@ router.patch(
     }
   }
 );
-
 
 /**
  * CREATOR delivers a file (only after payment)
