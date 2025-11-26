@@ -162,25 +162,6 @@ async function alreadyNotified(userId, type, requestId) {
 async function getStripeAccountIdForUser(userId) {
   const uid = String(userId);
 
-  // 1) Try stripe_connect table (supports either stripe_account_id or account_id)
-  try {
-    const { rows } = await db.query(
-      `
-      SELECT stripe_account_id, account_id
-        FROM stripe_connect
-       WHERE user_id::text = $1
-       LIMIT 1
-      `,
-      [uid]
-    );
-    if (rows.length) {
-      return rows[0].stripe_account_id || rows[0].account_id || null;
-    }
-  } catch (e) {
-    console.warn("getStripeAccountIdForUser: stripe_connect lookup failed:", e?.message || e);
-  }
-
-  // 2) Fallback: users.stripe_account_id if you have that column
   try {
     const { rows } = await db.query(
       `
@@ -191,16 +172,15 @@ async function getStripeAccountIdForUser(userId) {
       `,
       [uid]
     );
-    if (rows.length) {
-      return rows[0].stripe_account_id || null;
+    if (rows.length && rows[0].stripe_account_id) {
+      return rows[0].stripe_account_id;
     }
   } catch (e) {
-    console.warn("getStripeAccountIdForUser: users lookup failed:", e?.message || e);
+    console.warn("getStripeAccountIdForUser failed:", e?.message || e);
   }
 
   return null;
 }
-
 /* -------------------------------- Routes -------------------------------- */
 
 /**
@@ -515,7 +495,7 @@ router.get("/mine", requireAuth, async (req, res) => {
  *
  * If declined:
  *  - Refunds the buyer for (amount_cents - Stripe processing fee) in production
- *  - Also reverses the 4% application fee
+ *  - Also reverses the 4 percent application fee
  *  - Does NOT refund the Stripe merchant processing fee
  */
 router.patch(
@@ -536,14 +516,14 @@ router.patch(
     try {
       await db.query("BEGIN");
 
-      // 1) Lock ONLY the custom_requests row (no joins here)
+      // 1) Lock ONLY the custom_requests row (no joins)
       const { rows: crRows } = await db.query(
         `
         SELECT id, status, order_id
-        FROM custom_requests
-        WHERE id = $1
-          AND creator_id = $2
-        FOR UPDATE
+          FROM custom_requests
+         WHERE id = $1
+           AND creator_id = $2
+         FOR UPDATE
         `,
         [requestId, creatorId]
       );
@@ -556,7 +536,6 @@ router.patch(
 
       // Treat legacy "open" as "pending"
       const currentStatus = cr.status === "open" ? "pending" : cr.status;
-
       if (currentStatus !== "pending") {
         await db.query("ROLLBACK");
         return res
@@ -564,13 +543,13 @@ router.patch(
           .json({ error: "Request is not pending and cannot be changed" });
       }
 
-      // 2) Load order row separately (no FOR UPDATE, no join)
+      // 2) Load order row separately
       let order = null;
       if (cr.order_id) {
         const { rows: orderRows } = await db.query(
           `
           SELECT
-            status AS order_status,
+            status                AS order_status,
             stripe_payment_intent_id,
             amount_cents
           FROM orders
@@ -586,13 +565,14 @@ router.patch(
       // Track whether we actually processed a refund
       let didRefund = false;
 
-      // If creator is declining, try to refund the order if it was paid
+      // If creator is declining, try to refund the order if it was paid and nonzero
       if (
         action === "decline" &&
         order &&
         cr.order_id &&
         order.order_status === "paid" &&
-        order.stripe_payment_intent_id
+        order.stripe_payment_intent_id &&
+        order.amount_cents > 0
       ) {
         if (process.env.NODE_ENV === "production") {
           try {
@@ -606,10 +586,10 @@ router.patch(
               );
             }
 
+            // Options for Connect calls
             const stripeOpts = { stripeAccount: stripeAccountId };
 
-            // ✅ Correct Stripe signature:
-            // retrieve(id, params, options)
+            // ✅ Correct usage: params and options separated
             const pi = await stripe.paymentIntents.retrieve(
               order.stripe_payment_intent_id,
               { expand: ["charges.data.balance_transaction"] },
@@ -630,7 +610,6 @@ router.patch(
                 typeof charge.amount === "number"
                   ? charge.amount
                   : order.amount_cents;
-
               const alreadyRefunded = charge.amount_refunded || 0;
 
               // Read Stripe fees from the balance transaction
@@ -640,16 +619,15 @@ router.patch(
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
-                // For this call, second arg is params, third is options
+                // ✅ Pass options object separately here too
                 const fullBt = await stripe.balanceTransactions.retrieve(
                   bt,
-                  {},
                   stripeOpts
                 );
                 feeCents = fullBt.fee || 0;
               }
 
-              // desiredRefund = amount that went to creator + app fee
+              // desiredRefund = amount that went to creator + our app fee
               // Stripe keeps its own processing fee
               let desiredRefund = totalAmount - feeCents;
               if (desiredRefund < 0) desiredRefund = 0;
@@ -667,7 +645,7 @@ router.patch(
                 {
                   payment_intent: order.stripe_payment_intent_id,
                   amount: refundAmountCents,
-                  // Also reverse the 4 percent application fee on this charge
+                  // Reverse the 4 percent application fee
                   refund_application_fee: true,
                 },
                 stripeOpts
@@ -732,7 +710,10 @@ router.patch(
 
       // 3) Update the request status
       const { rows: upd } = await db.query(
-        `UPDATE custom_requests SET status = $1 WHERE id = $2 RETURNING *`,
+        `UPDATE custom_requests
+            SET status = $1
+          WHERE id = $2
+        RETURNING *`,
         [newStatus, requestId]
       );
 
@@ -783,9 +764,7 @@ router.patch(
       console.error("request decision error:", err);
       try {
         await db.query("ROLLBACK");
-      } catch (_) {
-        // ignore rollback failure
-      }
+      } catch (_) {}
       return res.status(500).json({ error: "Failed to update request" });
     }
   }
