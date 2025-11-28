@@ -560,15 +560,18 @@ router.patch(
       // Track whether we actually processed a refund
       let didRefund = false;
 
+      console.log("[REQUEST DECISION DEBUG]", {
+        requestId,
+        action,
+        orderId: cr.order_id,
+        orderStatus: order ? order.order_status : null,
+        stripePaymentIntentId: order ? order.stripe_payment_intent_id : null,
+        amountCents: order ? order.amount_cents : null,
+        nodeEnv: process.env.NODE_ENV,
+      });
+
       // If creator is declining, try to refund the order if it was paid and nonzero
-      if (
-        action === "decline" &&
-        order &&
-        cr.order_id &&
-        order.order_status === "paid" &&
-        order.stripe_payment_intent_id &&
-        order.amount_cents > 0
-      ) {
+      if (action === "decline" && order && cr.order_id) {
         if (process.env.NODE_ENV === "production") {
           try {
             const stripe = getStripe();
