@@ -570,54 +570,65 @@ router.patch(
         nodeEnv: process.env.NODE_ENV,
       });
 
-      // If creator is declining, try to refund the order if it was paid and nonzero
-      if (action === "decline" && order && cr.order_id) {
-        if (process.env.NODE_ENV === "production") {
-          try {
-            const stripe = getStripe();
+// If creator is declining, attempt a partial refund (keep Stripe fee, refund rest)
+if (action === "decline" && order && cr.order_id) {
+  if (process.env.NODE_ENV === "production") {
+    try {
+      const stripe = getStripe();
 
-            // Look up creator connected account
-            const stripeAccountId = await getStripeAccountIdForUser(creatorId);
-            if (!stripeAccountId) {
-              throw new Error(
-                `No connected Stripe account found for creator ${creatorId}`
+      // Look up creator connected account
+      const stripeAccountId = await getStripeAccountIdForUser(creatorId);
+      if (!stripeAccountId) {
+        throw new Error(
+          `No connected Stripe account found for creator ${creatorId}`
+        );
+      }
+
+      const stripeOpts = { stripeAccount: stripeAccountId };
+
+      // 1) Retrieve the PI on the connected account, expanded with BT
+      const pi = await stripe.paymentIntents.retrieve(
+        order.stripe_payment_intent_id,
+        { expand: ["charges.data.balance_transaction"] },
+        stripeOpts
+      );
+
+      const charge =
+        pi.charges &&
+        Array.isArray(pi.charges.data) &&
+        pi.charges.data.length > 0
+          ? pi.charges.data[0]
+          : null;
+
+      if (!charge) {
+        throw new Error("No charge found on PaymentIntent for partial refund");
+      }
+
+      const totalAmount =
+        typeof charge.amount === "number"
+          ? charge.amount
+          : Number(order.amount_cents || 0);
+
+      const alreadyRefunded = charge.amount_refunded || 0;
+
+            // If it's already fully refunded, just mark it and move on
+            if (alreadyRefunded >= totalAmount) {
+              console.log(
+                "[PARTIAL REFUND] PaymentIntent already fully refunded, just marking DB"
               );
-            }
-
-            // Options for Connect calls
-            const stripeOpts = { stripeAccount: stripeAccountId };
-
-            // ✅ Correct usage: params and options separated
-            const pi = await stripe.paymentIntents.retrieve(
-              order.stripe_payment_intent_id,
-              { expand: ["charges.data.balance_transaction"] },
-              stripeOpts
-            );
-
-            const charge =
-              pi.charges &&
-              Array.isArray(pi.charges.data) &&
-              pi.charges.data.length > 0
-                ? pi.charges.data[0]
-                : null;
-
-            let refundAmountCents = 0;
-
-            if (charge) {
-              const totalAmount =
-                typeof charge.amount === "number"
-                  ? charge.amount
-                  : order.amount_cents;
-              const alreadyRefunded = charge.amount_refunded || 0;
-
-              // Read Stripe fees from the balance transaction
+              await db.query(
+                `UPDATE orders SET status = 'refunded' WHERE id = $1`,
+                [cr.order_id]
+              );
+              didRefund = true;
+            } else {
+              // 2) Try to get exact Stripe fees from the balance transaction
               let feeCents = 0;
-              let bt = charge.balance_transaction;
+              const bt = charge.balance_transaction;
 
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
-                // ✅ Pass options object separately here too
                 const fullBt = await stripe.balanceTransactions.retrieve(
                   bt,
                   stripeOpts
@@ -625,73 +636,60 @@ router.patch(
                 feeCents = fullBt.fee || 0;
               }
 
-              // desiredRefund = amount that went to creator + our app fee
-              // Stripe keeps its own processing fee
-              let desiredRefund = totalAmount - feeCents;
-              if (desiredRefund < 0) desiredRefund = 0;
+              // 3) Compute desired refund: everything except Stripe fee
+              let desiredRefund = 0;
+
+              if (feeCents > 0 && feeCents < totalAmount) {
+                desiredRefund = totalAmount - feeCents;
+              } else {
+                // Fallback: estimate Stripe fee as ~3 percent + 30¢ and keep that
+                const estimatedFee = Math.round(totalAmount * 0.03) + 30;
+                desiredRefund = Math.max(totalAmount - estimatedFee, 0);
+              }
 
               const maxRefundable = totalAmount - alreadyRefunded;
-              refundAmountCents = Math.max(
+              const refundAmountCents = Math.max(
                 Math.min(desiredRefund, maxRefundable),
                 0
               );
-            }
 
-            // Only call refund if there is something to refund
-            if (refundAmountCents > 0) {
-              await stripe.refunds.create(
-                {
-                  payment_intent: order.stripe_payment_intent_id,
-                  amount: refundAmountCents,
-                  // Reverse the 4 percent application fee
-                  refund_application_fee: true,
-                },
-                stripeOpts
-              );
-              didRefund = true;
-            }
+              console.log("[PARTIAL REFUND DEBUG]", {
+                totalAmount,
+                alreadyRefunded,
+                feeCents,
+                desiredRefund,
+                maxRefundable,
+                refundAmountCents,
+              });
 
-            // Mark order as refunded in our DB if we refunded anything
-            if (didRefund) {
-              await db.query(
-                `UPDATE orders SET status = 'refunded' WHERE id = $1`,
-                [cr.order_id]
-              );
+              if (refundAmountCents > 0) {
+                await stripe.refunds.create(
+                  {
+                    payment_intent: order.stripe_payment_intent_id,
+                    amount: refundAmountCents,
+                    // Reverse the application fee (your 4 percent) on the platform
+                    refund_application_fee: true,
+                  },
+                  stripeOpts
+                );
+
+                await db.query(
+                  `UPDATE orders SET status = 'refunded' WHERE id = $1`,
+                  [cr.order_id]
+                );
+                didRefund = true;
+              } else {
+                console.warn(
+                  "[PARTIAL REFUND] Computed refundAmountCents=0; skipping Stripe refund"
+                );
+              }
             }
           } catch (e) {
             console.error("Failed to process partial refund for request:", e);
-
-            // Safety net: full refund on the connected account if partial logic fails
-            try {
-              const stripe = getStripe();
-              const stripeAccountId = await getStripeAccountIdForUser(
-                creatorId
-              );
-              if (!stripeAccountId) throw e;
-              const stripeOpts = { stripeAccount: stripeAccountId };
-
-              await stripe.refunds.create(
-                {
-                  payment_intent: order.stripe_payment_intent_id,
-                  refund_application_fee: true,
-                },
-                stripeOpts
-              );
-              await db.query(
-                `UPDATE orders SET status = 'refunded' WHERE id = $1`,
-                [cr.order_id]
-              );
-              didRefund = true;
-            } catch (fallbackErr) {
-              console.error(
-                "Failed to process fallback full refund for request:",
-                fallbackErr
-              );
-              await db.query("ROLLBACK");
-              return res.status(500).json({
-                error: "Failed to process refund, please try again.",
-              });
-            }
+            await db.query("ROLLBACK");
+            return res.status(500).json({
+              error: "Failed to process refund, please try again.",
+            });
           }
         } else {
           // Local or staging: simulate refund without hitting Stripe
