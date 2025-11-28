@@ -570,46 +570,58 @@ router.patch(
         nodeEnv: process.env.NODE_ENV,
       });
 
-// If creator is declining, attempt a partial refund (keep Stripe fee, refund rest)
-if (action === "decline" && order && cr.order_id) {
-  if (process.env.NODE_ENV === "production") {
-    try {
-      const stripe = getStripe();
+      // If creator is declining, attempt a partial refund (keep Stripe fee, refund rest)
+      if (action === "decline" && order && cr.order_id) {
+        if (process.env.NODE_ENV === "production") {
+          try {
+            const stripe = getStripe();
 
-      // Look up creator connected account
-      const stripeAccountId = await getStripeAccountIdForUser(creatorId);
-      if (!stripeAccountId) {
-        throw new Error(
-          `No connected Stripe account found for creator ${creatorId}`
-        );
-      }
+            // Look up creator connected account (the payment lives here)
+            const stripeAccountId = await getStripeAccountIdForUser(creatorId);
+            if (!stripeAccountId) {
+              throw new Error(
+                `No connected Stripe account found for creator ${creatorId}`
+              );
+            }
 
-      const stripeOpts = { stripeAccount: stripeAccountId };
+            const stripeOpts = { stripeAccount: stripeAccountId };
 
-      // 1) Retrieve the PI on the connected account, expanded with BT
-      const pi = await stripe.paymentIntents.retrieve(
-        order.stripe_payment_intent_id,
-        { expand: ["charges.data.balance_transaction"] },
-        stripeOpts
-      );
+            // 🔑 Retrieve the PI on the CONNECTED account and expand charges
+            const pi = await stripe.paymentIntents.retrieve(
+              order.stripe_payment_intent_id,
+              {
+                expand: [
+                  "latest_charge.balance_transaction",
+                  "charges.data.balance_transaction",
+                ],
+              },
+              stripeOpts
+            );
 
-      const charge =
-        pi.charges &&
-        Array.isArray(pi.charges.data) &&
-        pi.charges.data.length > 0
-          ? pi.charges.data[0]
-          : null;
+            // Try latest_charge first, then fall back to charges.data[0]
+            let charge = null;
+            if (pi.latest_charge && typeof pi.latest_charge === "object") {
+              charge = pi.latest_charge;
+            } else if (
+              pi.charges &&
+              Array.isArray(pi.charges.data) &&
+              pi.charges.data.length > 0
+            ) {
+              charge = pi.charges.data[0];
+            }
 
-      if (!charge) {
-        throw new Error("No charge found on PaymentIntent for partial refund");
-      }
+            if (!charge) {
+              throw new Error(
+                "No charge found on PaymentIntent for partial refund"
+              );
+            }
 
-      const totalAmount =
-        typeof charge.amount === "number"
-          ? charge.amount
-          : Number(order.amount_cents || 0);
+            const totalAmount =
+              typeof charge.amount === "number"
+                ? charge.amount
+                : Number(order.amount_cents || 0);
 
-      const alreadyRefunded = charge.amount_refunded || 0;
+            const alreadyRefunded = charge.amount_refunded || 0;
 
             // If it's already fully refunded, just mark it and move on
             if (alreadyRefunded >= totalAmount) {
@@ -622,9 +634,9 @@ if (action === "decline" && order && cr.order_id) {
               );
               didRefund = true;
             } else {
-              // 2) Try to get exact Stripe fees from the balance transaction
+              // 1) Get Stripe fees from the balance transaction if possible
               let feeCents = 0;
-              const bt = charge.balance_transaction;
+              let bt = charge.balance_transaction;
 
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
@@ -636,14 +648,13 @@ if (action === "decline" && order && cr.order_id) {
                 feeCents = fullBt.fee || 0;
               }
 
-              // 3) Compute desired refund: everything except Stripe fee
-              let desiredRefund = 0;
-
+              // 2) Compute desired refund = total - Stripe fee
+              let desiredRefund;
               if (feeCents > 0 && feeCents < totalAmount) {
                 desiredRefund = totalAmount - feeCents;
               } else {
-                // Fallback: estimate Stripe fee as ~3 percent + 30¢ and keep that
-                const estimatedFee = Math.round(totalAmount * 0.03) + 30;
+                // Fallback estimate if we couldn't read fee from Stripe
+                const estimatedFee = Math.round(totalAmount * 0.03) + 30; // ~3% + 30¢
                 desiredRefund = Math.max(totalAmount - estimatedFee, 0);
               }
 
@@ -667,7 +678,7 @@ if (action === "decline" && order && cr.order_id) {
                   {
                     payment_intent: order.stripe_payment_intent_id,
                     amount: refundAmountCents,
-                    // Reverse the application fee (your 4 percent) on the platform
+                    // Reverse your 4% application fee on the platform
                     refund_application_fee: true,
                   },
                   stripeOpts
