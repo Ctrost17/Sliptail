@@ -172,12 +172,10 @@ router.post(
     const defaultSuccessPath =
       isGuest && !isMembership ? "/checkout/signed-out" : "/checkout/success";
 
-    // Build success/cancel with acct & pid AFTER we know action
+    // Build success URL with just pid (no acct, because sessions now live on the platform account)
     const baseSuccess = ensureSuccessUrl(success_url, defaultSuccessPath);
     const sep = baseSuccess.includes("?") ? "&" : "?";
-    const successUrl = `${baseSuccess}${sep}acct=${encodeURIComponent(
-      p.stripe_account_id
-    )}&pid=${encodeURIComponent(p.id)}`;
+    const successUrl = `${baseSuccess}${sep}pid=${encodeURIComponent(p.id)}`;
 
     const baseCancel = ensureCancelUrl(cancel_url);
     const csep = baseCancel.includes("?") ? "&" : "?";
@@ -288,81 +286,85 @@ router.post(
       : undefined; // Stripe will omit undefined fields
 
     try {
-      if (finalMode === "payment") {
-        // ONE-TIME: do not create DB order yet. Webhook or finalize will handle it.
-        const payload = {
-          mode: "payment",
-          line_items: [
-            {
-              price_data: {
-                currency: "usd",
-                product_data: {
-                  name: p.title || p.product_type || "Item",
-                  ...(productDescription
-                    ? { description: productDescription }
-                    : {}),
+        if (finalMode === "payment") {
+          // ONE-TIME: do not create DB order yet. Webhook or finalize will handle it.
+          const payload = {
+            mode: "payment",
+            line_items: [
+              {
+                price_data: {
+                  currency: "usd",
+                  product_data: {
+                    name: p.title || p.product_type || "Item",
+                    ...(productDescription
+                      ? { description: productDescription }
+                      : {}),
+                  },
+                  unit_amount: Number(p.price), // already cents in DB
                 },
-                unit_amount: Number(p.price), // already cents in DB
+                quantity: 1,
               },
-              quantity: 1,
+            ],
+            // No application_fee_amount here anymore – charge happens on the platform account
+            payment_intent_data: {
+              metadata: { ...baseMetadata },
             },
-          ],
-          payment_intent_data: {
-            application_fee_amount: feeAmount,
             metadata: { ...baseMetadata },
-          },
-          metadata: { ...baseMetadata },
-          success_url: successUrl,
-          cancel_url: cancelUrl,
-          custom_text: {
-            submit: {
-              message: EMAIL_HINT,
-            },
-          },
-        };
-
-        session = await stripe.checkout.sessions.create(
-          payload,
-          clientKey
-            ? { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
-            : { stripeAccount: p.stripe_account_id }
-        );
-      } else {
-        // SUBSCRIPTION (memberships only)
-        const payload = {
-          mode: "subscription",
-          line_items: [
-            {
-              price_data: {
-                currency: "usd",
-                product_data: { name: p.title || "Membership" },
-                recurring: { interval: "month" },
-                unit_amount: Number(p.price), // cents
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            custom_text: {
+              submit: {
+                message: EMAIL_HINT,
               },
-              quantity: 1,
             },
-          ],
-          subscription_data: {
-            application_fee_percent: PLATFORM_FEE_BPS / 100.0, // for example 4.0
-            metadata: { ...baseMetadata },
-          },
-          metadata: { ...baseMetadata },
-          success_url: successUrl,
-          cancel_url: cancelUrl,
-          custom_text: {
-            submit: {
-              message: EMAIL_HINT,
-            },
-          },
-        };
+          };
 
-        session = await stripe.checkout.sessions.create(
-          payload,
-          clientKey
-            ? { idempotencyKey: clientKey, stripeAccount: p.stripe_account_id }
-            : { stripeAccount: p.stripe_account_id }
-        );
-      }
+          // Create session on the PLATFORM account (no stripeAccount override)
+          if (clientKey) {
+            session = await stripe.checkout.sessions.create(payload, {
+              idempotencyKey: clientKey,
+            });
+          } else {
+            session = await stripe.checkout.sessions.create(payload);
+          }
+        } else {
+          // SUBSCRIPTION (memberships only) – create on PLATFORM account
+          const payload = {
+            mode: "subscription",
+            line_items: [
+              {
+                price_data: {
+                  currency: "usd",
+                  product_data: { name: p.title || "Membership" },
+                  recurring: { interval: "month" },
+                  unit_amount: Number(p.price), // cents
+                },
+                quantity: 1,
+              },
+            ],
+            // No application_fee_percent – platform fee will be handled via transfers from invoices later
+            subscription_data: {
+              metadata: { ...baseMetadata },
+            },
+            metadata: { ...baseMetadata },
+            success_url: successUrl,
+            cancel_url: cancelUrl,
+            custom_text: {
+              submit: {
+                message: EMAIL_HINT,
+              },
+            },
+          };
+
+          // Create session on PLATFORM account
+          if (clientKey) {
+            session = await stripe.checkout.sessions.create(payload, {
+              idempotencyKey: clientKey,
+            });
+          } else {
+            session = await stripe.checkout.sessions.create(payload);
+          }
+        }
 
       return res.json({ url: session.url, id: session.id });
     } catch (err) {
@@ -444,43 +446,51 @@ router.get("/finalize", requireAuth, async (req, res) => {
   }
 
   try {
-    // Retrieve checkout session + expand to reduce round-trips
-    const stripe = getStripe();
-    const acct = String(req.query.acct || "").trim() || null;
-    const productIdForLookup = req.query.pid
-      ? parseInt(String(req.query.pid), 10)
-      : null;
+      const stripe = getStripe();
+      const acct = String(req.query.acct || "").trim() || null;
+      const productIdForLookup = req.query.pid
+        ? parseInt(String(req.query.pid), 10)
+        : null;
 
-    let session;
-    if (!acct) {
-      // Fallback: derive acct from product if acct not present in URL
+      const expandConfig = { expand: ["payment_intent", "subscription"] };
+
+      // Legacy support: we may still have older sessions created on a connected account
       let derivedAcct = null;
-      if (productIdForLookup) {
-        const { rows: acctRow } = await db.query(
-          `SELECT u.stripe_account_id
-             FROM products p JOIN users u ON u.id = p.user_id
-            WHERE p.id = $1 LIMIT 1`,
-          [productIdForLookup]
+      if (!acct && productIdForLookup) {
+        try {
+          const { rows: acctRow } = await db.query(
+            `SELECT u.stripe_account_id
+              FROM products p JOIN users u ON u.id = p.user_id
+              WHERE p.id = $1 LIMIT 1`,
+            [productIdForLookup]
+          );
+          derivedAcct = acctRow[0]?.stripe_account_id || null;
+        } catch (_) {
+          derivedAcct = null;
+        }
+      }
+
+      let session;
+      try {
+        // New flow: sessions live on the PLATFORM account
+        session = await stripe.checkout.sessions.retrieve(sessionId, expandConfig);
+      } catch (err) {
+        const code = err && (err.code || err?.raw?.code);
+        const isMissing = code === "resource_missing";
+        const fallbackAcct = acct || derivedAcct;
+
+        if (!isMissing || !fallbackAcct) {
+          // If it's not a simple "missing" on platform, or we have no connected acct to try, rethrow
+          throw err;
+        }
+
+        // Legacy flow: session was created on a connected account
+        session = await stripe.checkout.sessions.retrieve(
+          sessionId,
+          expandConfig,
+          { stripeAccount: fallbackAcct }
         );
-        derivedAcct = acctRow[0]?.stripe_account_id || null;
       }
-      if (!derivedAcct) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Missing connected account context" });
-      }
-      session = await stripe.checkout.sessions.retrieve(
-        sessionId,
-        { expand: ["payment_intent", "subscription"] },
-        { stripeAccount: derivedAcct }
-      );
-    } else {
-      session = await stripe.checkout.sessions.retrieve(
-        sessionId,
-        { expand: ["payment_intent", "subscription"] },
-        { stripeAccount: acct }
-      );
-    }
 
     if (!session)
       return res.status(404).json({ ok: false, error: "Session not found" });

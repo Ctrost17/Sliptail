@@ -21,6 +21,9 @@ function getStripe() {
   return Stripe(key);
 }
 
+// 4% fee in basis points (same as stripeCheckout.js)
+const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "400", 10);
+
 // If you use ONE webhook endpoint for everything, keep STRIPE_WEBHOOK_SECRET.
 // If you created a *separate* Connect webhook endpoint in Stripe Dashboard, you can
 // optionally put its secret in STRIPE_CONNECT_WEBHOOK_SECRET and keep using ?connect=1.
@@ -465,6 +468,72 @@ async function alreadyNotifiedCreatorSaleBySubscription(subId) {
   }
 }
 
+/**
+ * For a given order, send the creator their share using a Stripe Transfer.
+ * - Uses orders.amount_cents as the gross amount (what the buyer paid in cents).
+ * - Platform keeps PLATFORM_FEE_BPS of that.
+ * - Creator gets the rest via transfer to their stripe_account_id.
+ */
+async function createCreatorTransferForOrder(orderId, stripe, sourceChargeId) {
+  // Look up order, product, and creator Stripe account
+  const { rows } = await db.query(
+    `
+    SELECT
+      o.id            AS order_id,
+      o.amount_cents  AS amount_cents,
+      p.user_id       AS creator_id,
+      u.stripe_account_id
+    FROM orders o
+    JOIN products p ON p.id = o.product_id
+    JOIN users    u ON u.id = p.user_id
+    WHERE o.id = $1
+    LIMIT 1
+    `,
+    [orderId]
+  );
+
+  if (!rows.length) return;
+  const row = rows[0];
+
+  if (!row.stripe_account_id) {
+    // Creator has no connected account, nothing to transfer
+    return;
+  }
+
+  const gross = Number(row.amount_cents || 0);
+  if (!Number.isFinite(gross) || gross <= 0) {
+    return;
+  }
+
+  // Platform fee in cents (eg 4% of gross)
+  const platformFee = Math.floor((gross * PLATFORM_FEE_BPS) / 10000);
+  const creatorShare = gross - platformFee;
+  if (creatorShare <= 0) {
+    return;
+  }
+
+  const transferPayload = {
+    amount: creatorShare,
+    currency: "usd",
+    destination: row.stripe_account_id,
+  };
+
+  // Optionally tie it to the original charge if we know it
+  if (sourceChargeId) {
+    transferPayload.source_transaction = sourceChargeId;
+  }
+
+  // Idempotency key so we never double pay on webhook retries
+  const idempotencyKey = `order_transfer_${row.order_id}`;
+
+  try {
+    await stripe.transfers.create(transferPayload, { idempotencyKey });
+  } catch (e) {
+    console.error("[transfers] createCreatorTransferForOrder error:", e);
+    // Do not throw. Even if transfer fails once, Stripe will retry webhook and we try again.
+  }
+}
+
 /* ----------------------------- handler ----------------------------- */
 /**
  * Export a single handler function.
@@ -547,79 +616,112 @@ module.exports = async function stripeWebhook(req, res) {
       }
 
       /* ----------------- Checkout → Orders / Subscriptions ----------------- */
-      case "checkout.session.completed": {
-        const session = event.data.object;
+  case "checkout.session.completed": {
+    const session = event.data.object;
 
-        if (session.mode === "payment") {
-          // one-time purchase/request
-          const orderId = await upsertPaidOrderFromSession(session);
-          try {
-            await notifyPurchase({ orderId });
-          } catch (e) {
-            console.warn("notifyPurchase failed (non-fatal):", e);
+    if (session.mode === "payment") {
+      // one time purchase or request
+      const orderId = await upsertPaidOrderFromSession(session);
+      try {
+        await notifyPurchase({ orderId });
+      } catch (e) {
+        console.warn("notifyPurchase failed (non-fatal):", e);
+      }
+
+      // In app notification to creator ("creator_sale"), dedup by order_id
+      try {
+        if (!(await alreadyNotifiedCreatorSaleByOrder(orderId))) {
+          const { rows: info } = await db.query(
+            `SELECT o.id AS order_id,
+                    p.id AS product_id,
+                    p.title AS product_title,
+                    p.user_id AS creator_id
+              FROM orders o
+              JOIN products p ON p.id = o.product_id
+              WHERE o.id = $1
+              LIMIT 1`,
+            [orderId]
+          );
+          if (info.length) {
+            const row = info[0];
+            notify(
+              Number(row.creator_id),
+              "creator_sale",
+              "Great news!",
+              `Someone just purchased your ${row.product_title}!`,
+              { product_id: row.product_id, order_id: row.order_id }
+            ).catch(console.error);
           }
+        }
+      } catch (e) {
+        console.error("creator_sale notify (session.payment) error:", e);
+      }
 
-          // NEW: In-app notification to creator ("creator_sale"), dedup by order_id
+      // NEW: send the creator their share using a Transfer
+      try {
+        const stripe = getStripe();
+
+        // Try to find the charge behind this checkout session
+        let sourceChargeId = null;
+        if (session.payment_intent) {
           try {
-            if (!(await alreadyNotifiedCreatorSaleByOrder(orderId))) {
-              const { rows: info } = await db.query(
-                `SELECT o.id AS order_id,
-                        p.id AS product_id,
-                        p.title AS product_title,
-                        p.user_id AS creator_id
-                   FROM orders o
-                   JOIN products p ON p.id = o.product_id
-                  WHERE o.id = $1
-                  LIMIT 1`,
-                [orderId]
-              );
-              if (info.length) {
-                const row = info[0];
-                notify(
-                  Number(row.creator_id),
-                  "creator_sale",
-                  "Great news!",
-                  `Someone just purchased your ${row.product_title}!`,
-                  { product_id: row.product_id, order_id: row.order_id }
-                ).catch(console.error);
-              }
+            const pi = await stripe.paymentIntents.retrieve(session.payment_intent);
+            if (pi && pi.latest_charge) {
+              sourceChargeId =
+                typeof pi.latest_charge === "string"
+                  ? pi.latest_charge
+                  : pi.latest_charge.id;
             }
           } catch (e) {
-            console.error("creator_sale notify (session.payment) error:", e);
-          }
-        }
-
-         if (session.mode === "subscription") {
-        // Allow guest membership: ensure a user row exists and attach stripe_customer_id
-        const customer = session.customer || null;
-        const meta = session.metadata || {};
-        const emailFromMeta = meta.buyer_email || null;
-
-        let buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
-        if (!buyerId) {
-          // If buyer_id is not present (guest), derive it from customer + email
-          if (customer || emailFromMeta) {
-            buyerId = await ensureBuyerFromEmailAndCustomer(emailFromMeta, customer);
-          }
-        }
-
-        if (customer && buyerId) {
-          try {
-            await db.query(
-              `UPDATE users
-                SET stripe_customer_id = $1
-              WHERE id = $2
-                AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
-              [customer, buyerId]
+            console.warn(
+              "[transfers] failed to retrieve payment_intent for session",
+              session.id,
+              e.message || e
             );
-          } catch (e) {
-            console.warn("[webhook] failed to update stripe_customer_id on subscription checkout:", e.message || e);
           }
         }
-        }
 
-        break;
+        await createCreatorTransferForOrder(orderId, stripe, sourceChargeId);
+      } catch (e) {
+        console.error("[transfers] error while creating transfer for order", e);
+        // Do not fail webhook. Order is still marked paid.
       }
+    }
+
+    if (session.mode === "subscription") {
+      // Allow guest membership: ensure a user row exists and attach stripe_customer_id
+      const customer = session.customer || null;
+      const meta = session.metadata || {};
+      const emailFromMeta = meta.buyer_email || null;
+
+      let buyerId = meta.buyer_id ? parseInt(meta.buyer_id, 10) : null;
+      if (!buyerId) {
+        // If buyer_id is not present (guest), derive it from customer + email
+        if (customer || emailFromMeta) {
+          buyerId = await ensureBuyerFromEmailAndCustomer(emailFromMeta, customer);
+        }
+      }
+
+      if (customer && buyerId) {
+        try {
+          await db.query(
+            `UPDATE users
+              SET stripe_customer_id = $1
+            WHERE id = $2
+              AND (stripe_customer_id IS NULL OR stripe_customer_id <> $1)`,
+            [customer, buyerId]
+          );
+        } catch (e) {
+          console.warn(
+            "[webhook] failed to update stripe_customer_id on subscription checkout:",
+            e.message || e
+          );
+        }
+      }
+    }
+
+    break;
+  }
 
       case "payment_intent.succeeded": {
         const pi = event.data.object;
@@ -793,26 +895,77 @@ module.exports = async function stripeWebhook(req, res) {
         const invoice = event.data.object;
         const subId = invoice.subscription;
         if (subId) {
-          // Pull the latest subscription so we have authoritative status/flags/timestamps
+          const stripe = getStripe();
+
+          // Pull the latest subscription so we have metadata
           const sub = await stripe.subscriptions.retrieve(subId);
           const status = sub.status;
           const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
           const currentPeriodEnd = sub.current_period_end
             ? new Date(sub.current_period_end * 1000)
             : null;
-            await db.query(
-              `UPDATE memberships
-                  SET status=$1,
-                      cancel_at_period_end=$2,
-                      current_period_end=$3,
-                      canceled_at = CASE
-                                      WHEN $1 = 'canceled' THEN NOW()
-                                      ELSE canceled_at
-                                    END
-                WHERE stripe_subscription_id=$4`,
-              [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
-            );
-          // No creator notification here — renewals would be too noisy
+
+          await db.query(
+            `UPDATE memberships
+                SET status=$1,
+                    cancel_at_period_end=$2,
+                    current_period_end=$3,
+                    canceled_at = CASE
+                                    WHEN $1 = 'canceled' THEN NOW()
+                                    ELSE canceled_at
+                                  END
+              WHERE stripe_subscription_id=$4`,
+            [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
+          );
+
+          // NEW: pay out the creator for this invoice using a Transfer
+          try {
+            const meta = sub.metadata || {};
+            const creatorId =
+              meta.creator_id && parseInt(meta.creator_id, 10)
+                ? parseInt(meta.creator_id, 10)
+                : null;
+
+            if (creatorId && invoice.amount_paid && invoice.amount_paid > 0) {
+              const { rows } = await db.query(
+                `SELECT stripe_account_id
+                  FROM users
+                  WHERE id = $1
+                  LIMIT 1`,
+                [creatorId]
+              );
+              const acctRow = rows[0];
+              if (acctRow && acctRow.stripe_account_id) {
+                const gross = Number(invoice.amount_paid || 0); // cents
+                if (Number.isFinite(gross) && gross > 0) {
+                  const platformFee = Math.floor((gross * PLATFORM_FEE_BPS) / 10000);
+                  const creatorShare = gross - platformFee;
+
+                  if (creatorShare > 0) {
+                    const transferPayload = {
+                      amount: creatorShare,
+                      currency: invoice.currency || "usd",
+                      destination: acctRow.stripe_account_id,
+                    };
+
+                    // Tie to the invoice charge if present
+                    if (invoice.charge) {
+                      transferPayload.source_transaction = invoice.charge;
+                    }
+
+                    const idempotencyKey = `sub_transfer_${subId}_${invoice.id}`;
+
+                    await stripe.transfers.create(transferPayload, {
+                      idempotencyKey,
+                    });
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error("[transfers] invoice.paid transfer error:", e);
+            // Do not fail webhook. Membership is still updated.
+          }
         }
         break;
       }

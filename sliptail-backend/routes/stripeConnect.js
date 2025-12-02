@@ -6,6 +6,8 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const { requireAuth } = require("../middleware/auth");
 const { recomputeCreatorActive } = require("../services/creatorStatus");
+const crypto = require("crypto");
+const { URLSearchParams } = require("url");
 
 const router = express.Router();
 
@@ -24,10 +26,31 @@ const FRONTEND_BASE = (
   "http://localhost:3000"
 ).replace(/\/$/, "");
 
+// Backend base for OAuth callback (your Express server)
+const BACKEND_BASE = (
+  process.env.BACKEND_URL ||
+  process.env.API_URL ||
+  "http://localhost:5000"
+).replace(/\/$/, "");
+
+// Stripe Connect Standard client id (from Stripe Dashboard)
+const CONNECT_CLIENT_ID = process.env.STRIPE_CONNECT_CLIENT_ID || "";
+
 // Optional: set this if you add the webhook below
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
-
 /* ----------------------------- helpers ----------------------------- */
+
+function encodeState(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+function decodeState(state) {
+  try {
+    return JSON.parse(Buffer.from(state, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
 
 /** Best-effort create; if your table already exists with a different shape, we handle it dynamically below. */
 async function ensureStripeConnectTable() {
@@ -177,33 +200,27 @@ async function upsertStripeState(userId, acct) {
 
 /**
  * POST /api/stripe-connect/create-link
- * Creates (or reuses) a Stripe Express account and:
- *   - writes users.stripe_account_id
- *   - flips users.stripe_connected = TRUE (keeps your behavior)
- *   - returns onboarding link (if not finished) or login link (if finished)
- */
-/**
- * POST /api/stripe-connect/create-link
- * Creates (or reuses) a Stripe Express account and:
- *   - writes users.stripe_account_id
- *   - flips users.stripe_connected = TRUE
- *   - returns onboarding link (if not finished) or login link (if finished)
+ * - For Standard accounts, returns an OAuth URL for the frontend to redirect the creator to
  */
 router.post("/create-link", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
+  if (!CONNECT_CLIENT_ID) {
+    return res
+      .status(500)
+      .json({ error: "Stripe Connect not configured: missing STRIPE_CONNECT_CLIENT_ID" });
+  }
+
   try {
-    // 1) Load user, creator profile, and any existing connect account
+    // Load user and creator profile
     const { rows } = await db.query(
       `
       SELECT u.id,
              u.email,
              u.stripe_account_id,
-             sc.account_id AS stripe_connect_account_id,
              cp.display_name
         FROM users u
         LEFT JOIN creator_profiles cp ON cp.user_id = u.id
-        LEFT JOIN stripe_connect   sc ON sc.user_id = u.id
        WHERE u.id = $1
        LIMIT 1
       `,
@@ -211,124 +228,167 @@ router.post("/create-link", requireAuth, async (req, res) => {
     );
 
     const me = rows[0];
-    if (!me) return res.status(404).json({ error: "User not found" });
+    if (!me) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // If already connected to a Standard account, nothing to start
+    if (me.stripe_account_id) {
+      return res.json({
+        already_connected: true,
+        account_id: me.stripe_account_id,
+        mode: "standard",
+      });
+    }
 
     const displayName = me.display_name || `Sliptail Creator #${me.id}`;
 
-    // Prefer users.stripe_account_id, but fall back to legacy stripe_connect.account_id
-    let accountId =
-      me.stripe_account_id || me.stripe_connect_account_id || null;
-
-    const stripe = getStripe();
-
-    // 2) If no account anywhere, create a fresh Express account
-    if (!accountId) {
-      const account = await stripe.accounts.create({
-        type: "express",
-        email: me.email || undefined,
-        capabilities: {
-          card_payments: { requested: true },
-          transfers: { requested: true },
-        },
-        business_profile: {
-          name: displayName,
-          product_description: "Digital content and creator services from Sliptail",
-        },
-      });
-
-      accountId = account.id;
-
-      // Store on users table for future reuse
-      await db.query(
-        `
-        UPDATE users
-           SET stripe_account_id = $1,
-               stripe_connected   = TRUE,
-               updated_at         = NOW()
-         WHERE id = $2
-        `,
-        [accountId, userId]
-      );
-
-      // Seed / update stripe_connect row
-      try {
-        await ensureStripeConnectTable();
-        const { accountCol, userIsInteger } = await detectStripeConnectSchema();
-        const userParam = userIsInteger ? "CAST($1 AS integer)" : "$1";
-
-        await db.query(
-          `
-          INSERT INTO stripe_connect (user_id, ${accountCol}, updated_at)
-          VALUES (${userParam}, $2, NOW())
-          ON CONFLICT (user_id) DO UPDATE
-            SET ${accountCol} = EXCLUDED.${accountCol},
-                updated_at    = NOW()
-          `,
-          [String(userId), accountId]
-        );
-      } catch (seedErr) {
-        console.warn("[create-link] seed stripe_connect warn:", seedErr.message || seedErr);
-      }
-
-      // Initial snapshot (flags may still be false until onboarding completes)
-      try {
-        await upsertStripeState(userId, account);
-      } catch (_) {}
-
-    } else if (!me.stripe_account_id && accountId) {
-      // 3) Account exists only in stripe_connect → normalize into users table
-      await db.query(
-        `
-        UPDATE users
-           SET stripe_account_id = $1,
-               stripe_connected   = TRUE,
-               updated_at         = NOW()
-         WHERE id = $2
-        `,
-        [accountId, userId]
-      );
-    }
-
-    // 4) Retrieve account from Stripe to decide onboarding vs. manage
-    const acct = await stripe.accounts.retrieve(accountId);
-
-    // Persist the latest flags into stripe_connect / creator_profiles
-    try {
-      await upsertStripeState(userId, acct);
-    } catch (_) {}
-
-    const needsOnboarding =
-      !acct.details_submitted || !acct.charges_enabled || !acct.payouts_enabled;
-
-    if (needsOnboarding) {
-      const link = await stripe.accountLinks.create({
-        account: accountId,
-        type: "account_onboarding",
-        refresh_url: `${FRONTEND_BASE}/creator/setup?refresh=1`,
-        return_url: `${FRONTEND_BASE}/creator/setup?onboarded=1`,
-      });
-      return res.json({
-        url: link.url,
-        account_id: accountId,
-        mode: "onboarding",
-      });
-    }
-
-    // Already fully enabled → send them to Stripe dashboard
-    const loginLink = await stripe.accounts.createLoginLink(accountId, {
-      redirect_url: `${FRONTEND_BASE}/dashboard`,
+    // Encode state so callback knows which user to attach
+    const state = encodeState({
+      user_id: userId,
+      ts: Date.now(),
+      nonce: crypto.randomBytes(16).toString("hex"),
     });
+
+    const redirectUri = `${BACKEND_BASE}/api/stripe-connect/oauth/callback`;
+
+    const params = new URLSearchParams({
+      response_type: "code",
+      client_id: CONNECT_CLIENT_ID,
+      scope: "read_write",
+      redirect_uri: redirectUri,
+      state,
+    });
+
+    if (me.email) {
+      params.append("stripe_user[email]", me.email);
+    }
+    params.append("stripe_user[business_name]", displayName);
+    params.append("stripe_user[website_url]", FRONTEND_BASE);
+
+    const url = `https://connect.stripe.com/oauth/authorize?${params.toString()}`;
+
     return res.json({
-      url: loginLink.url,
-      account_id: accountId,
-      mode: "manage",
+      url,
+      account_id: null,
+      mode: "oauth",
     });
   } catch (e) {
-    console.error("Stripe Connect create-link error:", e);
-    return res.status(500).json({ error: "Failed to create Stripe account link" });
+    console.error("Stripe Connect create-link (standard) error:", e);
+    return res
+      .status(500)
+      .json({ error: "Failed to start Stripe Connect", details: e.message });
   }
 });
 
+// GET /api/stripe-connect/oauth/callback
+// This is the redirect URL configured in Stripe Dashboard
+router.get("/oauth/callback", async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+
+  // User cancelled or error from Stripe
+  if (error) {
+    console.error("Stripe Connect OAuth error:", error, error_description);
+    return res.redirect(
+      302,
+      `${FRONTEND_BASE}/creator/setup?stripe_error=1`
+    );
+  }
+
+  if (!code || !state) {
+    console.error("Stripe Connect OAuth callback missing code or state");
+    return res.redirect(
+      302,
+      `${FRONTEND_BASE}/creator/setup?stripe_error=1`
+    );
+  }
+
+  const decoded = decodeState(state);
+  const userId = decoded && decoded.user_id;
+  if (!userId) {
+    console.error("Stripe Connect OAuth: invalid state");
+    return res.redirect(
+      302,
+      `${FRONTEND_BASE}/creator/setup?stripe_error=1`
+    );
+  }
+
+  try {
+    const stripe = getStripe();
+
+    // Exchange code for access tokens and connected account id
+    const tokenResp = await stripe.oauth.token({
+      grant_type: "authorization_code",
+      code: String(code),
+    });
+
+    const accountId = tokenResp.stripe_user_id;
+    if (!accountId) {
+      throw new Error("No stripe_user_id in OAuth response");
+    }
+
+    // 1) Store account id on users
+    await db.query(
+      `
+      UPDATE users
+         SET stripe_account_id = $1,
+             stripe_connected   = TRUE,
+             updated_at         = NOW()
+       WHERE id = $2
+      `,
+      [accountId, userId]
+    );
+
+    // 2) Seed / update stripe_connect table in a schema compatible way
+    try {
+      await ensureStripeConnectTable();
+      const { accountCol, userIsInteger } = await detectStripeConnectSchema();
+      const userParam = userIsInteger ? "CAST($1 AS integer)" : "$1";
+
+      await db.query(
+        `
+        INSERT INTO stripe_connect (user_id, ${accountCol}, updated_at)
+        VALUES (${userParam}, $2, NOW())
+        ON CONFLICT (user_id) DO UPDATE
+          SET ${accountCol} = EXCLUDED.${accountCol},
+              updated_at    = NOW()
+        `,
+        [String(userId), accountId]
+      );
+    } catch (seedErr) {
+      console.warn(
+        "[oauth-callback] seed stripe_connect warn:",
+        seedErr.message || seedErr
+      );
+    }
+
+    // 3) Pull latest flags and recompute creator active
+    try {
+      const acct = await stripe.accounts.retrieve(accountId);
+      await upsertStripeState(userId, acct);
+      try {
+        await recomputeCreatorActive(db, userId);
+      } catch {}
+    } catch (syncErr) {
+      console.warn(
+        "[oauth-callback] post connect sync warn:",
+        syncErr.message || syncErr
+      );
+    }
+
+    // Redirect back to creator setup
+    return res.redirect(
+      302,
+      `${FRONTEND_BASE}/creator/setup?onboarded=1`
+    );
+  } catch (e) {
+    console.error("Stripe Connect OAuth callback error:", e);
+    return res.redirect(
+      302,
+      `${FRONTEND_BASE}/creator/setup?stripe_error=1`
+    );
+  }
+});
 
 /**
  * POST /api/stripe-connect/sync

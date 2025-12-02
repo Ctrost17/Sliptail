@@ -513,13 +513,10 @@ router.patch(
 
       // 1) Lock ONLY the custom_requests row (no joins)
       const { rows: crRows } = await db.query(
-        `
-        SELECT id, status, order_id
-          FROM custom_requests
-         WHERE id = $1
-           AND creator_id = $2
-         FOR UPDATE
-        `,
+        `SELECT id, status, order_id
+         FROM custom_requests
+         WHERE id = $1 AND creator_id = $2
+         FOR UPDATE`,
         [requestId, creatorId]
       );
 
@@ -542,14 +539,11 @@ router.patch(
       let order = null;
       if (cr.order_id) {
         const { rows: orderRows } = await db.query(
-          `
-          SELECT
-            status                AS order_status,
-            stripe_payment_intent_id,
-            amount_cents
-          FROM orders
-          WHERE id = $1
-          `,
+          `SELECT status AS order_status,
+                  stripe_payment_intent_id,
+                  amount_cents
+           FROM orders
+           WHERE id = $1`,
           [cr.order_id]
         );
         order = orderRows[0] || null;
@@ -591,17 +585,7 @@ router.patch(
           try {
             const stripe = getStripe();
 
-            // Look up creator connected account (the payment lives here)
-            const stripeAccountId = await getStripeAccountIdForUser(creatorId);
-            if (!stripeAccountId) {
-              throw new Error(
-                `No connected Stripe account found for creator ${creatorId}`
-              );
-            }
-
-            const stripeOpts = { stripeAccount: stripeAccountId };
-
-            // Retrieve the PI on the connected account and expand charges
+            // Retrieve the PI on the PLATFORM account and expand charges
             const pi = await stripe.paymentIntents.retrieve(
               order.stripe_payment_intent_id,
               {
@@ -609,8 +593,7 @@ router.patch(
                   "latest_charge.balance_transaction",
                   "charges.data.balance_transaction",
                 ],
-              },
-              stripeOpts
+              }
             );
 
             // Try latest_charge first, then fall back to charges.data[0]
@@ -635,7 +618,6 @@ router.patch(
               typeof charge.amount === "number"
                 ? charge.amount
                 : Number(order.amount_cents || 0);
-
             const alreadyRefunded = charge.amount_refunded || 0;
 
             // If it's already fully refunded, just mark it and move on
@@ -656,10 +638,7 @@ router.patch(
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
-                const fullBt = await stripe.balanceTransactions.retrieve(
-                  bt,
-                  stripeOpts
-                );
+                const fullBt = await stripe.balanceTransactions.retrieve(bt);
                 feeCents = fullBt.fee || 0;
               }
 
@@ -669,7 +648,7 @@ router.patch(
                 desiredRefund = totalAmount - feeCents;
               } else {
                 // Fallback estimate if we could not read fee from Stripe
-                const estimatedFee = Math.round(totalAmount * 0.03) + 30; // approx 3 percent + 30 cents
+                const estimatedFee = Math.round(totalAmount * 0.03) + 30; // approx 3% + 30c
                 desiredRefund = Math.max(totalAmount - estimatedFee, 0);
               }
 
@@ -689,15 +668,37 @@ router.patch(
               });
 
               if (refundAmountCents > 0) {
-                await stripe.refunds.create(
-                  {
-                    payment_intent: order.stripe_payment_intent_id,
-                    amount: refundAmountCents,
-                    // Reverse your 4 percent application fee on the platform
-                    refund_application_fee: true,
-                  },
-                  stripeOpts
-                );
+                // 1) Refund the buyer for everything except the Stripe fee
+                await stripe.refunds.create({
+                  payment_intent: order.stripe_payment_intent_id,
+                  amount: refundAmountCents,
+                });
+
+                // 2) Claw back the creator transfer so refunds aren't fully on you
+                try {
+                  const transfers = await stripe.transfers.list({
+                    source_transaction: charge.id,
+                    limit: 1,
+                  });
+
+                  const transfer = transfers.data[0];
+                  if (
+                    transfer &&
+                    (transfer.amount_reversed || 0) < transfer.amount
+                  ) {
+                    await stripe.transfers.createReversal(transfer.id, {
+                      // Full reversal of whatever is still unreversed
+                      amount:
+                        transfer.amount -
+                        (transfer.amount_reversed || 0),
+                    });
+                  }
+                } catch (e) {
+                  console.warn(
+                    "[PARTIAL REFUND] transfer reversal failed (refund succeeded):",
+                    e?.message || e
+                  );
+                }
 
                 await db.query(
                   `UPDATE orders SET status = 'refunded' WHERE id = $1`,
@@ -733,9 +734,9 @@ router.patch(
       // 3) Update the request status
       const { rows: upd } = await db.query(
         `UPDATE custom_requests
-            SET status = $1
-          WHERE id = $2
-        RETURNING *`,
+         SET status = $1
+         WHERE id = $2
+         RETURNING *`,
         [newStatus, requestId]
       );
 
@@ -748,21 +749,21 @@ router.patch(
             const { rows: emailRows } = await db.query(
               `SELECT u.email AS buyer_email,
                       p.title AS product_title
-                 FROM custom_requests cr
-                 JOIN orders   o ON o.id = cr.order_id
-                 JOIN products p ON p.id = o.product_id
-                 JOIN users    u ON u.id = cr.buyer_id
-                WHERE cr.id = $1
-                LIMIT 1`,
-              [requestId]
+               FROM custom_requests cr
+               JOIN orders o ON o.id = cr.order_id
+               JOIN products p ON p.id = o.product_id
+               JOIN users u ON u.id = cr.buyer_id
+               WHERE cr.id = $1
+               LIMIT 1`,
+               [requestId]
             );
 
             if (!emailRows.length) return;
+
             const { buyer_email, product_title } = emailRows[0];
             if (!buyer_email) return;
 
             const msg = T.userRequestRefunded({ productTitle: product_title });
-
             await sendEmail({
               to: buyer_email,
               subject: msg.subject,
@@ -791,6 +792,7 @@ router.patch(
     }
   }
 );
+
 
 /**
  * CREATOR delivers a file (only after payment)
