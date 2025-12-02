@@ -572,7 +572,22 @@ router.patch(
 
       // If creator is declining, attempt a partial refund (keep Stripe fee, refund rest)
       if (action === "decline" && order && cr.order_id) {
-        if (process.env.NODE_ENV === "production") {
+        const isFree =
+          !order.amount_cents || Number(order.amount_cents) <= 0;
+        const hasPaymentIntent = !!order.stripe_payment_intent_id;
+
+        // For free or non Stripe backed orders, skip Stripe refunds entirely
+        if (isFree || !hasPaymentIntent) {
+          console.log(
+            "[REQUEST DECISION] Decline for free or non Stripe order, skipping Stripe refund",
+            {
+              requestId,
+              orderId: cr.order_id,
+              amountCents: order.amount_cents,
+              stripePaymentIntentId: order.stripe_payment_intent_id,
+            }
+          );
+        } else if (process.env.NODE_ENV === "production") {
           try {
             const stripe = getStripe();
 
@@ -586,7 +601,7 @@ router.patch(
 
             const stripeOpts = { stripeAccount: stripeAccountId };
 
-            // 🔑 Retrieve the PI on the CONNECTED account and expand charges
+            // Retrieve the PI on the connected account and expand charges
             const pi = await stripe.paymentIntents.retrieve(
               order.stripe_payment_intent_id,
               {
@@ -653,8 +668,8 @@ router.patch(
               if (feeCents > 0 && feeCents < totalAmount) {
                 desiredRefund = totalAmount - feeCents;
               } else {
-                // Fallback estimate if we couldn't read fee from Stripe
-                const estimatedFee = Math.round(totalAmount * 0.03) + 30; // ~3% + 30¢
+                // Fallback estimate if we could not read fee from Stripe
+                const estimatedFee = Math.round(totalAmount * 0.03) + 30; // approx 3 percent + 30 cents
                 desiredRefund = Math.max(totalAmount - estimatedFee, 0);
               }
 
@@ -678,7 +693,7 @@ router.patch(
                   {
                     payment_intent: order.stripe_payment_intent_id,
                     amount: refundAmountCents,
-                    // Reverse your 4% application fee on the platform
+                    // Reverse your 4 percent application fee on the platform
                     refund_application_fee: true,
                   },
                   stripeOpts
