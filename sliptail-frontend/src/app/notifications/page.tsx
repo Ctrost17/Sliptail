@@ -228,7 +228,7 @@ export default function NotificationsPage() {
       <main className="mx-auto max-w-4xl space-y-4 p-4">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Notifications</h1>
-          <div className="cursor-pointer flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <label className="flex items-center gap-1 text-sm">
               <input
                 type="checkbox"
@@ -237,18 +237,19 @@ export default function NotificationsPage() {
               />
               Unread only
             </label>
-            <button
-              onClick={markAll}
-              className="cursor-pointer rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
-            >
-              Mark all read
-            </button>
-            <button
-              onClick={load}
-              className="cursor-pointer rounded-lg border px-3 py-1 text-sm hover:bg-neutral-50"
-            >
-              Refresh
-            </button>
+              <button
+                onClick={markAll}
+                className="
+                  cursor-pointer rounded-full border px-4 py-1.5 text-sm font-medium
+                  bg-white shadow-sm                    /* Default pill + light shadow */
+                  hover:bg-neutral-50 hover:shadow-md   /* Desktop hover feedback */
+                  active:bg-neutral-100 active:shadow-inner
+                  touch:bg-white touch:shadow-sm        /* Touch devices remain white */
+                  transition-all duration-150
+                "
+              >
+                Mark all read
+              </button>
           </div>
         </div>
 

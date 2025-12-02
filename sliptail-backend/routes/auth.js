@@ -807,4 +807,174 @@ router.get("/me", requireAuth, async (req, res) => {
   });
 });
 
+/**
+ * POST /api/auth/complete-invite
+ * Body: { token, password, username?, displayName? }
+ *
+ * Used by agency invited creators to set their password and complete account setup.
+ * Also verifies their email and logs them in.
+ */
+router.post("/complete-invite", strictLimiter, async (req, res) => {
+  try {
+    const { token, password, username, displayName } = req.body || {};
+
+    if (!token || !password) {
+      return res
+        .status(400)
+        .json({ error: "token and password are required" });
+    }
+
+    // Look up token and attached user
+    const { rows } = await db.query(
+      `
+      SELECT
+        t.id,
+        t.user_id,
+        t.token,
+        t.token_type,
+        t.expires_at,
+        t.consumed_at,
+        u.email,
+        u.role,
+        u.username,
+        u.password_hash,
+        u.email_verified_at
+      FROM user_tokens t
+      JOIN users u
+        ON u.id = t.user_id
+      WHERE t.token = $1
+        AND t.token_type = 'email_verify'
+      LIMIT 1
+    `,
+      [token]
+    );
+
+    if (!rows.length) {
+      return res.status(400).json({ error: "Invalid token" });
+    }
+
+    const t = rows[0];
+
+    if (t.consumed_at) {
+      return res.status(400).json({ error: "Token already used" });
+    }
+
+    if (new Date(t.expires_at) < new Date()) {
+      return res.status(400).json({ error: "Token expired" });
+    }
+
+    const userId = t.user_id;
+
+    // Hash the new password
+    const hashed = await bcrypt.hash(String(password), 10);
+
+    // 1) Update password and mark email verified
+    const sets = [
+      "password_hash = $1",
+      "updated_at = NOW()",
+      "email_verified_at = NOW()",
+      "email_verified = TRUE",
+    ];
+
+    await db.query(
+      `UPDATE users
+          SET ${sets.join(", ")}
+        WHERE id = $2`,
+      [hashed, userId]
+    );
+
+    // 2) Optional: set username if provided
+    if (username && String(username).trim().length > 0) {
+      const cleanUsername = String(username).trim();
+
+      try {
+        await db.query(
+          `
+          UPDATE users
+             SET username = $1,
+                 updated_at = NOW()
+           WHERE id = $2`,
+          [cleanUsername, userId]
+        );
+      } catch (e) {
+        // Unique constraint on username
+        if (e && e.code === "23505") {
+          return res
+            .status(409)
+            .json({ error: "That username is already taken" });
+        }
+        // Any other error
+        console.error("complete-invite username error:", e);
+        return res
+          .status(500)
+          .json({ error: "Failed to set username for this account" });
+      }
+    }
+
+    // 3) Optional: set creator display name if provided
+    if (displayName && String(displayName).trim().length > 0) {
+      const cleanDisplayName = String(displayName).trim();
+
+      await db.query(
+        `
+        UPDATE creator_profiles
+           SET display_name = $1,
+               updated_at   = NOW()
+         WHERE user_id = $2`,
+        [cleanDisplayName, userId]
+      );
+    }
+
+    // 4) Consume the token so it cannot be reused
+    await db.query(
+      `
+      UPDATE user_tokens
+         SET consumed_at = NOW()
+       WHERE id = $1`,
+      [t.id]
+    );
+
+    // 5) Pull fresh user row for issuing JWT
+    const { rows: urows } = await db.query(
+      `
+      SELECT id, email, role, email_verified_at, created_at, username, password_hash
+        FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (!urows.length) {
+      return res
+        .status(500)
+        .json({ error: "User missing after invite completion" });
+    }
+
+    const user = urows[0];
+
+    // 6) Issue JWT session and set cookie like login/verify/reset
+    const sessionToken = issueJwt(user);
+
+    res.cookie("token", sessionToken, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV !== "development",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    // Respond with safe user payload
+    return res.json({
+      ok: true,
+      user: toSafeUser(user),
+    });
+  } catch (e) {
+    console.error("complete-invite error:", e);
+    return res
+      .status(500)
+      .json({ error: "Failed to complete invite, please try again" });
+  }
+});
+
+
 module.exports = router;

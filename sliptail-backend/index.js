@@ -6,6 +6,7 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const db = require('./db');
 
 const authRoutes = require('./routes/auth');
+const { agencyResolver } = require("./middleware/agency");
 const authLogoutRoutes = require('./routes/authLogout');
 const checkoutRoutes = require('./routes/checkout');
 const stripeRoutes = require('./routes/stripe');
@@ -14,6 +15,8 @@ const orderRoutes = require("./routes/orders");
 const downloadRoutes = require("./routes/downloads");
 const requestRoutes = require("./routes/requests");
 const creatorDashboardRoutes = require("./routes/creatorDashboard");
+const agencyRoutes = require("./routes/agency");
+const agencyAdminRoutes = require("./routes/agencyAdmin");
 const membershipRoutes = require("./routes/memberships");
 const postRoutes = require("./routes/posts");
 const uploadRoutes = require("./routes/uploads");
@@ -42,9 +45,12 @@ const app = express();
 // If deploying behind a proxy/load balancer (Railway/Render/Heroku/Nginx/Cloudflare)
 app.set("trust proxy", 1); // so secure cookies work
 
+// Attach agency info based on Host header (sliptail.com, members.coachtown.com, etc)
+app.use(agencyResolver);
+
 // CORS: must come FIRST to handle all requests
 app.use(cors({
-  origin: FRONTEND,
+  origin: true, // echo the request Origin, works for all your domains
   credentials: true,
   methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"], // <-- allow Bearer header
@@ -112,6 +118,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/stripe-connect", stripeConnectRoutes);
 app.use("/api/stripe-checkout", stripeCheckoutRoutes);
 app.use("/api/checkout", checkoutRoutes);
+app.use("/api/agency", agencyRoutes); // ← add this
+app.use("/api/agency/admin", agencyAdminRoutes);  // add this line
 app.use(
   "/uploads",
   (_req, res, next) => {

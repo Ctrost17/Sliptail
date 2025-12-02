@@ -3,6 +3,9 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const db = require("../db");
 const { requireAdmin } = require("../middleware/auth");
+const Stripe = require("stripe");
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+const stripe = stripeKey ? Stripe(stripeKey) : null;
 
 const router = express.Router();
 const { JWT_SECRET } = process.env;
@@ -81,44 +84,130 @@ async function withTx(run) {
   }
 }
 
+async function cancelStripeMembershipsForUser(userId) {
+  if (!stripe) {
+    console.warn(
+      "[admin] STRIPE_SECRET_KEY not set, skipping remote subscription cancellation for user",
+      userId
+    );
+    return;
+  }
+
+  try {
+    // Grab all active/trialing subs where this user is buyer OR creator
+    const { rows } = await db.query(
+      `
+        SELECT DISTINCT stripe_subscription_id
+        FROM memberships
+        WHERE stripe_subscription_id IS NOT NULL
+          AND status IN ('active', 'trialing')
+          AND (buyer_id = $1 OR creator_id = $1)
+      `,
+      [userId]
+    );
+
+    for (const row of rows) {
+      const subId = row.stripe_subscription_id;
+      if (!subId) continue;
+
+      try {
+        // Immediate cancellation – stops future charges
+        await stripe.subscriptions.cancel(subId);
+        // If you prefer cancel at period end instead:
+        // await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+        console.log("[admin] cancelled Stripe subscription", subId, "for user", userId);
+      } catch (err) {
+        console.warn(
+          "[admin] failed to cancel Stripe subscription",
+          subId,
+          "for user",
+          userId,
+          err?.message || err
+        );
+      }
+    }
+  } catch (e) {
+    console.error(
+      "[admin] failed to fetch memberships for Stripe cancellation for user",
+      userId,
+      e
+    );
+  }
+}
+
+
 // Centralized hard delete to keep referential integrity
 async function hardDeleteUser(queryFn, userId) {
+  // Orders where this user is the creator (via their products)
   await runOptional(
     queryFn,
     `DELETE FROM orders o USING products p
-      WHERE o.product_id = p.id AND p.user_id = $1`,
+       WHERE o.product_id = p.id
+         AND p.user_id = $1`,
     [userId]
   );
+
+  // Reviews on this user’s products
   await runOptional(
     queryFn,
     `DELETE FROM reviews r USING products p
-      WHERE r.product_id = p.id AND p.user_id = $1`,
+       WHERE r.product_id = p.id
+         AND p.user_id = $1`,
     [userId]
   );
 
+  // Reviews where they were buyer or creator
   await runOptional(queryFn, `DELETE FROM reviews WHERE buyer_id = $1`, [userId]);
   await runOptional(queryFn, `DELETE FROM reviews WHERE creator_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM memberships WHERE user_id = $1`, [userId]);
+
+  // Memberships where they were buyer or creator
+  await runOptional(queryFn, `DELETE FROM memberships WHERE buyer_id = $1`, [userId]);
   await runOptional(queryFn, `DELETE FROM memberships WHERE creator_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM requests WHERE buyer_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM requests WHERE seller_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM notifications WHERE user_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM notifications WHERE actor_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM posts WHERE user_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM downloads WHERE user_id = $1`, [userId]);
-  await runOptional(queryFn, `DELETE FROM downloads WHERE buyer_id = $1`, [userId]);
+
+  // Custom requests (table is custom_requests, columns buyer_id / creator_id)
   await runOptional(
     queryFn,
-    `DELETE FROM messages WHERE sender_id = $1 OR recipient_id = $1`,
+    `DELETE FROM custom_requests WHERE buyer_id = $1`,
     [userId]
   );
+  await runOptional(
+    queryFn,
+    `DELETE FROM custom_requests WHERE creator_id = $1`,
+    [userId]
+  );
+
+  // Notifications (only user_id exists)
+  await runOptional(queryFn, `DELETE FROM notifications WHERE user_id = $1`, [userId]);
+
+  // Posts – column is creator_id, not user_id
+  await runOptional(queryFn, `DELETE FROM posts WHERE creator_id = $1`, [userId]);
+
+  // Orders where they were buyer
   await runOptional(queryFn, `DELETE FROM orders WHERE buyer_id = $1`, [userId]);
 
-  await runOptional(queryFn, `DELETE FROM creator_categories WHERE creator_id = $1`, [userId]);
+  // Stripe Connect
+  await runOptional(
+    queryFn,
+    `DELETE FROM stripe_connect WHERE user_id = $1`,
+    [userId]
+  );
+
+  // Creator categories
+  await runOptional(
+    queryFn,
+    `DELETE FROM creator_categories WHERE creator_id = $1`,
+    [userId]
+  );
+
+  // Products and profile owned by this user
   await runOptional(queryFn, `DELETE FROM products WHERE user_id = $1`, [userId]);
   await runOptional(queryFn, `DELETE FROM creator_profiles WHERE user_id = $1`, [userId]);
 
-  const deleted = await queryFn(`DELETE FROM users WHERE id = $1 RETURNING id`, [userId]);
+  // Finally, delete the user row itself
+  const deleted = await queryFn(
+    `DELETE FROM users WHERE id = $1 RETURNING id`,
+    [userId]
+  );
   if (!deleted.rows.length) {
     throw Object.assign(new Error("User not found"), { statusCode: 404 });
   }
@@ -241,6 +330,29 @@ router.post("/users/:id/reactivate", async (req, res) => {
   }
 });
 
+/** DELETE /api/admin/users/:id (hard delete user + dependents) */
+router.delete("/users/:id", async (req, res) => {
+  const userId = parseInt(req.params.id, 10);
+
+  try {
+    // 1) Cancel any active/trialing Stripe memberships for this user
+    await cancelStripeMembershipsForUser(userId);
+
+    // 2) Hard delete user + related rows in a transaction
+    await withTx(async (q) => {
+      await hardDeleteUser(q, userId);
+    });
+
+    return res.json({ success: true, id: userId });
+  } catch (e) {
+    const status = e.statusCode || 500;
+    console.error("admin DELETE /users/:id error:", e);
+    return res
+      .status(status)
+      .json({ error: e.message || "Failed to hard-delete user" });
+  }
+});
+
 /* -------------------------- CREATORS: list & remove --------------------- */
 /**
  * GET /api/admin/creators?query=&only_active=true&limit=20&offset=0
@@ -318,13 +430,16 @@ router.get("/creators", async (req, res) => {
 router.delete("/creators/:id", async (req, res) => {
   const creatorId = parseInt(req.params.id, 10);
   try {
+    // Cancel Stripe subscriptions for this user as creator and/or buyer
+    await cancelStripeMembershipsForUser(creatorId);
+
     await withTx(async (q) => {
       await hardDeleteUser(q, creatorId);
     });
+
     return res.json({ success: true, id: creatorId });
   } catch (e) {
     const status = e.statusCode || 500;
-    // eslint-disable-next-line no-console
     console.error("admin DELETE /creators/:id error:", e);
     return res.status(status).json({ error: e.message || "Failed to hard-delete creator" });
   }

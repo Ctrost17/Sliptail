@@ -32,6 +32,43 @@ if (!OAUTH_CONFIGURED) {
   );
 }
 
+// Build a callback URL based on the incoming host, falling back to GOOGLE_CALLBACK_URL
+function getCallbackURL(req) {
+  // If we don't have a configured base callback, just return it as-is
+  if (!GOOGLE_CALLBACK_URL) {
+    return GOOGLE_CALLBACK_URL;
+  }
+
+  const hostHeader = (req.headers.host || "").split(":")[0];
+  if (!hostHeader) {
+    return GOOGLE_CALLBACK_URL;
+  }
+
+  try {
+    // GOOGLE_CALLBACK_URL is your base, e.g. https://sliptail.com/api/auth/google/callback
+    const base = new URL(GOOGLE_CALLBACK_URL);
+    // Keep the path from the env, but swap in the current host and protocol
+    base.host = hostHeader;
+    // Try to use the real protocol, default to https in production
+    base.protocol = req.protocol || base.protocol || "https:";
+    return base.toString();
+  } catch (e) {
+    console.warn("[Google OAuth] getCallbackURL failed, falling back:", e?.message || e);
+    return GOOGLE_CALLBACK_URL;
+  }
+}
+
+// Build the frontend base URL from the incoming host (for redirects after login)
+function getFrontendBase(req) {
+  const hostHeader = (req.headers.host || "").split(":")[0];
+  if (!hostHeader) {
+    // fallback to the env-based frontend URL (sliptail.com)
+    return FRONTEND_URL.replace(/\/$/, "");
+  }
+  const protocol = req.protocol || "https";
+  return `${protocol}://${hostHeader}`;
+}
+
 /* ------------------------------ helpers -------------------------------------- */
 function baseUsernameFromProfile(profile, email) {
   const fromName = (profile.displayName || "")
@@ -143,21 +180,23 @@ if (OAUTH_CONFIGURED) {
 /* --------------------------- OAuth entry (“start”) --------------------------- */
 // We preserve ?next=... through OAuth using the `state` param.
 if (OAUTH_CONFIGURED) {
-  router.get("/google/start", (req, res, next) => {
-    try {
-      const nextParam = typeof req.query.next === "string" ? req.query.next : undefined;
+      router.get("/google/start", (req, res, next) => {
+        try {
+          const nextParam = typeof req.query.next === "string" ? req.query.next : undefined;
+          const callbackURL = getCallbackURL(req);
 
-      passport.authenticate("google", {
-        session: false,
-        scope: ["profile", "email"],
-        prompt: "select_account",
-        state: nextParam, // round-trip desired landing page
-      })(req, res, next);
-    } catch (e) {
-      console.error("[Google OAuth] /google/start error:", e);
-      res.status(500).json({ error: "OAuth start failed", detail: String(e) });
-    }
-  });
+          passport.authenticate("google", {
+            session: false,
+            scope: ["profile", "email"],
+            prompt: "select_account",
+            state: nextParam, // round-trip desired landing page
+            callbackURL,      // domain-aware callback
+          })(req, res, next);
+        } catch (e) {
+          console.error("[Google OAuth] /google/start error:", e);
+          res.status(500).json({ error: "OAuth start failed", detail: String(e) });
+        }
+      });
 } else {
   router.get("/google/start", (_req, res) => {
     res.status(503).json({ error: "Google OAuth is not configured", missing });
@@ -166,68 +205,84 @@ if (OAUTH_CONFIGURED) {
 
 /* ------------------------------ OAuth callback ------------------------------ */
 if (OAUTH_CONFIGURED) {
-  router.get(
-    "/google/callback",
-    (req, res, next) => {
-      if (req.query.error) {
-        console.error("[Google OAuth] callback error:", req.query.error, req.query.error_description);
-      }
-      next();
-    },
+ router.get(
+  "/google/callback",
+  (req, res, next) => {
+    if (req.query.error) {
+      console.error(
+        "[Google OAuth] callback error:",
+        req.query.error,
+        req.query.error_description
+      );
+    }
+    next();
+  },
+  (req, res, next) => {
+    // Use a domain-aware callback URL here as well
+    const callbackURL = getCallbackURL(req);
+
     passport.authenticate("google", {
       session: false,
-      failureRedirect: FRONTEND_URL + "/auth/login?oauth_error=1",
-    }),
-          async (req, res) => {
-            try {
-              const user = req.user;
-              if (!user) {
-                console.error("[Google OAuth] No user on req after authenticate()");
-                return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
-              }
+      failureRedirect: getFrontendBase(req) + "/auth/login?oauth_error=1",
+      callbackURL,
+    })(req, res, next);
+  },
+  async (req, res) => {
+    try {
+      const user = req.user;
+      if (!user) {
+        console.error("[Google OAuth] No user on req after authenticate()");
+        return res.redirect(getFrontendBase(req) + "/auth/login?oauth_error=1");
+      }
 
-              // fresh JWT
-              const token = jwt.sign(
-                { id: user.id, email: user.email, role: user.role || "user", email_verified_at: user.email_verified_at ?? null },
-                JWT_SECRET,
-                { expiresIn: "7d" }
-              );
+      // fresh JWT
+      const token = jwt.sign(
+        {
+          id: user.id,
+          email: user.email,
+          role: user.role || "user",
+          email_verified_at: user.email_verified_at ?? null,
+        },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
 
-              // Set session cookie
-              res.cookie("token", token, {
-                httpOnly: true,
-                sameSite: "lax",
-                secure: process.env.NODE_ENV !== "development",
-                path: "/",
-                maxAge: 7 * 24 * 60 * 60 * 1000,
-              });
+      // Set session cookie on the current domain (agency or Sliptail)
+      res.cookie("token", token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV !== "development",
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
 
-              // 🔔 Fire welcome notify here only if the account was created right now via Google
-              if (user.__just_created) {
-                try {
-                  await notify(
-                    user.id,
-                    "welcome",
-                    "Welcome aboard!",
-                    "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
-                    { source: "google_oauth" }
-                  );
-                } catch (e) {
-                  console.warn("[Google OAuth] welcome notify (callback) failed:", e?.message || e);
-                }
-              }
+      // Welcome notification only if just created
+      if (user.__just_created) {
+        try {
+          await notify(
+            user.id,
+            "welcome",
+            "Welcome aboard!",
+            "Your account has been successfully created. We’re glad to have you with us — start creating and supporting",
+            { source: "google_oauth" }
+          );
+        } catch (e) {
+          console.warn("[Google OAuth] welcome notify (callback) failed:", e?.message || e);
+        }
+      }
 
-              // Redirect
-              const state = typeof req.query.state === "string" ? req.query.state : "/";
-              const nextPath = state.startsWith("/") ? state : "/";
-              const base = FRONTEND_URL.replace(/\/$/, "");
-              return res.redirect(`${base}/auth/complete?next=${encodeURIComponent(nextPath)}`);
-            } catch (e) {
-              console.error("[Google OAuth] callback handler error:", e);
-              return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");
-            }
-          }
-  );
+      // Redirect back to the right domain
+      const state = typeof req.query.state === "string" ? req.query.state : "/";
+      const nextPath = state.startsWith("/") ? state : "/";
+      const base = getFrontendBase(req); // e.g. https://sliptail.com or https://members.agency.com
+
+      return res.redirect(`${base}/auth/complete?next=${encodeURIComponent(nextPath)}`);
+    } catch (e) {
+      console.error("[Google OAuth] callback handler error:", e);
+      return res.redirect(getFrontendBase(req) + "/auth/login?oauth_error=1");
+    }
+  }
+);
 } else {
   router.get("/google/callback", (_req, res) => {
     return res.redirect(FRONTEND_URL + "/auth/login?oauth_error=1");

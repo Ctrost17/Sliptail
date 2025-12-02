@@ -2,9 +2,12 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useRef } from "react";
+import { useAgencyConfig } from "@/hooks/useAgencyConfig";
 
 export default function Footer() {
   const ref = useRef<HTMLElement | null>(null);
+
+  const agency = useAgencyConfig();
 
   useEffect(() => {
     const el = ref.current;
@@ -40,19 +43,29 @@ export default function Footer() {
 
       <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 sm:flex-row">
         {/* Links */}
-        <div className="flex gap-8">
-          <Link href="/support" className="text-l font-medium text-white transition-colors">
-            Support
-          </Link>
-          <Link href="/about" className="text-l font-medium text-white transition-colors">
-            About
-          </Link>
-          <Link href="/terms" className="text-l font-medium text-white transition-colors">
-            Terms of Use
-          </Link>
-        </div>
+          <div className="flex gap-8">
+            <Link
+              href={agency?.supportUrl || "/support"}
+              className="text-l font-medium text-white transition-colors"
+            >
+              Support
+            </Link>
 
+            {agency?.isSliptail && (
+              <Link href="/about" className="text-l font-medium text-white transition-colors">
+                About
+              </Link>
+            )}
+
+            <Link
+              href={agency?.termsUrl || "/terms"}
+              className="text-l font-medium text-white transition-colors"
+            >
+              Terms of Use
+            </Link>
+          </div>
         {/* Social icons */}
+        {agency?.isSliptail && (
         <div className="flex items-center gap-6">
           <a
             href="https://www.instagram.com/sliptail_/"
@@ -101,7 +114,7 @@ export default function Footer() {
               className="h-9 w-9 rounded-md"
             />
           </a>
-        </div>
+        </div>)}
       </div>
     </footer>
   );

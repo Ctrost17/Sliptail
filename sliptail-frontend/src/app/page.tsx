@@ -228,8 +228,8 @@ function ProductTypesSection() {
         <span className="pointer-events-none absolute -bottom-2 left-1/2 h-1 w-48 -translate-x-1/2 rounded-full bg-gradient-to-r from-emerald-400 via-cyan-400 to-sky-500"></span>
       </h2>
       <p className="mx-auto mb-10 max-w-3xl text-center text-sm sm:text-base text-neutral-700">
-        Whether you’re a <strong>creator</strong> launching your next revenue stream or a{" "}
-        <strong>fan</strong> discovering new favorites—you’ll find flexible ways to support and get value.
+        Whether you’re a <strong>creator</strong> launching your next revenue stream or an{" "}
+        <strong>individual</strong> discovering new favorites—you’ll find flexible ways to support and get value.
       </p>
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-2">
@@ -262,7 +262,7 @@ function ProductTypesSection() {
                 </ul>
               </div>
               <div>
-                <div className="mb-1 mt-2 font-semibold">For fans</div>
+                <div className="mb-1 mt-2 font-semibold">For users</div>
                 <ul className="space-y-1 text-neutral-700">
                   {it.fanPoints.map((p, i) => (
                     <li key={i} className="flex items-start gap-2">
@@ -506,7 +506,7 @@ export default function Home() {
               href="/creators"
               className="rounded-md border border-black px-8 py-3 font-semibold text-black bg-white transition hover:scale-105 "
             >
-              For Fans: Explore Creators
+             Explore Creators
             </Link>
           </div>
         </div>
@@ -649,8 +649,7 @@ export default function Home() {
       <section className="bg-gradient-to-r from-emerald-300 via-cyan-400 to-sky-400 py-20 text-center text-black">
         <h2 className="mb-4 text-4xl font-bold">Join Sliptail Today</h2>
         <p className="mx-auto mb-8 max-w-xl text-lg">
-          Whether you’re a creator or a fan, Sliptail makes connecting simple,
-          safe, and fun.
+          Whether you are a creator or connecting with one, Sliptail makes it simple, safe, and fun.
         </p>
         <StartSellingCTA>Get Started</StartSellingCTA>
       </section>

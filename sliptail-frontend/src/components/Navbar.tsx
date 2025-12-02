@@ -4,9 +4,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useAgencyConfig } from "@/hooks/useAgencyConfig";
 import { useAuth } from "@/components/auth/AuthProvider"; // ⬅️ use context instead of SWR
 import { useCreatorStatus } from "@/hooks/useCreatorStatus";
 import useUnreadNotifications from "@/hooks/useUnreadNotifications";
+
 
 /* ---------------------------- Component --------------------------- */
 
@@ -15,6 +17,8 @@ export default function Navbar() {
 
   // Auth from context (updates immediately when idle logout fires)
   const { user, logout } = useAuth();
+
+  const agency = useAgencyConfig();
 
   // Creator status via your hook
   const { isCreator } = useCreatorStatus();
@@ -81,7 +85,12 @@ export default function Navbar() {
         {/* Left: Logo */}
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-3" aria-label="Home">
-            <Image src="/sliptail-logofull.png" alt="Sliptail" width={130} height={40} />
+            <Image
+              src={agency?.logoUrl || "/sliptail-logofull.png"}
+              alt={agency?.brandName || "Sliptail"}
+              width={130}
+              height={40}
+            />
           </Link>
         </div>
 
