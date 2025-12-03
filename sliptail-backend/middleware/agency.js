@@ -10,18 +10,20 @@ async function agencyResolver(req, res, next) {
 
     if (host) {
       // Try to match by domain first
-      agency = await db.oneOrNone(
-        "select * from agencies where primary_domain = $1 and is_active = true",
+      const { rows } = await db.query(
+        "select * from agencies where primary_domain = $1 and is_active = true limit 1",
         [host]
       );
+      agency = rows[0] || null;
     }
 
     // Fallback: Sliptail as default (slug = 'sliptail')
     if (!agency) {
-      agency = await db.oneOrNone(
-        "select * from agencies where slug = $1",
+      const { rows } = await db.query(
+        "select * from agencies where slug = $1 limit 1",
         ["sliptail"]
       );
+      agency = rows[0] || null;
     }
 
     req.agency = agency;

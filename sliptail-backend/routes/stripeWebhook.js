@@ -907,6 +907,7 @@ module.exports = async function stripeWebhook(req, res) {
         break;
       }
 
+      case "invoice.payment_succeeded":
       case "invoice.paid": {
         const invoice = event.data.object;
         const subId = invoice.subscription;
