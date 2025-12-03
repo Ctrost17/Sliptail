@@ -22,13 +22,9 @@ function getStripe() {
 }
 
 // 4% fee in basis points (same as stripeCheckout.js)
-const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "690", 10);
-
-// Fixed platform fee in cents (for the "+ $0.30" part)
-const PLATFORM_FIXED_FEE_CENTS = parseInt(
-  process.env.PLATFORM_FIXED_FEE_CENTS || "30",
-  10
-);
+// Note: in the direct-charges model, Stripe applies this via application fees.
+// We do NOT compute or move money in the webhook anymore.
+const PLATFORM_FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "400", 10);
 
 // If you use ONE webhook endpoint for everything, keep STRIPE_WEBHOOK_SECRET.
 // If you created a *separate* Connect webhook endpoint in Stripe Dashboard, you can
@@ -474,72 +470,6 @@ async function alreadyNotifiedCreatorSaleBySubscription(subId) {
   }
 }
 
-/**
- * For a given order, send the creator their share using a Stripe Transfer.
- * - Uses orders.amount_cents as the gross amount (what the buyer paid in cents).
- * - Platform keeps PLATFORM_FEE_BPS of that.
- * - Creator gets: gross - stripe_fee - platform_cut
- */
-async function createCreatorTransferForOrder(orderId, stripe, sourceChargeId) {
-  const { rows } = await db.query(
-    `
-    SELECT
-      o.id            AS order_id,
-      o.amount_cents  AS amount_cents,
-      p.user_id       AS creator_id,
-      u.stripe_account_id
-    FROM orders o
-    JOIN products p ON p.id = o.product_id
-    JOIN users    u ON u.id = p.user_id
-    WHERE o.id = $1
-    LIMIT 1
-    `,
-    [orderId]
-  );
-
-  if (!rows.length) return;
-  const row = rows[0];
-
-  if (!row.stripe_account_id) {
-    // Creator has no connected account, nothing to transfer
-    return;
-  }
-
-  const gross = Number(row.amount_cents || 0);
-  if (!Number.isFinite(gross) || gross <= 0) {
-    return;
-  }
-
-  // Your fee: 6.9% + 30 cents
-  const variableCut = Math.floor((gross * PLATFORM_FEE_BPS) / 10000);
-  const platformTotalFee = variableCut + PLATFORM_FIXED_FEE_CENTS;
-
-  let creatorShare = gross - platformTotalFee;
-  if (!Number.isFinite(creatorShare) || creatorShare <= 0) {
-    // Nothing sensible to send
-    return;
-  }
-
-  creatorShare = Math.floor(creatorShare);
-
-  const transferPayload = {
-    amount: creatorShare,
-    currency: "usd",
-    destination: row.stripe_account_id,
-  };
-
-  if (sourceChargeId) {
-    transferPayload.source_transaction = sourceChargeId;
-  }
-
-  const idempotencyKey = `order_transfer_${row.order_id}`;
-
-  try {
-    await stripe.transfers.create(transferPayload, { idempotencyKey });
-  } catch (e) {
-    console.error("[transfers] createCreatorTransferForOrder error:", e);
-  }
-}
 
 /* ----------------------------- handler ----------------------------- */
 /**
@@ -665,37 +595,7 @@ module.exports = async function stripeWebhook(req, res) {
       } catch (e) {
         console.error("creator_sale notify (session.payment) error:", e);
       }
-
-      // NEW: send the creator their share using a Transfer
-      try {
-        const stripe = getStripe();
-
-        // Try to find the charge behind this checkout session
-        let sourceChargeId = null;
-        if (session.payment_intent) {
-          try {
-            const pi = await stripe.paymentIntents.retrieve(session.payment_intent);
-            if (pi && pi.latest_charge) {
-              sourceChargeId =
-                typeof pi.latest_charge === "string"
-                  ? pi.latest_charge
-                  : pi.latest_charge.id;
-            }
-          } catch (e) {
-            console.warn(
-              "[transfers] failed to retrieve payment_intent for session",
-              session.id,
-              e.message || e
-            );
-          }
-        }
-
-        await createCreatorTransferForOrder(orderId, stripe, sourceChargeId);
-      } catch (e) {
-        console.error("[transfers] error while creating transfer for order", e);
-        // Do not fail webhook. Order is still marked paid.
-      }
-    }
+    } 
 
     if (session.mode === "subscription") {
       // Allow guest membership: ensure a user row exists and attach stripe_customer_id
@@ -907,167 +807,20 @@ module.exports = async function stripeWebhook(req, res) {
         break;
       }
 
-      case "invoice.payment_succeeded":
+   case "invoice.payment_succeeded":
       case "invoice.paid": {
+        // Direct charges model:
+        // - Payment is processed on the creator's connected account
+        // - Sliptail gets its application_fee (percent) automatically
+        // We don't move money here anymore (no transfers).
         const invoice = event.data.object;
-        const subId = invoice.subscription;
-
-        console.log("[invoice.paid] event received", {
+        console.log("[invoice.paid] received", {
           invoiceId: invoice.id,
-          subId,
+          subId: invoice.subscription,
           amount_paid: invoice.amount_paid,
-          customer: invoice.customer,
-          charge: invoice.charge,
         });
-
-        if (!subId) {
-          console.warn("[invoice.paid] no subscription id on invoice", invoice.id);
-          break;
-        }
-
-        try {
-          const stripe = getStripe();
-
-          // Pull the latest subscription so we have metadata
-          const sub = await stripe.subscriptions.retrieve(subId);
-          const status = sub.status;
-          const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
-          const currentPeriodEnd = sub.current_period_end
-            ? new Date(sub.current_period_end * 1000)
-            : null;
-
-          console.log("[invoice.paid] subscription fetched", {
-            subId,
-            status,
-            cancelAtPeriodEnd,
-            currentPeriodEnd,
-            subMeta: sub.metadata,
-          });
-
-          // Keep memberships table in sync
-          await db.query(
-            `UPDATE memberships
-                SET status=$1,
-                    cancel_at_period_end=$2,
-                    current_period_end=$3,
-                    canceled_at = CASE
-                                    WHEN $1 = 'canceled' THEN NOW()
-                                    ELSE canceled_at
-                                  END
-              WHERE stripe_subscription_id=$4`,
-            [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
-          );
-
-          // ---- merge metadata from several places ----
-          const metaCombined = {
-            ...(invoice.subscription_details &&
-              invoice.subscription_details.metadata
-              ? invoice.subscription_details.metadata
-              : {}),
-            ...(invoice.metadata || {}),
-            ...(sub.metadata || {}),
-          };
-
-          console.log("[invoice.paid] metaCombined", metaCombined);
-
-          let creatorId = null;
-          if (metaCombined.creator_id) {
-            const parsed = parseInt(metaCombined.creator_id, 10);
-            if (Number.isFinite(parsed)) creatorId = parsed;
-          }
-
-          console.log("[invoice.paid] resolved creatorId and amount_paid", {
-            creatorId,
-            amount_paid: invoice.amount_paid,
-          });
-
-          // ---- simple "6.9% + 30c" transfer ----
-          if (creatorId && invoice.amount_paid && invoice.amount_paid > 0) {
-            const { rows } = await db.query(
-              `SELECT stripe_account_id
-                 FROM users
-                WHERE id = $1
-                LIMIT 1`,
-              [creatorId]
-            );
-            const acctRow = rows[0];
-
-            console.log("[invoice.paid] stripe account lookup", {
-              creatorId,
-              acctRow,
-            });
-
-            if (acctRow && acctRow.stripe_account_id) {
-              const gross = Number(invoice.amount_paid || 0); // cents
-              if (Number.isFinite(gross) && gross > 0) {
-                const variableCut = Math.floor(
-                  (gross * PLATFORM_FEE_BPS) / 10000
-                );
-                const platformTotalFee =
-                  variableCut + PLATFORM_FIXED_FEE_CENTS;
-
-                let creatorShare = gross - platformTotalFee;
-
-                console.log("[invoice.paid] fee calculation", {
-                  gross,
-                  variableCut,
-                  platformTotalFee,
-                  creatorShareBeforeClamp: creatorShare,
-                });
-
-                if (Number.isFinite(creatorShare) && creatorShare > 0) {
-                  creatorShare = Math.floor(creatorShare);
-
-                  const transferPayload = {
-                    amount: creatorShare,
-                    currency: invoice.currency || "usd",
-                    destination: acctRow.stripe_account_id,
-                  };
-
-                  if (invoice.charge) {
-                    transferPayload.source_transaction = invoice.charge;
-                  }
-
-                  const idempotencyKey = `sub_transfer_${subId}_${invoice.id}`;
-
-                  console.log("[invoice.paid] creating transfer", {
-                    transferPayload,
-                    idempotencyKey,
-                  });
-
-                  await stripe.transfers.create(transferPayload, {
-                    idempotencyKey,
-                  });
-
-                  console.log("[invoice.paid] transfer created successfully", {
-                    transferAmount: creatorShare,
-                    creatorId,
-                    stripe_account_id: acctRow.stripe_account_id,
-                  });
-                } else {
-                  console.warn(
-                    "[transfers] invoice.paid creatorShare <= 0; skipping transfer",
-                    { gross, platformTotalFee, creatorShare }
-                  );
-                }
-              }
-            } else {
-              console.warn(
-                "[transfers] invoice.paid: no stripe_account_id for creator",
-                { creatorId }
-              );
-            }
-          } else {
-            console.warn(
-              "[transfers] invoice.paid: missing creatorId or amount_paid",
-              { creatorId, amount_paid: invoice.amount_paid }
-            );
-          }
-        } catch (e) {
-          console.error("[transfers] invoice.paid transfer error:", e);
-          // Don't fail webhook
-        }
-
+        // Membership status and period end are already kept in sync via
+        // customer.subscription.* events above, so nothing else to do here.
         break;
       }
 

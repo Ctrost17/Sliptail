@@ -172,10 +172,13 @@ router.post(
     const defaultSuccessPath =
       isGuest && !isMembership ? "/checkout/signed-out" : "/checkout/success";
 
-    // Build success URL with just pid (no acct, because sessions now live on the platform account)
+    // Direct charges: sessions live on the CREATOR Stripe account.
+    // Include both pid and acct so /finalize knows which account to query.
     const baseSuccess = ensureSuccessUrl(success_url, defaultSuccessPath);
     const sep = baseSuccess.includes("?") ? "&" : "?";
-    const successUrl = `${baseSuccess}${sep}pid=${encodeURIComponent(p.id)}`;
+    const successUrl = `${baseSuccess}${sep}pid=${encodeURIComponent(
+      p.id
+    )}&acct=${encodeURIComponent(p.stripe_account_id)}`;
 
     const baseCancel = ensureCancelUrl(cancel_url);
     const csep = baseCancel.includes("?") ? "&" : "?";
@@ -268,109 +271,115 @@ router.post(
       }
     }
 
-    /* ------------------------------ STRIPE FLOW ------------------------------ */
-
-    const stripe = getStripe();
-      let session;
-
-    // Message that appears on Stripe Checkout
-    const EMAIL_HINT =
-      "Please double check your email. This is where your access will be sent.";
-
-    // Only show warning description if guest + one time purchase/request + paid product
-    const shouldShowEmailWarning =
-      !buyerId && finalMode === "payment" && amountCents > 0;
-
-    const productDescription = shouldShowEmailWarning
-      ? "⚠️ Make sure your email is correct so we can send you access!"
-      : undefined; // Stripe will omit undefined fields
+    /* ------------------------------ STRIPE FLOW (DIRECT CHARGES) ------------------------------ */
 
     try {
-        if (finalMode === "payment") {
-          // ONE-TIME: do not create DB order yet. Webhook or finalize will handle it.
-          const payload = {
+      const stripe = getStripe();
+      const stripeAccount = p.stripe_account_id; // Standard account for this creator
+
+      // Optional client-provided idempotency key
+      const clientKey = req.get("x-idempotency-key");
+      const requestOptions = { stripeAccount };
+      if (clientKey) {
+        requestOptions.idempotencyKey = clientKey;
+      }
+
+      let session;
+
+      if (finalMode === "payment") {
+        // One-time purchase or custom request
+        session = await stripe.checkout.sessions.create(
+          {
             mode: "payment",
             line_items: [
               {
                 price_data: {
                   currency: "usd",
                   product_data: {
-                    name: p.title || p.product_type || "Item",
-                    ...(productDescription
-                      ? { description: productDescription }
-                      : {}),
+                    name: p.title || "Sliptail product",
                   },
-                  unit_amount: Number(p.price), // already cents in DB
+                  unit_amount: amountCents,
                 },
                 quantity: 1,
               },
             ],
-            // No application_fee_amount here anymore – charge happens on the platform account
-            payment_intent_data: {
-              metadata: { ...baseMetadata },
-            },
-            metadata: { ...baseMetadata },
-            success_url: successUrl,
+            customer_creation: "if_required",
+            success_url: successUrl.replace(
+              "{CHECKOUT_SESSION_ID}",
+              "{CHECKOUT_SESSION_ID}"
+            ),
             cancel_url: cancelUrl,
-            custom_text: {
-              submit: {
-                message: EMAIL_HINT,
+            allow_promotion_codes: true,
+
+            payment_intent_data: {
+              // Direct charge on the creator account, but with a 4 percent app fee for Sliptail
+              application_fee_amount: feeAmount,
+              metadata: {
+                ...baseMetadata,
               },
             },
-          };
 
-          // Create session on the PLATFORM account (no stripeAccount override)
-          if (clientKey) {
-            session = await stripe.checkout.sessions.create(payload, {
-              idempotencyKey: clientKey,
-            });
-          } else {
-            session = await stripe.checkout.sessions.create(payload);
-          }
-        } else {
-          // SUBSCRIPTION (memberships only) – create on PLATFORM account
-          const payload = {
+            metadata: {
+              ...baseMetadata,
+            },
+          },
+          requestOptions
+        );
+      } else {
+        // Membership subscription
+        session = await stripe.checkout.sessions.create(
+          {
             mode: "subscription",
             line_items: [
               {
                 price_data: {
                   currency: "usd",
-                  product_data: { name: p.title || "Membership" },
-                  recurring: { interval: "month" },
-                  unit_amount: Number(p.price), // cents
+                  product_data: {
+                    name: p.title || "Sliptail membership",
+                  },
+                  unit_amount: amountCents,
+                  recurring: {
+                    interval: "month",
+                  },
                 },
                 quantity: 1,
               },
             ],
-            // No application_fee_percent – platform fee will be handled via transfers from invoices later
-            subscription_data: {
-              metadata: { ...baseMetadata },
-            },
-            metadata: { ...baseMetadata },
-            success_url: successUrl,
+            customer_creation: "if_required",
+            success_url: successUrl.replace(
+              "{CHECKOUT_SESSION_ID}",
+              "{CHECKOUT_SESSION_ID}"
+            ),
             cancel_url: cancelUrl,
-            custom_text: {
-              submit: {
-                message: EMAIL_HINT,
+            allow_promotion_codes: true,
+
+            subscription_data: {
+              // 4 percent platform fee on every invoice paid to this subscription
+              application_fee_percent: PLATFORM_FEE_BPS / 100,
+              metadata: {
+                ...baseMetadata,
               },
             },
-          };
 
-          // Create session on PLATFORM account
-          if (clientKey) {
-            session = await stripe.checkout.sessions.create(payload, {
-              idempotencyKey: clientKey,
-            });
-          } else {
-            session = await stripe.checkout.sessions.create(payload);
-          }
-        }
+            metadata: {
+              ...baseMetadata,
+            },
+          },
+          requestOptions
+        );
+      }
 
-      return res.json({ url: session.url, id: session.id });
+      const successWithSid = successUrl.replace(
+        "{CHECKOUT_SESSION_ID}",
+        encodeURIComponent(session.id)
+      );
+      return res.json({ id: session.id, url: successWithSid });
     } catch (err) {
-      console.error("[checkout.create-session] error:", err?.raw || err);
-      const msg = err?.raw?.message || err?.message || "Stripe error";
-      return res.status(400).json({ error: msg });
+      console.error("stripe.checkout.sessions.create error", err);
+      return res.status(500).json({
+        error: "Failed to create Stripe Checkout session",
+        details: err.message || String(err),
+      });
     }
   }
 );
