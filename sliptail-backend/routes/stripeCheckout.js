@@ -303,7 +303,6 @@ router.post(
                 quantity: 1,
               },
             ],
-            customer_creation: "if_required",
             success_url: successUrl.replace(
               "{CHECKOUT_SESSION_ID}",
               "{CHECKOUT_SESSION_ID}"
@@ -345,7 +344,6 @@ router.post(
                 quantity: 1,
               },
             ],
-            customer_creation: "if_required",
             success_url: successUrl.replace(
               "{CHECKOUT_SESSION_ID}",
               "{CHECKOUT_SESSION_ID}"
