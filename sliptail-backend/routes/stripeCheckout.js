@@ -271,114 +271,107 @@ router.post(
       }
     }
 
-    /* ------------------------------ STRIPE FLOW (DIRECT CHARGES) ------------------------------ */
+/* ------------------------------ STRIPE FLOW (DIRECT CHARGES) ------------------------------ */
 
-    try {
-      const stripe = getStripe();
-      const stripeAccount = p.stripe_account_id; // Standard account for this creator
+try {
+  const stripe = getStripe();
+  const stripeAccount = p.stripe_account_id; // Standard account for this creator
 
-      // Optional client-provided idempotency key
-      const clientKey = req.get("x-idempotency-key");
-      const requestOptions = { stripeAccount };
-      if (clientKey) {
-        requestOptions.idempotencyKey = clientKey;
-      }
+  // Optional client-provided idempotency key
+  const clientKey = req.get("x-idempotency-key");
+  const requestOptions = { stripeAccount };
+  if (clientKey) {
+    requestOptions.idempotencyKey = clientKey;
+  }
 
-      let session;
+  let session;
 
-      if (finalMode === "payment") {
-        // One-time purchase or custom request
-        session = await stripe.checkout.sessions.create(
+  if (finalMode === "payment") {
+    // One-time purchase or custom request
+    session = await stripe.checkout.sessions.create(
+      {
+        mode: "payment",
+        line_items: [
           {
-            mode: "payment",
-            line_items: [
-              {
-                price_data: {
-                  currency: "usd",
-                  product_data: {
-                    name: p.title || "Sliptail product",
-                  },
-                  unit_amount: amountCents,
-                },
-                quantity: 1,
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: p.title || "Sliptail product",
               },
-            ],
-            success_url: successUrl.replace(
-              "{CHECKOUT_SESSION_ID}",
-              "{CHECKOUT_SESSION_ID}"
-            ),
-            cancel_url: cancelUrl,
-            allow_promotion_codes: true,
-
-            payment_intent_data: {
-              // Direct charge on the creator account, but with a 4 percent app fee for Sliptail
-              application_fee_amount: feeAmount,
-              metadata: {
-                ...baseMetadata,
-              },
+              unit_amount: amountCents,
             },
-
-            metadata: {
-              ...baseMetadata,
-            },
+            quantity: 1,
           },
-          requestOptions
-        );
-      } else {
-        // Membership subscription
-        session = await stripe.checkout.sessions.create(
+        ],
+        // keep the {CHECKOUT_SESSION_ID} placeholder – Stripe will replace it
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        allow_promotion_codes: true,
+
+        payment_intent_data: {
+          // Direct charge on the creator account, but with a 4 percent app fee for Sliptail
+          application_fee_amount: feeAmount,
+          metadata: {
+            ...baseMetadata,
+          },
+        },
+
+        metadata: {
+          ...baseMetadata,
+        },
+      },
+      requestOptions
+    );
+  } else {
+    // Membership subscription
+    session = await stripe.checkout.sessions.create(
+      {
+        mode: "subscription",
+        line_items: [
           {
-            mode: "subscription",
-            line_items: [
-              {
-                price_data: {
-                  currency: "usd",
-                  product_data: {
-                    name: p.title || "Sliptail membership",
-                  },
-                  unit_amount: amountCents,
-                  recurring: {
-                    interval: "month",
-                  },
-                },
-                quantity: 1,
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: p.title || "Sliptail membership",
               },
-            ],
-            success_url: successUrl.replace(
-              "{CHECKOUT_SESSION_ID}",
-              "{CHECKOUT_SESSION_ID}"
-            ),
-            cancel_url: cancelUrl,
-            allow_promotion_codes: true,
-
-            subscription_data: {
-              // 4 percent platform fee on every invoice paid to this subscription
-              application_fee_percent: PLATFORM_FEE_BPS / 100,
-              metadata: {
-                ...baseMetadata,
+              unit_amount: amountCents,
+              recurring: {
+                interval: "month",
               },
             },
-
-            metadata: {
-              ...baseMetadata,
-            },
+            quantity: 1,
           },
-          requestOptions
-        );
-      }
+        ],
+        // keep the {CHECKOUT_SESSION_ID} placeholder
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        allow_promotion_codes: true,
 
-      const successWithSid = successUrl.replace(
-        "{CHECKOUT_SESSION_ID}",
-        encodeURIComponent(session.id)
-      );
-      return res.json({ id: session.id, url: successWithSid });
-    } catch (err) {
-      console.error("stripe.checkout.sessions.create error", err);
-      return res.status(500).json({
-        error: "Failed to create Stripe Checkout session",
-        details: err.message || String(err),
-      });
-    }
+        subscription_data: {
+          // 4 percent platform fee on every invoice paid to this subscription
+          application_fee_percent: PLATFORM_FEE_BPS / 100,
+          metadata: {
+            ...baseMetadata,
+          },
+        },
+
+        metadata: {
+          ...baseMetadata,
+        },
+      },
+      requestOptions
+    );
+  }
+
+  // IMPORTANT: send Stripe’s hosted Checkout URL back to the client
+  return res.json({ id: session.id, url: session.url });
+} catch (err) {
+  console.error("stripe.checkout.sessions.create error", err);
+  return res.status(500).json({
+    error: "Failed to create Stripe Checkout session",
+    details: err.message || String(err),
+  });
+}
   }
 );
 
