@@ -251,7 +251,7 @@ router.post(
 
       // create order (pending)
       const { rows: orderRows } = await db.query(
-        `INSERT INTO orders (buyer_id, product_id, amount, status, created_at)
+        `INSERT INTO orders (buyer_id, product_id, amount_cents, status, created_at)
          VALUES ($1, $2, $3, 'pending', NOW())
          RETURNING *`,
         [buyerId, product_id, amount]
@@ -535,15 +535,20 @@ router.patch(
           .json({ error: "Request is not pending and cannot be changed" });
       }
 
-      // 2) Load order row separately
+      // 2) Load order row with creator's Stripe account id
       let order = null;
       if (cr.order_id) {
         const { rows: orderRows } = await db.query(
-          `SELECT status AS order_status,
-                  stripe_payment_intent_id,
-                  amount_cents
-           FROM orders
-           WHERE id = $1`,
+          `SELECT
+            o.status AS order_status,
+            o.stripe_payment_intent_id,
+            o.amount_cents,
+            u.stripe_account_id
+          FROM orders o
+          JOIN products p ON p.id = o.product_id
+          JOIN users   u ON u.id = p.user_id
+          WHERE o.id = $1
+          LIMIT 1`,
           [cr.order_id]
         );
         order = orderRows[0] || null;
@@ -583,18 +588,25 @@ router.patch(
           );
         } else if (process.env.NODE_ENV === "production") {
           try {
-            const stripe = getStripe();
+              const stripe = getStripe();
+              const stripeAccountId = order.stripe_account_id || null;
 
-            // Retrieve the PI on the PLATFORM account and expand charges
-            const pi = await stripe.paymentIntents.retrieve(
-              order.stripe_payment_intent_id,
-              {
-                expand: [
-                  "latest_charge.balance_transaction",
-                  "charges.data.balance_transaction",
-                ],
+              if (!stripeAccountId) {
+                throw new Error("Missing stripe_account_id for creator; cannot refund");
               }
-            );
+
+              const requestOptions = { stripeAccount: stripeAccountId };
+
+              const pi = await stripe.paymentIntents.retrieve(
+                order.stripe_payment_intent_id,
+                {
+                  expand: [
+                    "latest_charge.balance_transaction",
+                    "charges.data.balance_transaction",
+                  ],
+                },
+                requestOptions
+              );
 
             // Try latest_charge first, then fall back to charges.data[0]
             let charge = null;
@@ -638,7 +650,7 @@ router.patch(
               if (bt && typeof bt === "object" && bt.fee != null) {
                 feeCents = bt.fee;
               } else if (bt && typeof bt === "string") {
-                const fullBt = await stripe.balanceTransactions.retrieve(bt);
+                const fullBt = await stripe.balanceTransactions.retrieve(bt, {}, requestOptions);
                 feeCents = fullBt.fee || 0;
               }
 
@@ -669,36 +681,14 @@ router.patch(
 
               if (refundAmountCents > 0) {
                 // 1) Refund the buyer for everything except the Stripe fee
-                await stripe.refunds.create({
-                  payment_intent: order.stripe_payment_intent_id,
-                  amount: refundAmountCents,
-                });
+                  await stripe.refunds.create(
+                  {
+                    payment_intent: order.stripe_payment_intent_id,
+                    amount: refundAmountCents,
+                  },
+                  requestOptions
+                );
 
-                // 2) Claw back the creator transfer so refunds aren't fully on you
-                try {
-                  const transfers = await stripe.transfers.list({
-                    source_transaction: charge.id,
-                    limit: 1,
-                  });
-
-                  const transfer = transfers.data[0];
-                  if (
-                    transfer &&
-                    (transfer.amount_reversed || 0) < transfer.amount
-                  ) {
-                    await stripe.transfers.createReversal(transfer.id, {
-                      // Full reversal of whatever is still unreversed
-                      amount:
-                        transfer.amount -
-                        (transfer.amount_reversed || 0),
-                    });
-                  }
-                } catch (e) {
-                  console.warn(
-                    "[PARTIAL REFUND] transfer reversal failed (refund succeeded):",
-                    e?.message || e
-                  );
-                }
 
                 await db.query(
                   `UPDATE orders SET status = 'refunded' WHERE id = $1`,
