@@ -472,7 +472,7 @@ async function alreadyNotifiedCreatorSaleBySubscription(subId) {
  * For a given order, send the creator their share using a Stripe Transfer.
  * - Uses orders.amount_cents as the gross amount (what the buyer paid in cents).
  * - Platform keeps PLATFORM_FEE_BPS of that.
- * - Creator gets the rest via transfer to their stripe_account_id.
+ * - Creator gets: gross - stripe_fee - platform_cut
  */
 async function createCreatorTransferForOrder(orderId, stripe, sourceChargeId) {
   // Look up order, product, and creator Stripe account
@@ -507,10 +507,39 @@ async function createCreatorTransferForOrder(orderId, stripe, sourceChargeId) {
 
   // Platform fee in cents (eg 4% of gross)
   const platformFee = Math.floor((gross * PLATFORM_FEE_BPS) / 10000);
-  const creatorShare = gross - platformFee;
-  if (creatorShare <= 0) {
+
+  // Look up Stripe's actual fee for this charge (card processing etc)
+  let stripeFeeCents = 0;
+  if (sourceChargeId) {
+    try {
+      const charge = await stripe.charges.retrieve(sourceChargeId, {
+        expand: ["balance_transaction"],
+      });
+
+      let bt = charge.balance_transaction;
+      if (bt && typeof bt === "object") {
+        stripeFeeCents = Number(bt.fee || 0);
+      } else if (typeof bt === "string") {
+        const fullBt = await stripe.balanceTransactions.retrieve(bt);
+        stripeFeeCents = Number(fullBt.fee || 0);
+      }
+    } catch (e) {
+      console.warn(
+        "[transfers] failed to fetch balance transaction for charge",
+        sourceChargeId,
+        e.message || e
+      );
+    }
+  }
+
+  let creatorShare = gross - platformFee - stripeFeeCents;
+  if (!Number.isFinite(creatorShare) || creatorShare <= 0) {
+    // Nothing sensible to send after fees
     return;
   }
+
+  // Stripe requires integer cents
+  creatorShare = Math.floor(creatorShare);
 
   const transferPayload = {
     amount: creatorShare,
@@ -894,6 +923,7 @@ module.exports = async function stripeWebhook(req, res) {
       case "invoice.paid": {
         const invoice = event.data.object;
         const subId = invoice.subscription;
+
         if (subId) {
           const stripe = getStripe();
 
@@ -905,6 +935,7 @@ module.exports = async function stripeWebhook(req, res) {
             ? new Date(sub.current_period_end * 1000)
             : null;
 
+          // Keep memberships table in sync
           await db.query(
             `UPDATE memberships
                 SET status=$1,
@@ -918,7 +949,8 @@ module.exports = async function stripeWebhook(req, res) {
             [status, cancelAtPeriodEnd, currentPeriodEnd, subId]
           );
 
-          // NEW: pay out the creator for this invoice using a Transfer
+          // Pay out the creator for this invoice using a Transfer:
+          // creator_net = gross - stripe_fee - platform_cut
           try {
             const meta = sub.metadata || {};
             const creatorId =
@@ -929,7 +961,7 @@ module.exports = async function stripeWebhook(req, res) {
             if (creatorId && invoice.amount_paid && invoice.amount_paid > 0) {
               const { rows } = await db.query(
                 `SELECT stripe_account_id
-                  FROM users
+                   FROM users
                   WHERE id = $1
                   LIMIT 1`,
                 [creatorId]
@@ -938,10 +970,38 @@ module.exports = async function stripeWebhook(req, res) {
               if (acctRow && acctRow.stripe_account_id) {
                 const gross = Number(invoice.amount_paid || 0); // cents
                 if (Number.isFinite(gross) && gross > 0) {
-                  const platformFee = Math.floor((gross * PLATFORM_FEE_BPS) / 10000);
-                  const creatorShare = gross - platformFee;
+                  const platformFee = Math.floor(
+                    (gross * PLATFORM_FEE_BPS) / 10000
+                  );
 
-                  if (creatorShare > 0) {
+                  // Look up Stripe's fee for this invoice's charge
+                  let stripeFeeCents = 0;
+                  if (invoice.charge) {
+                    try {
+                      const charge = await stripe.charges.retrieve(
+                        invoice.charge,
+                        { expand: ["balance_transaction"] }
+                      );
+
+                      let bt = charge.balance_transaction;
+                      if (bt && typeof bt === "object") {
+                        stripeFeeCents = Number(bt.fee || 0);
+                      } else if (typeof bt === "string") {
+                        const fullBt = await stripe.balanceTransactions.retrieve(bt);
+                        stripeFeeCents = Number(fullBt.fee || 0);
+                      }
+                    } catch (feeErr) {
+                      console.warn(
+                        "[transfers] invoice.paid fee lookup failed:",
+                        feeErr.message || feeErr
+                      );
+                    }
+                  }
+
+                  let creatorShare = gross - platformFee - stripeFeeCents;
+                  if (Number.isFinite(creatorShare) && creatorShare > 0) {
+                    creatorShare = Math.floor(creatorShare);
+
                     const transferPayload = {
                       amount: creatorShare,
                       currency: invoice.currency || "usd",
@@ -967,6 +1027,7 @@ module.exports = async function stripeWebhook(req, res) {
             // Do not fail webhook. Membership is still updated.
           }
         }
+
         break;
       }
 

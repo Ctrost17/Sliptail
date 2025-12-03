@@ -2379,27 +2379,56 @@ function guessTypeFromKey(k: string) {
     }
   }
 
-  async function connectStripe() {
+async function connectStripe() {
+  try {
+    setConnecting(true);
+
+    const res = await fetch(`${apiBase}/api/stripe-connect/create-link`, {
+      method: "POST",
+      credentials: "include",
+      headers: buildAuthHeaders(),
+    });
+
+    let data: any = {};
     try {
-      setConnecting(true);
-      const res = await fetch(`${apiBase}/api/stripe-connect/create-link`, {
-        method: "POST",
-        credentials: "include",
-        headers: buildAuthHeaders(),
-      });
-      const data: any = await res.json();
-      const url = getStringProp(data, "url");
-      if (url) {
-        window.location.href = url;
-      } else {
-        showToast(extractMessage(data, "Could not start Stripe onboarding"));
-      }
+      data = await res.json();
     } catch {
-      showToast("Stripe onboarding error");
-    } finally {
-      setConnecting(false);
+      data = {};
     }
+
+    if (!res.ok) {
+      showToast(extractMessage(data, "Could not start Stripe onboarding"));
+      return;
+    }
+
+    const url = getStringProp(data, "url");
+    const mode = getStringProp(data, "mode") || "";
+    const alreadyConnected = !!data.already_connected;
+
+    // New creator: we got an OAuth URL, send them into Stripe onboarding
+    if (url) {
+      window.location.href = url;
+      return;
+    }
+
+    // Already connected to Stripe Standard:
+    // send them to Stripe Dashboard or just tell them what to do
+    if (alreadyConnected && mode === "standard") {
+      // Easiest option: send them to dashboard.stripe.com
+      window.location.href = "https://dashboard.stripe.com/";
+      return;
+    }
+
+    // Fallback if the payload is not what we expect
+    showToast("Could not start Stripe onboarding");
+  } catch (e) {
+    console.error("connectStripe error", e);
+    showToast("Stripe onboarding error");
+  } finally {
+    setConnecting(false);
   }
+}
+
 
   function requestDelete(id: string) {
     setDeleteErr(null);
