@@ -251,7 +251,7 @@ router.post(
 
       // create order (pending)
       const { rows: orderRows } = await db.query(
-        `INSERT INTO orders (buyer_id, product_id, amount_cents, status, created_at)
+        `INSERT INTO orders (buyer_id, product_id, amount, status, created_at)
          VALUES ($1, $2, $3, 'pending', NOW())
          RETURNING *`,
         [buyerId, product_id, amount]
