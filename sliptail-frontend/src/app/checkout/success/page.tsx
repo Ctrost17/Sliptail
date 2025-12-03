@@ -154,7 +154,7 @@ export default function CheckoutSuccessPage() {
   const subtitle = !sessionId
     ? "We could not find your checkout session."
     : isGuest
-    ? "Thanks for your purchase. Check your email for details, and if you already have a Sliptail account with the email used during checkout, you can just log in to see your order. Contact support if you have any questions or issues."
+    ? "Thanks for your purchase. Check your email that you used during Stripe Checkout for access, and if you already have a Sliptail account with the email used during checkout, you can just log in to see your order. Contact support if you have any questions or issues."
     : isFreeSession
     ? "Unlocking your access..."
     : "Confirming your purchase with Stripe.";
