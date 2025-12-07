@@ -4,21 +4,42 @@ type QsValue = string | number | boolean | null | undefined;
 type Qs = Record<string, QsValue>;
 
 /**
- * Build a full absolute API base.
- * - If NEXT_PUBLIC_API_BASE is absolute (http/https) → use it.
- * - If it's relative (e.g. "/api") → prefix with request origin (proto + host).
- * - If it's missing → fall back to request origin, and in dev use :5000 if on localhost.
+ * Build a full absolute API origin.
+ * - Uses x-forwarded-host / host when available.
+ * - Falls back to NEXT_PUBLIC_API_URL / NEXT_PUBLIC_API_BASE or "sliptail.com".
  */
 export async function getApiOrigin(): Promise<string> {
   const h = await headers();
-  const hostHeader = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
+
+  // Safe fallback host: strip scheme and trailing slash
+  const fallbackHostRaw =
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.NEXT_PUBLIC_API_BASE ??
+    "https://sliptail.com";
+
+  const fallbackHost = fallbackHostRaw
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
+
+  const hostHeader =
+    h.get("x-forwarded-host") ??
+    h.get("host") ??
+    fallbackHost;
+
   const protoRaw = h.get("x-forwarded-proto");
-  const proto = protoRaw?.split(",")[0]?.trim() || "http";
+  // In production behind nginx, this should be "https"; default is fine either way
+  const proto = protoRaw?.split(",")[0]?.trim() || "https";
+
   return `${proto}://${hostHeader.replace(/\/$/, "")}`;
 }
 
 export async function getApiBase(): Promise<string> {
-  const env = process.env.NEXT_PUBLIC_API_BASE?.trim();
+  // Prefer either one of these envs
+  const env = (
+    process.env.NEXT_PUBLIC_API_BASE ??
+    process.env.NEXT_PUBLIC_API_URL
+  )?.trim();
+
   const origin = await getApiOrigin();
 
   if (env) {
