@@ -338,9 +338,10 @@ router.post("/become", requireAuth, async (req, res) => {
  */
 router.post("/setup", requireAuth, async (req, res) => {
   const userId = req.user.id;
+  const agencyId = req.agency && req.agency.id;
 
   try {
-    // If already exists, just return the current state
+    // If already exists, just return the current state (but make sure agency mapping is set)
     const { rows: existing } = await db.query(
       `SELECT user_id, display_name, bio, profile_image,
               COALESCE(is_profile_complete,FALSE) AS is_profile_complete,
@@ -352,6 +353,28 @@ router.post("/setup", requireAuth, async (req, res) => {
     );
 
     if (existing[0]) {
+      // make sure this creator is attached to the current agency
+      if (agencyId) {
+        await db.query(
+          `
+          UPDATE creator_profiles
+             SET agency_id = $1
+           WHERE user_id = $2
+             AND (agency_id IS NULL OR agency_id = $1)
+          `,
+          [agencyId, userId]
+        );
+
+        await db.query(
+          `
+          INSERT INTO agency_creators (agency_id, creator_user_id)
+          VALUES ($1, $2)
+          ON CONFLICT (agency_id, creator_user_id) DO NOTHING
+          `,
+          [agencyId, userId]
+        );
+      }
+
       const { rows: photos } = await db.query(
         `SELECT url, position FROM creator_profile_photos WHERE user_id=$1 ORDER BY position ASC`,
         [userId]
@@ -382,41 +405,62 @@ router.post("/setup", requireAuth, async (req, res) => {
       });
     }
 
-          // ------- Schema-aware INSERT: only include columns that exist (NO ON CONFLICT) -------
-          const cols = ["user_id"];
-          const vals = ["$1"];
-          const params = [userId];
+    // ------- Schema-aware INSERT: only include columns that exist (NO ON CONFLICT) -------
+    const cols = ["user_id"];
+    const vals = ["$1"];
+    const params = [userId];
 
-          const optionalCols = [
-            { name: "display_name",        value: "NULL"  },
-            { name: "bio",                 value: "NULL"  },
-            { name: "profile_image",       value: "NULL"  },
-            { name: "is_profile_complete", value: "FALSE" },
-            { name: "is_active",           value: "FALSE" },
-            { name: "created_at",          value: "NOW()" },
-            { name: "updated_at",          value: "NOW()" },
-            { name: "is_featured",         value: "FALSE" },
-            { name: "featured",            value: "FALSE" },
-          ];
+    const optionalCols = [
+      { name: "display_name",        value: "NULL"  },
+      { name: "bio",                 value: "NULL"  },
+      { name: "profile_image",       value: "NULL"  },
+      { name: "is_profile_complete", value: "FALSE" },
+      { name: "is_active",           value: "FALSE" },
+      { name: "created_at",          value: "NOW()" },
+      { name: "updated_at",          value: "NOW()" },
+      { name: "is_featured",         value: "FALSE" },
+      { name: "featured",            value: "FALSE" },
+    ];
 
-          for (const oc of optionalCols) {
-            // eslint-disable-next-line no-await-in-loop
-            const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
-            if (exists) {
-              cols.push(oc.name);
-              vals.push(oc.value);
-            }
-          }
+    for (const oc of optionalCols) {
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await hasColumn("creator_profiles", oc.name).catch(() => false);
+      if (exists) {
+        cols.push(oc.name);
+        vals.push(oc.value);
+      }
+    }
 
-          // ⚠️ NO ON CONFLICT — we do a WHERE NOT EXISTS pattern instead
-          const insertSql = `
-            INSERT INTO creator_profiles (${cols.join(",")})
-            SELECT ${vals.join(",")}
-            WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
-          `;
-          await db.query(insertSql, params);
+    const insertSql = `
+      INSERT INTO creator_profiles (${cols.join(",")})
+      SELECT ${vals.join(",")}
+      WHERE NOT EXISTS (SELECT 1 FROM creator_profiles WHERE user_id=$1)
+    `;
+    await db.query(insertSql, params);
 
-    // Return the freshly created “blank” profile state
+    // attach to agency for newly inserted profile
+    if (agencyId) {
+      await db.query(
+        `
+        UPDATE creator_profiles
+           SET agency_id = $1
+         WHERE user_id = $2
+           AND (agency_id IS NULL OR agency_id = $1)
+        `,
+        [agencyId, userId]
+      );
+
+      await db.query(
+        `
+        INSERT INTO agency_creators (agency_id, creator_user_id)
+        VALUES ($1, $2)
+        ON CONFLICT (agency_id, creator_user_id) DO NOTHING
+        `,
+        [agencyId, userId]
+      );
+    }
+
+    // Return the freshly created blank profile state
     const safeProfile = {
       user_id: userId,
       display_name: null,
@@ -430,7 +474,6 @@ router.post("/setup", requireAuth, async (req, res) => {
 
     return res.status(201).json({ ok: true, creator: safeProfile });
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("creator/setup error:", e);
     return res
       .status(500)
@@ -994,6 +1037,29 @@ router.get("/featured", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
+    const agencyId = req.agency && req.agency.id;
+
+    const params = [];
+    const where = [
+      enabledClause,
+      "u.role = 'creator'",
+      "cp.is_profile_complete = TRUE",
+      "cp.is_active = TRUE",
+      "cp.is_listed = TRUE",
+      `${featuredExpr} = TRUE`,
+    ];
+
+    // If we are on an agency domain → only that agency’s creators
+    // If we are on main Sliptail → only non-agency creators (agency_id IS NULL)
+    if (agencyId) {
+      params.push(agencyId);
+      where.push(`cp.agency_id = $${params.length}`);
+    } else {
+      where.push("cp.agency_id IS NULL");
+    }
+
+    params.push(limit);
+    const limitIdx = params.length;
 
     const { rows: profiles } = await db.query(
       `
@@ -1013,24 +1079,19 @@ router.get("/featured", async (req, res) => {
       LEFT JOIN products p
         ON p.user_id = cp.user_id
        AND p.active  = TRUE
-      WHERE ${enabledClause}
-        AND u.role = 'creator'
-        AND cp.is_profile_complete = TRUE
-        AND cp.is_active = TRUE
-        AND cp.is_listed = TRUE
-        AND ${featuredExpr} = TRUE
+      WHERE ${where.join(" AND ")}
       GROUP BY cp.user_id, cp.display_name, cp.bio, cp.profile_image, ${featuredExpr}
       ORDER BY average_rating DESC NULLS LAST, products_count DESC, cp.display_name ASC
-      LIMIT $1
+      LIMIT $${limitIdx}
       `,
-      [limit]
+      params
     );
 
     if (profiles.length === 0) return res.json({ creators: [] });
 
     const creatorIds = profiles.map((p) => p.creator_id);
 
-    // categories (slug-safe)
+    // categories (slug safe)
     const slugExists = await hasColumn("categories", "slug");
     const catExpr = slugExists ? "c.slug" : "lower(regexp_replace(c.name,'\\s+','-','g'))";
     const { rows: categories } = await db.query(
@@ -1081,7 +1142,6 @@ router.get("/featured", async (req, res) => {
 
     res.json({ creators: out });
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("featured creators error:", e);
     res.status(500).json({ error: "Failed to fetch featured creators" });
   }
@@ -1102,71 +1162,79 @@ router.get("/:creatorId/reviews", async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || "20", 10), 100);
   const offset = Math.max(parseInt(req.query.offset || "0", 10), 0);
 
-  try {
-    let creatorId = parseInt(raw, 10);
+try {
+  let creatorId = parseInt(raw, 10);
+  const agencyId = req.agency && req.agency.id;
 
-      if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
-            // Not a pure numeric id → resolve via slug-ish display_name
-            const enabledClause = await usersEnabledClause();
-            const decoded = decodeURIComponent(raw);
-            const slugLike = decoded.trim();
+  if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
+    // Not a pure numeric id → resolve via slug-ish display_name
+    const enabledClause = await usersEnabledClause();
+    const decoded = decodeURIComponent(raw);
+    const slugLike = decoded.trim();
 
-            if (!slugLike) {
-              return res.status(400).json({ error: "Invalid creator slug" });
-            }
-
-            const { rows } = await db.query(
-              `
-              SELECT cp.user_id
-              FROM creator_profiles cp
-              JOIN users u ON u.id = cp.user_id
-              WHERE
-                regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g')
-                  = regexp_replace(lower($1), '[\\s-]+', '', 'g')
-                AND ${enabledClause}
-                AND u.role = 'creator'
-                AND cp.is_profile_complete = TRUE
-                AND cp.is_active = TRUE
-              LIMIT 1
-              `,
-              [slugLike]
-            );
-
-      if (!rows.length) {
-        return res.status(404).json({ error: "Creator not found" });
-      }
-
-      creatorId = rows[0].user_id;
+    if (!slugLike) {
+      return res.status(400).json({ error: "Invalid creator slug" });
     }
 
-    const { rows: list } = await db.query(
+    const params = [slugLike];
+    let agencyFilter = "";
+    if (agencyId) {
+      params.push(agencyId);
+      agencyFilter = `AND cp.agency_id = $${params.length}`;
+    }
+
+    const { rows } = await db.query(
       `
-      SELECT r.id,
-             r.rating,
-             r.comment,
-             r.created_at,
-             u.username AS author_name,
-             COALESCE(p.title, NULL) AS product_title
-      FROM reviews r
-      JOIN users u ON u.id = r.buyer_id
-      LEFT JOIN products p ON p.id = r.product_id
-      WHERE r.creator_id = $1
-      ORDER BY r.created_at DESC
-      LIMIT $2 OFFSET $3
+      SELECT cp.user_id
+      FROM creator_profiles cp
+      JOIN users u ON u.id = cp.user_id
+      WHERE
+        regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g')
+          = regexp_replace(lower($1), '[\\s-]+', '', 'g')
+        AND ${enabledClause}
+        AND u.role = 'creator'
+        AND cp.is_profile_complete = TRUE
+        AND cp.is_active = TRUE
+        ${agencyFilter}
+      LIMIT 1
       `,
-      [creatorId, limit, offset]
+      params
     );
 
-    res.json({
-      reviews: list,
-      limit,
-      offset,
-    });
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error("creator reviews error:", e);
-    res.status(500).json({ error: "Failed to fetch reviews" });
+    if (!rows.length) {
+      return res.status(404).json({ error: "Creator not found" });
+    }
+
+    creatorId = rows[0].user_id;
   }
+
+  const { rows: list } = await db.query(
+    `
+    SELECT r.id,
+           r.rating,
+           r.comment,
+           r.created_at,
+           u.username AS author_name,
+           COALESCE(p.title, NULL) AS product_title
+    FROM reviews r
+    JOIN users u ON u.id = r.buyer_id
+    LEFT JOIN products p ON p.id = r.product_id
+    WHERE r.creator_id = $1
+    ORDER BY r.created_at DESC
+    LIMIT $2 OFFSET $3
+    `,
+    [creatorId, limit, offset]
+  );
+
+  res.json({
+    reviews: list,
+    limit,
+    offset,
+  });
+} catch (e) {
+  console.error("creator reviews error:", e);
+  res.status(500).json({ error: "Failed to fetch reviews" });
+}
 });
 
 /**
@@ -1232,21 +1300,22 @@ router.get("/:creatorId", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
+    const agencyId = req.agency && req.agency.id;
 
     const numericId = parseInt(raw, 10);
     const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
 
     let whereSql;
-    let param;
+    const params = [];
 
     if (isNumeric) {
-      // Old behavior: look up by user_id
+      // look up by user_id
       whereSql = "cp.user_id = $1";
-      param = numericId;
-     } else {
-        // Treat as slug-ish identifier derived from display_name
-        const decoded = decodeURIComponent(raw);
-        const slugLike = decoded.trim();
+      params.push(numericId);
+    } else {
+      // Treat as slug-ish identifier derived from display_name
+      const decoded = decodeURIComponent(raw);
+      const slugLike = decoded.trim();
 
       if (!slugLike) {
         return res.status(400).json({ error: "Invalid creator slug" });
@@ -1255,7 +1324,15 @@ router.get("/:creatorId", async (req, res) => {
       whereSql =
         "regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g') = " +
         "regexp_replace(lower($1), '[\\s-]+', '', 'g')";
-      param = slugLike;
+      params.push(slugLike);
+    }
+
+    if (agencyId) {
+      params.push(agencyId);
+      whereSql += ` AND cp.agency_id = $${params.length}`;
+    } else {
+      // Main Sliptail: only show creators that are not attached to any agency
+      whereSql += " AND cp.agency_id IS NULL";
     }
 
     const { rows } = await db.query(
@@ -1295,7 +1372,7 @@ router.get("/:creatorId", async (req, res) => {
         AND cp.is_active = TRUE
       LIMIT 1
       `,
-      [param]
+      params
     );
 
     if (!rows.length) {
@@ -1334,7 +1411,6 @@ router.get("/:creatorId", async (req, res) => {
       gallery,
     });
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("creator profile error:", e);
     res.status(500).json({ error: "Failed to fetch creator" });
   }
@@ -1552,29 +1628,37 @@ router.get("/:creatorId/card", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
+    const agencyId = req.agency && req.agency.id;
 
     const numericId = parseInt(raw, 10);
     const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
 
     let whereSql;
-    let param;
+    const params = [];
 
     if (isNumeric) {
       whereSql = "cp.user_id = $1";
-      param = numericId;
+      params.push(numericId);
     } else {
-    const decoded = decodeURIComponent(raw);
-    const slugLike = decoded.trim();
+      const decoded = decodeURIComponent(raw);
+      const slugLike = decoded.trim();
 
-    if (!slugLike) {
-      return res.status(400).json({ error: "Invalid creator slug" });
+      if (!slugLike) {
+        return res.status(400).json({ error: "Invalid creator slug" });
+      }
+
+      whereSql =
+        "regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g') = " +
+        "regexp_replace(lower($1), '[\\s-]+', '', 'g')";
+      params.push(slugLike);
     }
 
-    whereSql =
-      "regexp_replace(lower(trim(cp.display_name)), '[\\s-]+', '', 'g') = " +
-      "regexp_replace(lower($1), '[\\s-]+', '', 'g')";
-    param = slugLike;
-  }
+    if (agencyId) {
+      params.push(agencyId);
+      whereSql += ` AND cp.agency_id = $${params.length}`;
+    } else {
+      whereSql += " AND cp.agency_id IS NULL";
+    }
 
     const { rows: prof } = await db.query(
       `
@@ -1609,7 +1693,7 @@ router.get("/:creatorId/card", async (req, res) => {
         AND COALESCE(prod.products_count, 0) > 0
       LIMIT 1
       `,
-      [param]
+      params
     );
 
     if (!prof.length) {
@@ -1661,14 +1745,12 @@ router.get("/:creatorId/card", async (req, res) => {
       },
       back: { gallery },
       links: {
-        // Not currently used on the front-end, but now correct:
         profile: `/creators/${encodeURIComponent(slugOrId)}`,
       },
     };
 
     res.json(card);
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("creator card error:", e);
     res.status(500).json({ error: "Failed to fetch creator" });
   }
@@ -1687,12 +1769,20 @@ router.get("/", async (req, res) => {
   const params = [];
   const enabledClause = await usersEnabledClause();
   const where = [
-  enabledClause,
-  "u.role = 'creator'",
-  "cp.is_profile_complete = TRUE",
-  "cp.is_active = TRUE",
-  "cp.is_listed = TRUE"
-];
+    enabledClause,
+    "u.role = 'creator'",
+    "cp.is_profile_complete = TRUE",
+    "cp.is_active = TRUE",
+    "cp.is_listed = TRUE",
+  ];
+
+  const agencyId = req.agency && req.agency.id;
+  if (agencyId) {
+    params.push(agencyId);
+    where.push(`cp.agency_id = $${params.length}`);
+  } else {
+    where.push("cp.agency_id IS NULL");
+  }
 
   if (q) {
     params.push(`%${q}%`);
@@ -1803,13 +1893,12 @@ router.get("/", async (req, res) => {
       average_rating: p.average_rating,
       products_count: p.products_count,
       categories: categoriesByCreator[p.creator_id] || [],
-      featured: !!p.is_featured, // legacy naming
-      is_featured: !!p.is_featured, // new naming
+      featured: !!p.is_featured,
+      is_featured: !!p.is_featured,
     }));
 
     res.json({ creators: out });
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error("list creators error:", e);
     res.status(500).json({ error: "Failed to fetch creators" });
   }

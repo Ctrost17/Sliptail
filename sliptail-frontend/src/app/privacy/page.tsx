@@ -85,7 +85,7 @@ export default function PrivacyPage() {
               <li>Provide, operate, secure, and troubleshoot the Services.</li>
               <li>Process payments via Stripe and make creator payouts via Stripe Connect.</li>
               <li>Authenticate users; maintain accounts; deliver purchases, memberships, and requests.</li>
-              <li>Prevent fraud, abuse, violations of our Terms, and illegal content leaks.</li>
+              <li>Prevent fraud, abuse, violations of our Terms, illegal content leaks, and activity that violates Stripe’s policies or risk controls..</li>
               <li>Comply with legal obligations and enforce agreements.</li>
               <li>Analyze usage to improve features, performance, and support.</li>
               <li>Send transactional emails (e.g., receipts, access notices) and, with consent, marketing messages.</li>
@@ -108,11 +108,11 @@ export default function PrivacyPage() {
               <li>
                 <strong>Service providers:</strong> Hosting/CDN, analytics, logging, error monitoring, email delivery,
                 customer support tools, and payment/payout processing (<strong>Stripe</strong>). These providers are
-                bound by contractual obligations to protect your data and use it only on our instructions.
+                bound by contractual obligations to protect your data and use it only on our instructions. For payment processing, Stripe acts as an independent controller of certain personal data (such as payment method details and identity verification information) in accordance with its own privacy policy. Sliptail does not have access to full card numbers or creator KYC documents.
               </li>
               <li>
                 <strong>Compliance & safety:</strong> To comply with law, respond to legal process, enforce our Terms,
-                protect rights, property, and safety, investigate fraud or leaks, and address security incidents.
+                protect rights, property, and safety, investigate fraud or leaks, comply with Stripe’s platform requirements, and address security incidents.
               </li>
               <li>
                 <strong>Business transfers:</strong> In a merger, acquisition, financing, or sale of assets, data may
@@ -187,7 +187,7 @@ export default function PrivacyPage() {
             <p>
               We may retain and disclose limited transactional data (e.g., purchase timestamps, usernames, IP logs) to
               facilitate creators’ lawful enforcement against unauthorized redistribution, consistent with this Policy
-              and applicable law. See also our <Link href="/terms">Terms of Use</Link>.
+              and applicable law. We may share relevant information with Stripe, law enforcement, or regulators when reasonably necessary to investigate fraud, enforce our Terms, comply with Stripe’s platform requirements, or respond to legal requests. See also our <Link href="/terms">Terms of Use</Link>.
             </p>
 
             <h2>15) Communications</h2>
