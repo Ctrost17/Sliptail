@@ -39,6 +39,14 @@ function issueJwtFromUserRow(u) {
   );
 }
 
+// Treat main Sliptail brand as "no agency" for creator scoping
+function getScopedAgencyId(req) {
+  const agency = req.agency;
+  if (!agency) return null;
+  if (agency.slug === "sliptail") return null; // main brand uses creators with agency_id IS NULL
+  return agency.id;
+}
+
 // Build a public URL (relative path under /uploads) from an absolute file path.
 function toPublicUrl(absPath) {
   const marker = `${path.sep}uploads${path.sep}`;
@@ -338,7 +346,7 @@ router.post("/become", requireAuth, async (req, res) => {
  */
 router.post("/setup", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const agencyId = req.agency && req.agency.id;
+  const agencyId = getScopedAgencyId(req);
 
   try {
     // If already exists, just return the current state (but make sure agency mapping is set)
@@ -1037,7 +1045,7 @@ router.get("/featured", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
-    const agencyId = req.agency && req.agency.id;
+    const agencyId = getScopedAgencyId(req);
 
     const params = [];
     const where = [
@@ -1164,7 +1172,7 @@ router.get("/:creatorId/reviews", async (req, res) => {
 
 try {
   let creatorId = parseInt(raw, 10);
-  const agencyId = req.agency && req.agency.id;
+  const agencyId = getScopedAgencyId(req);
 
   if (Number.isNaN(creatorId) || String(creatorId) !== raw) {
     // Not a pure numeric id → resolve via slug-ish display_name
@@ -1300,7 +1308,7 @@ router.get("/:creatorId", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
-    const agencyId = req.agency && req.agency.id;
+    const agencyId = getScopedAgencyId(req);
 
     const numericId = parseInt(raw, 10);
     const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
@@ -1628,7 +1636,7 @@ router.get("/:creatorId/card", async (req, res) => {
 
   try {
     const enabledClause = await usersEnabledClause();
-    const agencyId = req.agency && req.agency.id;
+    const agencyId = getScopedAgencyId(req);
 
     const numericId = parseInt(raw, 10);
     const isNumeric = !Number.isNaN(numericId) && String(numericId) === raw;
@@ -1776,7 +1784,7 @@ router.get("/", async (req, res) => {
     "cp.is_listed = TRUE",
   ];
 
-  const agencyId = req.agency && req.agency.id;
+  const agencyId = getScopedAgencyId(req);
   if (agencyId) {
     params.push(agencyId);
     where.push(`cp.agency_id = $${params.length}`);
