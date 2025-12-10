@@ -8,7 +8,8 @@ const { sendEmail } = require("../emails/mailer");
 const T = require("../emails/templates");
 const { validate } = require("../middleware/validate");
 const { authSignup, authLogin } = require("../validators/schemas");
-const { strictLimiter } = require("../middleware/rateLimit");
+const { strictLimiter, superStrictLimiter } = require("../middleware/rateLimit");
+const { requireHCaptcha } = require("../middleware/hcaptcha");
 const { notify } = require("../services/notifications"); // ⬅️ add notifications
 const { OAuth2Client } = require("google-auth-library");
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
@@ -188,7 +189,12 @@ const { requireAuth } = require("../middleware/auth");
  * POST /api/auth/signup
  * Body: { email, password, username? }
  */
-router.post("/signup", strictLimiter, validate(authSignup), async (req, res) => {
+router.post(
+  "/signup",
+  superStrictLimiter,      // much tighter per IP
+  requireHCaptcha,         // must pass captcha
+  validate(authSignup),
+  async (req, res) => {
   try {
     const { email, password, username } = req.body || {};
     if (!email || !password) {
@@ -424,7 +430,11 @@ router.post("/logout", (_req, res) => {
  * Body: { email }
  * Always responds success (prevents user enumeration)
  */
-router.post("/forgot", strictLimiter, async (req, res) => {
+router.post(
+  "/forgot",
+  superStrictLimiter,   // 5 per 15 minutes per IP (from your rateLimit.js)
+  requireHCaptcha,
+  async (req, res) => {
   try {
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ error: "Email is required" });
@@ -475,7 +485,7 @@ router.post("/forgot", strictLimiter, async (req, res) => {
  * POST /api/auth/reset
  * Body: { token, password }
  */
-router.post("/reset", strictLimiter, async (req, res) => {
+router.post("/reset", superStrictLimiter, async (req, res) => {
   try {
     const { token, password } = req.body || {};
     if (!token || !password) {

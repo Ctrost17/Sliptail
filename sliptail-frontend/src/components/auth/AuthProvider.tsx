@@ -22,7 +22,8 @@ type AuthContextType = {
   signup: (
     email: string,
     password: string,
-    username?: string
+    username: string | undefined,
+    hcaptchaToken: string
   ) => Promise<"verify-sent">;
   logout: () => void;
 };
@@ -185,31 +186,37 @@ const rehydrateFromLocal = useCallback(async () => {
     [applyAuthState]
   );
 
-  const signup = useCallback(
-    async (
-      email: string,
-      password: string,
-      username?: string
-    ): Promise<"verify-sent"> => {
-      setLoading(true);
-      try {
-        const { data } = await api.post<{ checkEmail: boolean }>(
-          "/auth/signup",
-          { email, password, username }
-        );
-        if (data?.checkEmail) return "verify-sent";
-        throw new Error("Signup failed");
-      } catch (e: unknown) {
-        const message = axios.isAxiosError<{ error?: string }>(e)
-          ? e.response?.data?.error ?? "Signup failed"
-          : "Signup failed";
-        throw new Error(message);
-      } finally {
-        setLoading(false);
-      }
-    },
-    []
-  );
+    const signup = useCallback(
+      async (
+        email: string,
+        password: string,
+        username: string | undefined,
+        hcaptchaToken: string
+      ): Promise<"verify-sent"> => {
+        setLoading(true);
+        try {
+          const { data } = await api.post<{ checkEmail: boolean }>(
+            "/auth/signup",
+            {
+              email,
+              password,
+              username,
+              hcaptchaToken,
+            }
+          );
+          if (data?.checkEmail) return "verify-sent";
+          throw new Error("Signup failed");
+        } catch (e: unknown) {
+          const message = axios.isAxiosError<{ error?: string }>(e)
+            ? e.response?.data?.error ?? "Signup failed"
+            : "Signup failed";
+          throw new Error(message);
+        } finally {
+          setLoading(false);
+        }
+      },
+      []
+    );
 
   const logout = useCallback(async () => {
     try {

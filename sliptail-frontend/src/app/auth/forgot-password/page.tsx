@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 
 function ForgotPasswordClient() {
   const search = useSearchParams();
@@ -11,6 +12,10 @@ function ForgotPasswordClient() {
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaErr, setCaptchaErr] = useState<string | null>(null);
+
+  const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY as string;
 
   useEffect(() => {
     if (prefill) setEmail(prefill);
@@ -20,14 +25,23 @@ function ForgotPasswordClient() {
     e.preventDefault();
     setErr(null);
     setSent(false);
+    setCaptchaErr(null);
+
+    if (!captchaToken) {
+      setCaptchaErr("Please complete the security check.");
+      return;
+    }
+
     setLoading(true);
     try {
-      // Adjust the endpoint to match your backend.
       const res = await fetch("/api/auth/forgot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: email.trim() }),
+        body: JSON.stringify({
+          email: email.trim(),
+          hcaptchaToken: captchaToken,
+        }),
       });
 
       // For security, don’t reveal whether the email exists.
@@ -72,6 +86,22 @@ function ForgotPasswordClient() {
             autoComplete="email"
             required
           />
+        </div>
+
+        <div className="mt-2">
+          <HCaptcha
+            sitekey={siteKey}
+            onVerify={(token) => {
+              setCaptchaToken(token);
+              setCaptchaErr(null);
+            }}
+            onExpire={() => {
+              setCaptchaToken(null);
+            }}
+          />
+          {captchaErr && (
+            <div className="mt-1 text-xs text-red-600">{captchaErr}</div>
+          )}
         </div>
 
         {err && <div className="text-sm text-red-600">{err}</div>}

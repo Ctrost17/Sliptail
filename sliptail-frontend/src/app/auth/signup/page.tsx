@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import PasswordField from "@/components/forms/PasswordField";
 import NextImage from "next/image";
+import HCaptcha from "@hcaptcha/react-hcaptcha";
 
 export default function SignupPage() {
   const { signup, loading } = useAuth();
@@ -17,27 +18,42 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaErr, setCaptchaErr] = useState<string | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    try {
-      await signup(email.trim(), password, username.trim() || undefined);
-      setDone(true);
-      // If backend returns a verify session, you can redirect to a "check email" flow here.
-    } catch (e: unknown) {
-      if (
-        e &&
-        typeof e === "object" &&
-        "message" in e &&
-        typeof (e as { message?: unknown }).message === "string"
-      ) {
-        setErr((e as { message: string }).message);
-      } else {
-        setErr("Signup failed");
+  const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY as string;
+
+    const submit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setErr(null);
+      setCaptchaErr(null);
+
+      if (!captchaToken) {
+        setCaptchaErr("Please complete the security check.");
+        return;
       }
-    }
-  };
+
+      try {
+        await signup(
+          email.trim(),
+          password,
+          username.trim() || undefined,
+          captchaToken
+        );
+        setDone(true);
+      } catch (e: unknown) {
+        if (
+          e &&
+          typeof e === "object" &&
+          "message" in e &&
+          typeof (e as { message?: unknown }).message === "string"
+        ) {
+          setErr((e as { message: string }).message);
+        } else {
+          setErr("Signup failed");
+        }
+      }
+    };
 
   function googleAuth() {
     const qs = next ? `?next=${encodeURIComponent(next)}` : "";
@@ -106,6 +122,22 @@ export default function SignupPage() {
           autoComplete="new-password"
           required
         />
+
+          <div className="mt-2">
+            <HCaptcha
+              sitekey={siteKey}
+              onVerify={(token) => {
+                setCaptchaToken(token);
+                setCaptchaErr(null);
+              }}
+              onExpire={() => {
+                setCaptchaToken(null);
+              }}
+            />
+            {captchaErr && (
+              <div className="mt-1 text-xs text-red-600">{captchaErr}</div>
+            )}
+          </div>
 
         {err && <p className="text-red-600 text-sm">{err}</p>}
 
