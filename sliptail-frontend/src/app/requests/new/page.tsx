@@ -110,6 +110,13 @@ export default function NewRequestPage() {
     [search]
   );
 
+  const pid = useMemo(() => (search.get("pid") || "").trim(), [search]);
+
+  const returnTo = useMemo(() => {
+    const raw = (search.get("returnTo") || "").trim();
+    return raw || "";
+  }, [search]);
+
   const [details, setDetails] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -159,18 +166,32 @@ export default function NewRequestPage() {
   }
 
   // ---- Direct-to-S3 helpers ----
-  async function presignForRequest(theFile: File): Promise<{ key: string; url: string; contentType: string }> {
-    const res = await fetch(`${API_BASE}/api/uploads/presign-request`, {
+ async function presignForRequest(
+    theFile: File
+  ): Promise<{ key: string; url: string; contentType: string }> {
+    const endpoint = token
+      ? `${API_BASE}/api/uploads/presign-request`
+      : `${API_BASE}/api/uploads/presign-request-guest`;
+
+    const body: Record<string, any> = {
+      filename: theFile.name,
+      contentType: theFile.type || "application/octet-stream",
+    };
+
+    // guest presign requires session_id
+    if (!token) {
+      body.session_id = sessionId;
+    }
+
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({
-        filename: theFile.name,
-        contentType: theFile.type || "application/octet-stream",
-      }),
+      body: JSON.stringify(body),
     });
+
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       throw new Error(`Failed to presign upload (${res.status}) ${t}`);
@@ -263,7 +284,10 @@ export default function NewRequestPage() {
       let payload: Record<string, any>;
 
       if (hasSession) {
-        url = `${API_BASE}/api/requests/create-from-session`;
+        url = token
+          ? `${API_BASE}/api/requests/create-from-session`
+          : `${API_BASE}/api/requests/create-from-session-guest`;
+
         payload = {
           session_id: sessionId,
           message: details || "",
@@ -299,16 +323,29 @@ export default function NewRequestPage() {
           credentials: "include",
         });
 
-      if (res.status === 401 || res.status === 403) {
-        // route to login preserving query
-        const params = new URLSearchParams();
-        if (orderId) params.set("orderId", String(orderId));
-        if (sessionId) params.set("session_id", sessionId);
-        const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}`;
-        router.replace(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+  if (res.status === 401 || res.status === 403) {
+        // signed in flow: go login
+        if (token) {
+          const params = new URLSearchParams();
+          if (orderId) params.set("orderId", String(orderId));
+          if (sessionId) params.set("session_id", sessionId);
+          const nextUrl = `${window.location.pathname}${
+            params.toString() ? `?${params.toString()}` : ""
+          }`;
+          router.replace(`/auth/login?next=${encodeURIComponent(nextUrl)}`);
+          return;
+        }
+
+        // guest flow: do not force login, go back to success confirmation
+        const fallback = sessionId
+          ? `/checkout/success?sid=${encodeURIComponent(sessionId)}${
+              pid ? `&pid=${encodeURIComponent(pid)}` : ""
+            }&done=1`
+          : "/checkout/success?done=1";
+
+        router.replace(returnTo || fallback);
         return;
       }
-
       if (!res.ok) {
         const t = await res.text().catch(() => "");
         let msg = `Failed to create request (${res.status})`;
@@ -320,7 +357,25 @@ export default function NewRequestPage() {
       }
 
       // 3) Success → toast on purchases page
-      redirectToPurchases("Your request has been submitted!");
+      if (token) {
+        // logged-in users go to purchases like before
+        redirectToPurchases("Your request has been submitted!");
+        return;
+      }
+
+      // guest users go back to success confirmation page
+      const fallback = sessionId
+        ? `/checkout/success?sid=${encodeURIComponent(sessionId)}${
+            pid ? `&pid=${encodeURIComponent(pid)}` : ""
+          }&done=1`
+        : "/checkout/success?done=1";
+
+      router.replace(returnTo || fallback);
+      setTimeout(() => {
+        if (window.location.pathname.includes("/requests/new")) {
+          window.location.href = returnTo || fallback;
+        }
+      }, 150);
     } catch (e: any) {
       const msg = e?.message || "Could not submit your request.";
       error(msg);
@@ -353,11 +408,30 @@ export default function NewRequestPage() {
   }
 
   function doLater() {
-    // NO toast here (per your preference)
-    router.replace("/purchases");
+    if (token) {
+      // signed in users go to purchases
+      router.replace("/purchases");
+      setTimeout(() => {
+        if (window.location.pathname.includes("/requests/new")) {
+          window.location.href = "/purchases";
+        }
+      }, 150);
+      return;
+    }
+
+    // guest users go back to success confirmation
+    const fallback = sessionId
+      ? `/checkout/success?sid=${encodeURIComponent(sessionId)}${
+          pid ? `&pid=${encodeURIComponent(pid)}` : ""
+        }&done=1`
+      : "/checkout/success?done=1";
+
+    const dest = returnTo || fallback;
+
+    router.replace(dest);
     setTimeout(() => {
       if (window.location.pathname.includes("/requests/new")) {
-        window.location.href = "/purchases";
+        window.location.href = dest;
       }
     }, 150);
   }

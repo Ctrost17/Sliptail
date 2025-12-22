@@ -1501,4 +1501,113 @@ router.post(
   }
 );
 
+/* ---------------------- NEW: create-from-session-guest ---------------------- */
+/**
+ * POST /api/requests/create-from-session-guest
+ * Body (json): { session_id: string, message: string, attachment_key?: string, attachment_content_type?: string }
+ *
+ * For Stripe guest checkouts where the buyer has not logged in yet.
+ * We only allow this if:
+ * - the session maps to a PAID order
+ * - the product_type is 'request'
+ * - the order's buyer is a webhook-created "guest_..." user
+ */
+router.post(
+  "/create-from-session-guest",
+  strictLimiter,
+  async (req, res) => {
+    try {
+      const sessionId = String(req.body.session_id || "").trim();
+      const message = (req.body.message || "").toString();
+      if (!sessionId) return res.status(400).json({ error: "session_id is required" });
+      if (!message.trim()) return res.status(400).json({ error: "message is required" });
+
+      const { rows } = await db.query(
+        `SELECT o.id AS order_id,
+                o.buyer_id,
+                o.status AS order_status,
+                p.user_id AS creator_id,
+                p.product_type,
+                u.password_hash
+           FROM orders o
+           JOIN products p ON p.id = o.product_id
+           JOIN users u ON u.id = o.buyer_id
+          WHERE o.stripe_checkout_session_id = $1
+          LIMIT 1`,
+        [sessionId]
+      );
+
+      const row = rows[0];
+      if (!row) return res.status(404).json({ error: "Order not found for this session" });
+      if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
+      if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
+
+      const ph = String(row.password_hash || "");
+      if (!ph.startsWith("guest_")) {
+        return res.status(403).json({ error: "Please log in to submit your request." });
+      }
+
+      const buyerId = Number(row.buyer_id);
+      const orderId = Number(row.order_id);
+      const creatorId = Number(row.creator_id);
+
+      let attachment_path = null;
+      const presignedKey = (req.body.attachment_key || "").trim();
+
+      if (presignedKey) {
+        attachment_path = presignedKey;
+        const ct = String(req.body.attachment_content_type || "").toLowerCase();
+        if (looksVideoContentType(ct) || (!ct && looksVideoKey(attachment_path))) {
+          try { await makeAndStorePoster(attachment_path, { private: true }); }
+          catch (e) { console.warn("buyer attachment poster (guest presigned) skipped:", e?.message || e); }
+        }
+      }
+
+      const existing = await db.query(
+        `SELECT id FROM custom_requests WHERE order_id=$1 AND buyer_id=$2`,
+        [orderId, buyerId]
+      );
+
+      let request;
+      if (existing.rows.length) {
+        const { rows: upd } = await db.query(
+          `UPDATE custom_requests
+              SET "user" = COALESCE($2, "user"),
+                  attachment_path = COALESCE($3, attachment_path)
+            WHERE id = $1
+          RETURNING *`,
+          [existing.rows[0].id, message || null, attachment_path]
+        );
+        request = upd[0];
+      } else {
+        const { rows: ins } = await db.query(
+          `INSERT INTO custom_requests (order_id, buyer_id, creator_id, "user", creator, attachment_path, status, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+           RETURNING *`,
+          [orderId, buyerId, creatorId, message || null, null, attachment_path, REQUEST_INITIAL_STATUS]
+        );
+        request = ins[0];
+
+        if (!(await alreadyNotified(Number(creatorId), "creator_request", request.id))) {
+          await Promise.allSettled([
+            notify(
+              Number(creatorId),
+              "creator_request",
+              "You’ve got a new custom request! 🎉",
+              "Check out the details on your creator dashboard and let your creativity shine",
+              { request_id: request.id }
+            ),
+            notifyCreatorNewRequest({ requestId: request.id }),
+          ]);
+        }
+      }
+
+      return res.status(201).json({ success: true, request: normalizeStatus(request) });
+    } catch (e) {
+      console.error("create-from-session-guest error:", e);
+      return res.status(500).json({ error: "Failed to create request" });
+    }
+  }
+);
+
 module.exports = router;
