@@ -1542,11 +1542,6 @@ router.post(
       if (row.order_status !== "paid") return res.status(400).json({ error: "Order is not paid yet" });
       if (row.product_type !== "request") return res.status(400).json({ error: "Not a request-type product" });
 
-      const ph = String(row.password_hash || "");
-      if (!ph.startsWith("guest_")) {
-        return res.status(403).json({ error: "Please log in to submit your request." });
-      }
-
       const buyerId = Number(row.buyer_id);
       const orderId = Number(row.order_id);
       const creatorId = Number(row.creator_id);

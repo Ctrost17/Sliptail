@@ -167,37 +167,45 @@ export default function NewRequestPage() {
 
   // ---- Direct-to-S3 helpers ----
  async function presignForRequest(
-    theFile: File
-  ): Promise<{ key: string; url: string; contentType: string }> {
-    const endpoint = token
-      ? `${API_BASE}/api/uploads/presign-request`
-      : `${API_BASE}/api/uploads/presign-request-guest`;
+  theFile: File
+): Promise<{ key: string; url: string; contentType: string }> {
+  const auth = loadAuth();
+  const effectiveToken = token || auth?.token || "";
 
-    const body: Record<string, any> = {
-      filename: theFile.name,
-      contentType: theFile.type || "application/octet-stream",
-    };
+  const isAuthed = !!effectiveToken;
 
-    // guest presign requires session_id
-    if (!token) {
-      body.session_id = sessionId;
+  const endpoint = isAuthed
+    ? `${API_BASE}/api/uploads/presign-request`
+    : `${API_BASE}/api/uploads/presign-request-guest`;
+
+  const body: Record<string, any> = {
+    filename: theFile.name,
+    contentType: theFile.type || "application/octet-stream",
+  };
+
+  // Only guest presign requires session_id
+  if (!isAuthed) {
+    if (!sessionId) {
+      throw new Error("Missing Stripe session_id for guest attachment upload");
     }
-
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`Failed to presign upload (${res.status}) ${t}`);
-    }
-    return res.json();
+    body.session_id = sessionId;
   }
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(isAuthed ? { Authorization: `Bearer ${effectiveToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Failed to presign upload (${res.status}) ${t}`);
+  }
+  return res.json();
+}
 
   function xhrPutWithProgress(url: string, theFile: File, contentType: string): Promise<void> {
     return new Promise((resolve, reject) => {

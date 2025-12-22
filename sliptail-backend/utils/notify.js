@@ -114,7 +114,7 @@ async function notifyPostToMembers({ creatorId, productId, postId, title }) {
 async function notifyPurchase({ orderId }) {
   try {
     const { rows } = await db.query(
-      `SELECT o.id AS order_id, o.buyer_id, o.amount,
+      `SELECT o.id AS order_id, o.buyer_id, o.amount_cents,
               p.id AS product_id, p.title, p.product_type, p.user_id AS creator_id
          FROM orders o
          JOIN products p ON p.id = o.product_id
