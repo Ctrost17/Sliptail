@@ -93,6 +93,9 @@ export default function NewRequestPage() {
   const { success, error } = useToast();
   const { token } = useAuth();
 
+  const storedAuth = useMemo(() => loadAuth(), []);
+  const effectiveToken = token || storedAuth?.token || "";
+
   const orderId = useMemo(() => {
     const raw = search.get("orderId") || search.get("order_id") || "";
     const num = raw ? Number(raw) : NaN;
@@ -166,15 +169,24 @@ export default function NewRequestPage() {
   }
 
   // ---- Direct-to-S3 helpers ----
- async function presignForRequest(
+async function presignForRequest(
   theFile: File
 ): Promise<{ key: string; url: string; contentType: string }> {
-  const auth = loadAuth();
-  const effectiveToken = token || auth?.token || "";
 
-  const isAuthed = !!effectiveToken;
+  const hasSession = !!sessionId;
+  const hasOrder = !!orderId;
 
-  const endpoint = isAuthed
+  // If coming from "Do later" (orderId flow), require auth (no session_id available)
+  if (hasOrder && !effectiveToken) {
+    throw new Error("Please log in again to upload attachments.");
+  }
+
+  // For true guests, we can only upload if we have a Stripe session_id in the URL
+  if (!effectiveToken && !hasSession) {
+    throw new Error("Missing Stripe session_id for guest attachment upload");
+  }
+
+  const endpoint = effectiveToken
     ? `${API_BASE}/api/uploads/presign-request`
     : `${API_BASE}/api/uploads/presign-request-guest`;
 
@@ -183,11 +195,8 @@ export default function NewRequestPage() {
     contentType: theFile.type || "application/octet-stream",
   };
 
-  // Only guest presign requires session_id
-  if (!isAuthed) {
-    if (!sessionId) {
-      throw new Error("Missing Stripe session_id for guest attachment upload");
-    }
+  // guest presign requires session_id
+  if (!effectiveToken) {
     body.session_id = sessionId;
   }
 
@@ -195,7 +204,7 @@ export default function NewRequestPage() {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(isAuthed ? { Authorization: `Bearer ${effectiveToken}` } : {}),
+      ...(effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -207,29 +216,40 @@ export default function NewRequestPage() {
   return res.json();
 }
 
+
   function xhrPutWithProgress(url: string, theFile: File, contentType: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", url, true);
+
+      // Always set the file content-type for the PUT
       xhr.setRequestHeader("Content-Type", contentType || "application/octet-stream");
-      
-      // Add authentication for local storage uploads
-      const { token } = loadAuth();
-      if (token && url.includes(API_BASE)) {
-        xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+      // Only send credentials and auth headers if uploading to our own API domain.
+      // Presigned S3 PUTs should not include cookies/credentials.
+      const isApiUpload =
+        url.startsWith(API_BASE) ||
+        url.includes(new URL(API_BASE).host);
+
+      if (isApiUpload) {
+        const { token } = loadAuth();
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        xhr.withCredentials = true;
+      } else {
+        xhr.withCredentials = false;
       }
-      
-      xhr.withCredentials = true; // Include cookies for CORS
-      
+
       xhr.upload.onprogress = (ev) => {
         if (!ev.lengthComputable) return;
         const pct = Math.max(0, Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
         setUploadPct(pct);
       };
+
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) return resolve();
-        reject(new Error(`S3 upload failed (${xhr.status})`));
+        reject(new Error(`Upload failed (${xhr.status})`));
       };
+
       xhr.onerror = () => reject(new Error("Network error during upload"));
       xhr.send(theFile);
     });
@@ -284,6 +304,8 @@ export default function NewRequestPage() {
 
       // 2) Create the request via JSON (no multipart)
       setUploadPhase("finalizing");
+      const stored = loadAuth();
+      const effectiveToken = token || stored?.token || "";
 
       const hasSession = !!sessionId;
       const hasOrder = !!orderId;
@@ -291,10 +313,10 @@ export default function NewRequestPage() {
       let url: string;
       let payload: Record<string, any>;
 
-      if (hasSession) {
-        url = token
-          ? `${API_BASE}/api/requests/create-from-session`
-          : `${API_BASE}/api/requests/create-from-session-guest`;
+    if (hasSession) {
+      url = effectiveToken
+        ? `${API_BASE}/api/requests/create-from-session`
+        : `${API_BASE}/api/requests/create-from-session-guest`;
 
         payload = {
           session_id: sessionId,
@@ -325,7 +347,7 @@ export default function NewRequestPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}),
           },
           body: JSON.stringify(payload),
           credentials: "include",
@@ -333,7 +355,7 @@ export default function NewRequestPage() {
 
   if (res.status === 401 || res.status === 403) {
         // signed in flow: go login
-        if (token) {
+         if (effectiveToken) {
           const params = new URLSearchParams();
           if (orderId) params.set("orderId", String(orderId));
           if (sessionId) params.set("session_id", sessionId);
@@ -365,7 +387,7 @@ export default function NewRequestPage() {
       }
 
       // 3) Success → toast on purchases page
-      if (token) {
+      if (effectiveToken) {
         // logged-in users go to purchases like before
         redirectToPurchases("Your request has been submitted!");
         return;
@@ -416,7 +438,7 @@ export default function NewRequestPage() {
   }
 
   function doLater() {
-    if (token) {
+    if (effectiveToken) {
       // signed in users go to purchases
       router.replace("/purchases");
       setTimeout(() => {

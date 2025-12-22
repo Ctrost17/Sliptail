@@ -32,10 +32,10 @@ function toSafeUser(u) {
   return {
     id: u.id,
     email: u.email,
-    username: u.username,
-    role: u.role,
-    email_verified_at: u.email_verified_at,
-    created_at: u.created_at,
+    username: u.username ?? null,
+    role: u.role || "user",
+    email_verified_at: u.email_verified_at ?? null,
+    created_at: u.created_at || new Date().toISOString(),
   };
 }
 
@@ -609,17 +609,34 @@ router.post("/reset", superStrictLimiter, async (req, res) => {
       }
     }
 
-    return res.json({
-      success: true,
-      message: "Password updated",
-      // frontend uses this to decide redirect behavior
-      auto_verified: wasGuestBeforeReset,
-    });
-  } catch (e) {
-    try {
-      await db.query("ROLLBACK");
-    } catch {}
+// Always issue a JWT in the JSON response so the frontend can store it in localStorage.
+// (Cookie-only auth breaks the current AuthProvider rehydration logic.)
+const { rows: uRows } = await db.query("SELECT * FROM users WHERE id=$1", [userId]);
+const user = uRows[0];
+const sessionToken = issueJwt(user);
 
+try {
+  res.cookie("token", sessionToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV !== "development",
+    path: "/",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+} catch (e) {
+  console.warn("Failed to set auth cookie after password reset:", e?.message || e);
+}
+
+return res.json({
+  success: true,
+  message: "Password updated",
+  token: sessionToken,
+  user: toSafeUser(user),
+  // frontend uses this to decide redirect behavior
+  auto_verified: wasGuestBeforeReset,
+});
+  } catch (e) {
+    try { await db.query("ROLLBACK"); } catch {}
     console.error("reset error:", e);
     return res.status(500).json({ error: "Failed to reset password" });
   }

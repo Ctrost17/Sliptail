@@ -5,11 +5,24 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiPost, apiGet } from "@/lib/api";
 import { isAxiosError } from "axios";
+import { saveAuth } from "@/lib/auth";
 
 type ResetResponse = {
   success?: boolean;
   message?: string;
   error?: string;
+
+  token?: string;
+  user?: {
+    id: number;
+    email: string;
+    username: string | null;
+    role: "user" | "creator" | "admin";
+    email_verified_at: string | null;
+    created_at: string;
+  };
+
+  auto_verified?: boolean;
 };
 
 export default function ResetPasswordPage() {
@@ -46,6 +59,27 @@ export default function ResetPasswordPage() {
       if (!json?.success) {
         throw new Error(json?.error || json?.message || "Reset failed");
       }
+
+    if (json?.token && json?.user) {
+      // Normalize to SafeUser exactly (no null role, no undefined created_at)
+      const safeUser = {
+        id: json.user.id,
+        email: json.user.email,
+        username: json.user.username ?? null,
+        role: json.user.role || "user",
+        email_verified_at: json.user.email_verified_at ?? null,
+        created_at: json.user.created_at || new Date().toISOString(),
+      };
+
+      try {
+        saveAuth({ token: json.token, user: safeUser });
+      } catch {}
+
+      if (typeof window !== "undefined") {
+        window.location.href = "/purchases";
+        return;
+      }
+    }
 
       // 2) Check if the user is now logged in via cookie
       //    For guest-buyer tokens, your backend sets a login cookie.
